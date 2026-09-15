@@ -1,0 +1,22 @@
+{
+  "schema_version": "1.0",
+  "environment_id": "customer-a",
+  "display_name": "고객 A 검사 셀",
+  "length_unit": "m",
+  "scene": {"template_id": "customer-cell-v1", "robot_profile": "customer-arm", "seed": 73},
+  "workspace": {"lower_m": [-2, -1, 0], "upper_m": [2, 2, 2]},
+  "stations": [
+    {"id": "infeed-a", "role": "source", "position_m": [-1.5, 0.5, 0.3]},
+    {"id": "camera-a", "role": "inspection", "position_m": [-0.5, 1, 0.3]},
+    {"id": "outfeed-a", "role": "accepted", "position_m": [1.5, 1, 0.3]},
+    {"id": "quarantine-a", "role": "rejected", "position_m": [1.5, -0.5, 0.3]}
+  ],
+  "workflow": {
+    "source_station": "infeed-a",
+    "inspect_station": "camera-a",
+    "accept_station": "outfeed-a",
+    "reject_station": "quarantine-a"
+  },
+  "execution": {"mode": "live", "max_step_seconds": 45, "max_observation_age_ms": 1500},
+  "limits": {"max_cartesian_speed_m_s": 0.15, "max_payload_kg": 0.5}
+}

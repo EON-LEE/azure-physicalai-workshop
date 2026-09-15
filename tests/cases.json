@@ -1,0 +1,454 @@
+{
+  "plan_version": "2.0",
+  "default_fixture": "examples/inspection-cell.json",
+  "requirements": [
+    "R-WSL", "R-UI", "R-AZURE", "R-SIM", "R-CUSTOM", "R-LOOP",
+    "R-GUARD", "R-LEARN", "R-MFG", "R-TRUTH", "R-OPS", "R-TEST"
+  ],
+  "required_release_gates": ["G0", "G1", "G2", "G3", "G4", "G5", "G6", "G7"],
+  "notes": [
+    "Implemented means test code exists, not that a particular run passed.",
+    "G0 only checks configuration. It does not verify a scene, controller, Azure deployment, or UI.",
+    "Planned cases must be implemented and executed before their required release gate can pass.",
+    "Missing credentials, GPU, test collection, or reports must never count as a live pass."
+  ],
+  "cases": [
+    {
+      "id": "ENV-001", "gate": "G0", "requirement_ids": ["R-CUSTOM"], "suite": "environment", "status": "implemented",
+      "title": "Reference live configuration is structurally and relationally valid",
+      "changes": [], "expected_valid": true, "expected_codes": []
+    },
+    {
+      "id": "ENV-002", "gate": "G0", "requirement_ids": ["R-CUSTOM"], "suite": "environment", "status": "implemented",
+      "title": "Customer layout, station IDs, and Korean display name need no validator changes",
+      "fixture": "examples/customer-cell.json", "changes": [], "expected_valid": true, "expected_codes": []
+    },
+    {
+      "id": "ENV-003", "gate": "G0", "requirement_ids": ["R-CUSTOM"], "suite": "environment", "status": "implemented",
+      "title": "Unsupported schema version is rejected",
+      "changes": [{"op": "set", "path": ["schema_version"], "value": "2.0"}], "expected_valid": false, "expected_codes": ["schema"]
+    },
+    {
+      "id": "ENV-004", "gate": "G0", "requirement_ids": ["R-CUSTOM"], "suite": "environment", "status": "implemented",
+      "title": "Missing required environment ID is rejected",
+      "changes": [{"op": "delete", "path": ["environment_id"]}], "expected_valid": false, "expected_codes": ["schema"]
+    },
+    {
+      "id": "ENV-005", "gate": "G0", "requirement_ids": ["R-CUSTOM"], "suite": "environment", "status": "implemented",
+      "title": "Whitespace-only display name is rejected",
+      "changes": [{"op": "set", "path": ["display_name"], "value": " \t\n "}], "expected_valid": false, "expected_codes": ["schema"]
+    },
+    {
+      "id": "ENV-006", "gate": "G0", "requirement_ids": ["R-CUSTOM", "R-GUARD"], "suite": "environment", "status": "implemented",
+      "title": "Unknown credential property is not silently accepted",
+      "changes": [{"op": "set", "path": ["api_key"], "value": "synthetic-test-value"}], "expected_valid": false, "expected_codes": ["schema"]
+    },
+    {
+      "id": "ENV-007", "gate": "G0", "requirement_ids": ["R-CUSTOM", "R-GUARD"], "suite": "environment", "status": "implemented",
+      "title": "An arbitrary scene command is not a configuration field",
+      "changes": [{"op": "set", "path": ["scene", "exec"], "value": "print('not executed')"}], "expected_valid": false, "expected_codes": ["schema"]
+    },
+    {
+      "id": "ENV-008", "gate": "G0", "requirement_ids": ["R-CUSTOM"], "suite": "environment", "status": "implemented",
+      "title": "A position must have exactly three coordinates",
+      "changes": [{"op": "set", "path": ["stations", 0, "position_m"], "value": [0, 0]}], "expected_valid": false, "expected_codes": ["schema"]
+    },
+    {
+      "id": "ENV-009", "gate": "G0", "requirement_ids": ["R-CUSTOM"], "suite": "environment", "status": "implemented",
+      "title": "Coordinates are not coerced from strings",
+      "changes": [{"op": "set", "path": ["stations", 0, "position_m", 0], "value": "0.5"}], "expected_valid": false, "expected_codes": ["schema"]
+    },
+    {
+      "id": "ENV-010", "gate": "G0", "requirement_ids": ["R-CUSTOM"], "suite": "environment", "status": "implemented",
+      "title": "A Boolean is not accepted as a numeric speed",
+      "changes": [{"op": "set", "path": ["limits", "max_cartesian_speed_m_s"], "value": true}], "expected_valid": false, "expected_codes": ["schema"]
+    },
+    {
+      "id": "ENV-011", "gate": "G0", "requirement_ids": ["R-CUSTOM"], "suite": "environment", "status": "implemented",
+      "title": "Zero requested speed is rejected",
+      "changes": [{"op": "set", "path": ["limits", "max_cartesian_speed_m_s"], "value": 0}], "expected_valid": false, "expected_codes": ["schema"]
+    },
+    {
+      "id": "ENV-012", "gate": "G0", "requirement_ids": ["R-CUSTOM"], "suite": "environment", "status": "implemented",
+      "title": "Negative payload is rejected",
+      "changes": [{"op": "set", "path": ["limits", "max_payload_kg"], "value": -1}], "expected_valid": false, "expected_codes": ["schema"]
+    },
+    {
+      "id": "ENV-013", "gate": "G0", "requirement_ids": ["R-CUSTOM"], "suite": "environment", "status": "implemented",
+      "title": "Duplicate station IDs are rejected",
+      "changes": [{"op": "set", "path": ["stations", 1, "id"], "value": "supply"}], "expected_valid": false, "expected_codes": ["duplicate_id"]
+    },
+    {
+      "id": "ENV-014", "gate": "G0", "requirement_ids": ["R-CUSTOM", "R-GUARD"], "suite": "environment", "status": "implemented",
+      "title": "Inverted workspace bounds are rejected",
+      "changes": [{"op": "set", "path": ["workspace", "lower_m", 0], "value": 2}], "expected_valid": false, "expected_codes": ["workspace_bounds"]
+    },
+    {
+      "id": "ENV-015", "gate": "G0", "requirement_ids": ["R-CUSTOM", "R-GUARD"], "suite": "environment", "status": "implemented",
+      "title": "A station outside the declared workspace is rejected",
+      "changes": [{"op": "set", "path": ["stations", 0, "position_m", 0], "value": -1.001}], "expected_valid": false, "expected_codes": ["station_bounds"]
+    },
+    {
+      "id": "ENV-016", "gate": "G0", "requirement_ids": ["R-CUSTOM"], "suite": "environment", "status": "implemented",
+      "title": "Workspace boundary coordinates are inclusive",
+      "changes": [{"op": "set", "path": ["stations", 0, "position_m"], "value": [-1, -1, 0]}], "expected_valid": true, "expected_codes": []
+    },
+    {
+      "id": "ENV-017", "gate": "G0", "requirement_ids": ["R-CUSTOM"], "suite": "environment", "status": "implemented",
+      "title": "Unknown workflow station reference is rejected",
+      "changes": [{"op": "set", "path": ["workflow", "inspect_station"], "value": "missing-station"}], "expected_valid": false, "expected_codes": ["unknown_station"]
+    },
+    {
+      "id": "ENV-018", "gate": "G0", "requirement_ids": ["R-CUSTOM"], "suite": "environment", "status": "implemented",
+      "title": "A workflow station must have the expected role",
+      "changes": [{"op": "set", "path": ["stations", 2, "role"], "value": "rejected"}], "expected_valid": false, "expected_codes": ["station_role"]
+    },
+    {
+      "id": "ENV-019", "gate": "G0", "requirement_ids": ["R-CUSTOM"], "suite": "environment", "status": "implemented",
+      "title": "Two workflow stages cannot silently share one station",
+      "changes": [{"op": "set", "path": ["workflow", "reject_station"], "value": "accepted"}], "expected_valid": false, "expected_codes": ["reused_station"]
+    },
+    {
+      "id": "ENV-020", "gate": "G0", "requirement_ids": ["R-CUSTOM", "R-TRUTH"], "suite": "environment", "status": "implemented",
+      "title": "Unknown execution mode is rejected instead of defaulting to replay",
+      "changes": [{"op": "set", "path": ["execution", "mode"], "value": "automatic"}], "expected_valid": false, "expected_codes": ["schema"]
+    },
+    {
+      "id": "ENV-021", "gate": "G0", "requirement_ids": ["R-CUSTOM", "R-TRUTH"], "suite": "environment", "status": "implemented",
+      "title": "Replay is accepted only as an explicitly specified configuration mode",
+      "changes": [{"op": "set", "path": ["execution", "mode"], "value": "replay"}], "expected_valid": true, "expected_codes": []
+    },
+    {
+      "id": "ENV-022", "gate": "G0", "requirement_ids": ["R-CUSTOM"], "suite": "environment", "status": "implemented",
+      "title": "Negative scene seed is rejected",
+      "changes": [{"op": "set", "path": ["scene", "seed"], "value": -1}], "expected_valid": false, "expected_codes": ["schema"]
+    },
+    {
+      "id": "ENV-023", "gate": "G0", "requirement_ids": ["R-CUSTOM"], "suite": "environment", "status": "implemented",
+      "title": "Unknown workflow properties are rejected",
+      "changes": [{"op": "set", "path": ["workflow", "ignore_errors"], "value": true}], "expected_valid": false, "expected_codes": ["schema"]
+    },
+    {
+      "id": "ENV-024", "gate": "G0", "requirement_ids": ["R-CUSTOM"], "suite": "environment", "status": "implemented",
+      "title": "Environment ID is an identifier, not a filesystem path",
+      "changes": [{"op": "set", "path": ["environment_id"], "value": "../escape"}], "expected_valid": false, "expected_codes": ["schema"]
+    },
+    {
+      "id": "ENV-025", "gate": "G0", "requirement_ids": ["R-CUSTOM"], "suite": "environment", "status": "implemented",
+      "title": "Unbounded step timeout is rejected",
+      "changes": [{"op": "set", "path": ["execution", "max_step_seconds"], "value": 301}], "expected_valid": false, "expected_codes": ["schema"]
+    },
+    {
+      "id": "ENV-026", "gate": "G0", "requirement_ids": ["R-CUSTOM"], "suite": "environment", "status": "implemented",
+      "title": "Observation age limit must be positive",
+      "changes": [{"op": "set", "path": ["execution", "max_observation_age_ms"], "value": 0}], "expected_valid": false, "expected_codes": ["schema"]
+    },
+    {
+      "id": "ENV-027", "gate": "G0", "requirement_ids": ["R-CUSTOM", "R-TRUTH"], "suite": "environment", "status": "implemented",
+      "title": "Custom template ID syntax can be checked without claiming the plugin exists",
+      "changes": [{"op": "set", "path": ["scene", "template_id"], "value": "customer-plugin-v1"}], "expected_valid": true, "expected_codes": []
+    },
+    {
+      "id": "ENV-028", "gate": "G0", "requirement_ids": ["R-CUSTOM", "R-TRUTH"], "suite": "environment", "status": "implemented",
+      "title": "Mode must be supplied; no implicit live or replay default",
+      "changes": [{"op": "delete", "path": ["execution", "mode"]}], "expected_valid": false, "expected_codes": ["schema"]
+    },
+    {
+      "id": "ENV-029", "gate": "G0", "requirement_ids": ["R-CUSTOM", "R-GUARD"], "suite": "environment", "status": "implemented",
+      "title": "Unknown station code field is rejected",
+      "changes": [{"op": "set", "path": ["stations", 0, "python"], "value": "print('not executed')"}], "expected_valid": false, "expected_codes": ["schema"]
+    },
+    {
+      "id": "ENV-030", "gate": "G0", "requirement_ids": ["R-CUSTOM"], "suite": "environment", "status": "implemented",
+      "title": "Zero-size workspace axis is rejected",
+      "changes": [{"op": "set", "path": ["workspace", "upper_m", 2], "value": 0}], "expected_valid": false, "expected_codes": ["workspace_bounds"]
+    },
+    {
+      "id": "ENV-031", "gate": "G0", "requirement_ids": ["R-CUSTOM"], "suite": "environment", "status": "implemented",
+      "title": "A trailing newline is not part of a valid environment identifier",
+      "changes": [{"op": "set", "path": ["environment_id"], "value": "customer-a\n"}], "expected_valid": false, "expected_codes": ["schema"]
+    },
+    {
+      "id": "FIN-001", "gate": "G0", "requirement_ids": ["R-CUSTOM"], "suite": "finite", "status": "implemented",
+      "title": "In-memory NaN position is rejected", "number": "nan", "path": ["stations", 0, "position_m", 0]
+    },
+    {
+      "id": "FIN-002", "gate": "G0", "requirement_ids": ["R-CUSTOM"], "suite": "finite", "status": "implemented",
+      "title": "In-memory positive infinity bound is rejected", "number": "inf", "path": ["workspace", "upper_m", 0]
+    },
+    {
+      "id": "FIN-003", "gate": "G0", "requirement_ids": ["R-CUSTOM"], "suite": "finite", "status": "implemented",
+      "title": "In-memory negative infinity speed is rejected", "number": "-inf", "path": ["limits", "max_cartesian_speed_m_s"]
+    },
+    {
+      "id": "CLI-001", "gate": "G0", "requirement_ids": ["R-CUSTOM", "R-TRUTH"], "suite": "cli", "status": "implemented",
+      "title": "Valid CLI report explicitly says the runtime is not verified",
+      "input_kind": "fixture", "json_output": true, "expected_exit": 0, "expected_valid": true, "expected_codes": []
+    },
+    {
+      "id": "CLI-002", "gate": "G0", "requirement_ids": ["R-CUSTOM"], "suite": "cli", "status": "implemented",
+      "title": "Invalid geometry returns a structured error and nonzero exit",
+      "input_kind": "fixture", "changes": [{"op": "set", "path": ["stations", 0, "position_m", 0], "value": 5}],
+      "json_output": true, "expected_exit": 2, "expected_valid": false, "expected_codes": ["station_bounds"]
+    },
+    {
+      "id": "CLI-003", "gate": "G0", "requirement_ids": ["R-CUSTOM"], "suite": "cli", "status": "implemented",
+      "title": "Missing input file is an explicit input error",
+      "input_kind": "missing", "json_output": true, "expected_exit": 2, "expected_valid": false, "expected_codes": ["input"]
+    },
+    {
+      "id": "CLI-004", "gate": "G0", "requirement_ids": ["R-CUSTOM"], "suite": "cli", "status": "implemented",
+      "title": "Malformed JSON fails instead of falling back to the demo fixture",
+      "input_kind": "text", "raw_text": "{broken", "json_output": true, "expected_exit": 2, "expected_valid": false, "expected_codes": ["input"]
+    },
+    {
+      "id": "CLI-005", "gate": "G0", "requirement_ids": ["R-CUSTOM"], "suite": "cli", "status": "implemented",
+      "title": "Duplicate JSON keys fail instead of silently keeping the last value",
+      "input_kind": "text", "raw_text": "{\"environment_id\":\"first\",\"environment_id\":\"second\"}",
+      "json_output": true, "expected_exit": 2, "expected_valid": false, "expected_codes": ["input"]
+    },
+    {
+      "id": "CLI-006", "gate": "G0", "requirement_ids": ["R-CUSTOM"], "suite": "cli", "status": "implemented",
+      "title": "Nonstandard NaN JSON token is rejected",
+      "input_kind": "text", "raw_text": "{\"value\":NaN}", "json_output": true, "expected_exit": 2, "expected_valid": false, "expected_codes": ["input"]
+    },
+    {
+      "id": "CLI-007", "gate": "G0", "requirement_ids": ["R-CUSTOM"], "suite": "cli", "status": "implemented",
+      "title": "Overflowing JSON numeric literal is rejected as non-finite",
+      "input_kind": "text", "raw_text": "{\"value\":1e999}", "json_output": true, "expected_exit": 2, "expected_valid": false, "expected_codes": ["non_finite"]
+    },
+    {
+      "id": "CLI-008", "gate": "G0", "requirement_ids": ["R-CUSTOM"], "suite": "cli", "status": "implemented",
+      "title": "Invalid UTF-8 file produces an input error",
+      "input_kind": "invalid_utf8", "json_output": true, "expected_exit": 2, "expected_valid": false, "expected_codes": ["input"]
+    },
+    {
+      "id": "CLI-009", "gate": "G0", "requirement_ids": ["R-CUSTOM"], "suite": "cli", "status": "implemented",
+      "title": "A JSON array is not accepted as an environment object",
+      "input_kind": "text", "raw_text": "[]", "json_output": true, "expected_exit": 2, "expected_valid": false, "expected_codes": ["schema"]
+    },
+    {
+      "id": "CLI-010", "gate": "G0", "requirement_ids": ["R-CUSTOM", "R-TRUTH"], "suite": "cli", "status": "implemented",
+      "title": "Human-readable success message does not claim runtime readiness",
+      "input_kind": "fixture", "json_output": false, "expected_exit": 0, "expected_valid": true, "expected_codes": []
+    },
+    {
+      "id": "CLI-011", "gate": "G0", "requirement_ids": ["R-CUSTOM"], "suite": "cli", "status": "implemented",
+      "title": "Human-readable invalid input goes to stderr and exits nonzero",
+      "input_kind": "text", "raw_text": "[]", "json_output": false, "expected_exit": 2, "expected_valid": false, "expected_codes": ["schema"]
+    },
+    {
+      "id": "CLI-012", "gate": "G0", "requirement_ids": ["R-CUSTOM"], "suite": "cli", "status": "implemented",
+      "title": "A directory passed as input is not treated as a successful empty configuration",
+      "input_kind": "directory", "json_output": true, "expected_exit": 2, "expected_valid": false, "expected_codes": ["input"]
+    },
+    {
+      "id": "DEV-001", "gate": "G7", "requirement_ids": ["R-WSL"], "suite": "development", "status": "planned",
+      "title": "WSL development workspace and Git metadata agree",
+      "runner": "WSL preflight script",
+      "preconditions": "Approved WSL-backed workspace; no automatic relocation of app-managed worktrees.",
+      "procedure": "Check OS, interpreter paths, repository root, branch and lockfile installation inside WSL.",
+      "assertions": ["No Windows Python/Node runtime is used.", "The chosen Git workflow resolves the same dedicated worktree.", "Missing tools or incompatible metadata are explicit failures."]
+    },
+    {
+      "id": "CMD-001", "gate": "G1", "requirement_ids": ["R-GUARD"], "suite": "commands", "status": "planned",
+      "title": "Missing, expired, and wrong-environment approval cannot authorize motion",
+      "runner": "pytest controller and API tests",
+      "preconditions": "Implemented command validator and approval store.",
+      "procedure": "Submit the same motion with absent, expired, foreign and valid approval tokens.",
+      "assertions": ["All invalid approvals cause zero bridge invocations.", "Valid approval authorizes only its exact scoped operation."]
+    },
+    {
+      "id": "CMD-002", "gate": "G1", "requirement_ids": ["R-LOOP", "R-GUARD"], "suite": "commands", "status": "planned",
+      "title": "Duplicate requests produce exactly one physical command",
+      "runner": "pytest concurrency tests",
+      "preconditions": "Durable job store and idempotent command dispatch.",
+      "procedure": "Send concurrent retries with one request ID, then restart the API and retry.",
+      "assertions": ["One command is dispatched.", "All callers receive the same job ID.", "A reused ID with a different payload is rejected."]
+    },
+    {
+      "id": "CMD-003", "gate": "G1", "requirement_ids": ["R-GUARD", "R-TRUTH"], "suite": "commands", "status": "planned",
+      "title": "Stale or foreign-version observations cannot drive a new action",
+      "runner": "pytest clock-controlled tests",
+      "preconditions": "Versioned observation contract and controlled clock.",
+      "procedure": "Submit observations older than 2000 ms and observations from a previous environment revision.",
+      "assertions": ["Reobserve or fail explicitly.", "No motion uses the stale frame.", "Clock boundary cases are covered."]
+    },
+    {
+      "id": "CMD-004", "gate": "G1", "requirement_ids": ["R-LOOP", "R-GUARD"], "suite": "commands", "status": "planned",
+      "title": "Timeout, cancellation and late completion do not resurrect a terminal job",
+      "runner": "pytest state-machine tests",
+      "preconditions": "Persisted job state machine.",
+      "procedure": "Race timeout/cancel against ACK and completion events; replay events after reconnect.",
+      "assertions": ["ACK is not success.", "Terminal state is monotonic.", "No additional motion is dispatched."]
+    },
+    {
+      "id": "CMD-005", "gate": "G1", "requirement_ids": ["R-GUARD"], "suite": "commands", "status": "planned",
+      "title": "Only registered skills within controller limits may execute",
+      "runner": "pytest parameterized controller tests",
+      "preconditions": "Trusted robot profile independent of customer JSON.",
+      "procedure": "Submit unknown skills, out-of-workspace poses, excessive limits and code-like arguments.",
+      "assertions": ["All invalid requests are rejected before dispatch.", "Customer limits cannot expand the trusted controller envelope.", "No generated code is evaluated."]
+    },
+    {
+      "id": "UI-001", "gate": "G2", "requirement_ids": ["R-UI", "R-TRUTH"], "suite": "browser", "status": "planned",
+      "title": "Live, replay, synthetic data and connection status remain visible",
+      "runner": "Playwright",
+      "preconditions": "Web console and fixture API.",
+      "procedure": "Open live and replay runs, navigate tabs, disconnect the stream and reload.",
+      "assertions": ["Badges match the backend mode on every run view.", "Disconnection is visible.", "No implicit replay transition."]
+    },
+    {
+      "id": "UI-002", "gate": "G2", "requirement_ids": ["R-UI", "R-GUARD"], "suite": "browser", "status": "planned",
+      "title": "Keyboard-accessible instruction, approval and cancellation flow",
+      "runner": "Playwright",
+      "preconditions": "Accessible controls and implemented API.",
+      "procedure": "Use keyboard-only Korean input, inspect the approval summary, approve and cancel.",
+      "assertions": ["Controls have labels and visible focus.", "No dispatch before approval.", "Cancellation result is shown, not a fabricated success."]
+    },
+    {
+      "id": "UI-003", "gate": "G2", "requirement_ids": ["R-UI", "R-CUSTOM"], "suite": "browser", "status": "planned",
+      "title": "Environment editor validates and versions changes without overwriting an active run",
+      "runner": "Playwright and API tests",
+      "preconditions": "Environment Studio and versioned environment store.",
+      "procedure": "Import invalid JSON, correct it, apply while running and again while stopped.",
+      "assertions": ["Invalid JSON is rejected with field errors.", "Active run configuration is unchanged.", "Successful apply creates a new revision."]
+    },
+    {
+      "id": "UI-004", "gate": "G2", "requirement_ids": ["R-UI", "R-TRUTH"], "suite": "browser", "status": "planned",
+      "title": "API failure and session reconnect never display success or duplicate a task",
+      "runner": "Playwright network fault tests",
+      "preconditions": "Web console with durable run IDs.",
+      "procedure": "Inject HTTP errors, lost event stream and authentication expiry during a run.",
+      "assertions": ["Errors are actionable.", "Reconnect reloads the same run.", "No unrequested retry of physical actions."]
+    },
+    {
+      "id": "CUSTOM-001", "gate": "G1", "requirement_ids": ["R-CUSTOM", "R-GUARD"], "suite": "extensions", "status": "planned",
+      "title": "Reviewed customer plugin works without editing core code; incompatible plugins fail",
+      "runner": "pytest plugin contract tests",
+      "preconditions": "SceneBuilder, ObservationAdapter and SkillProvider interfaces.",
+      "procedure": "Build a second customer package; register it and then try incompatible API versions and unknown template IDs.",
+      "assertions": ["Core code is unchanged.", "Known compatible template loads.", "Unknown or incompatible registrations fail explicitly.", "JSON is never used as an arbitrary import path."]
+    },
+    {
+      "id": "SIM-001", "gate": "G3", "requirement_ids": ["R-SIM"], "suite": "gpu", "status": "planned",
+      "title": "Pinned Isaac Sim actually boots and produces fresh rendered frames",
+      "runner": "pytest on approved Azure GPU runner",
+      "preconditions": "Approved GPU/driver/container combination and asset licenses.",
+      "procedure": "Start from a clean instance, load the reference scene and capture readiness plus frames.",
+      "assertions": ["Frame dimensions and timestamps are valid.", "Physics ticks advance.", "GPU, driver, image digest and scene version are recorded.", "Missing GPU fails this required job."]
+    },
+    {
+      "id": "SIM-002", "gate": "G3", "requirement_ids": ["R-SIM", "R-LOOP"], "suite": "gpu", "status": "planned",
+      "title": "Reference skills change actual robot and object state",
+      "runner": "pytest simulator integration",
+      "preconditions": "Live scene and baseline controller.",
+      "procedure": "Reset a fixed seed, run pick/inspect/place, read poses before and after.",
+      "assertions": ["Target object reaches the configured tray volume.", "Completion is backed by simulator state, not text.", "Reset reproduces the initial state."]
+    },
+    {
+      "id": "SIM-003", "gate": "G3", "requirement_ids": ["R-SIM", "R-GUARD", "R-TRUTH"], "suite": "gpu", "status": "planned",
+      "title": "Bridge loss and emergency stop fail safely within the simulation",
+      "runner": "pytest simulator fault injection",
+      "preconditions": "Live bridge with independent stop path.",
+      "procedure": "Disconnect the bridge or issue stop during motion and recover.",
+      "assertions": ["Stop does not wait for LLM response.", "No hidden replay success.", "Reconnect cannot restart a cancelled command."]
+    },
+    {
+      "id": "AZ-001", "gate": "G4", "requirement_ids": ["R-AZURE", "R-GUARD"], "suite": "azure", "status": "planned",
+      "title": "Entra identity and environment ownership are enforced",
+      "runner": "pytest in isolated Azure test environment",
+      "preconditions": "Approved test identities and deployments.",
+      "procedure": "Call APIs with absent, expired, wrong-audience and other-customer credentials.",
+      "assertions": ["401/403 with no simulator command for unauthorized calls.", "Browser bundle contains no service credentials.", "Authorized user accesses only their environment."]
+    },
+    {
+      "id": "AZ-002", "gate": "G4", "requirement_ids": ["R-AZURE", "R-LOOP"], "suite": "azure", "status": "planned",
+      "title": "Actual Foundry execution invokes tools and exposes a correlatable run",
+      "runner": "pytest Foundry integration",
+      "preconditions": "Verified model and agent API deployment.",
+      "procedure": "Send a real observation and task to the deployed agent; capture invocation and tool results.",
+      "assertions": ["Actual Azure request/run evidence is present.", "No fixture or mock provider is enabled.", "Throttling and model errors remain visible."]
+    },
+    {
+      "id": "AZ-003", "gate": "G4", "requirement_ids": ["R-AZURE", "R-TRUTH", "R-OPS"], "suite": "azure", "status": "planned",
+      "title": "Images, job state and traces preserve one provenance chain",
+      "runner": "pytest storage and trace integration",
+      "preconditions": "Managed identity access to Blob, Cosmos DB and observability.",
+      "procedure": "Execute one run, reload it after API restart and retrieve its stored observation.",
+      "assertions": ["Image checksum matches the model input evidence.", "Environment/model versions and run ID match.", "Service authentication uses scoped identity.", "Secrets are excluded from logs."]
+    },
+    {
+      "id": "E2E-001", "gate": "G5", "requirement_ids": ["R-UI", "R-AZURE", "R-SIM", "R-LOOP", "R-MFG"], "suite": "live_e2e", "status": "planned",
+      "title": "Browser instruction drives real Foundry and physical sorting",
+      "runner": "Playwright plus simulator assertions",
+      "preconditions": "G3 and G4 verified on the same release candidate.",
+      "procedure": "Run the Korean inspect-and-quarantine instruction over 20 fixed normal/defect episodes.",
+      "assertions": ["At least 18 of 20 episodes satisfy the physical success predicate.", "Each run has a real model call and state change.", "30-second deadline failures are reported rather than hidden."]
+    },
+    {
+      "id": "E2E-002", "gate": "G5", "requirement_ids": ["R-CUSTOM", "R-UI", "R-SIM"], "suite": "live_e2e", "status": "planned",
+      "title": "Second customer environment completes the same live workflow without core edits",
+      "runner": "Playwright plus simulator assertions",
+      "preconditions": "Reviewed customer extension and its custom layout.",
+      "procedure": "Import the second environment, apply its version and run inspection/sorting.",
+      "assertions": ["Custom asset and station positions appear in the actual simulator.", "Correct customer trays receive objects.", "Reference environment runs and records are unaffected."]
+    },
+    {
+      "id": "ML-001", "gate": "G6", "requirement_ids": ["R-LEARN", "R-TRUTH"], "suite": "learning", "status": "planned",
+      "title": "Training and evaluation data are valid and disjoint",
+      "runner": "pytest dataset validation",
+      "preconditions": "Recorded simulator demonstrations and LeRobot conversion.",
+      "procedure": "Validate dimensions, time order, episode boundaries and train/eval manifests; inject duplicates and empty data.",
+      "assertions": ["Invalid or empty datasets fail.", "No overlapping episode IDs/seeds in configured splits.", "Checksums and generation provenance are preserved."]
+    },
+    {
+      "id": "ML-002", "gate": "G6", "requirement_ids": ["R-LEARN", "R-AZURE"], "suite": "learning", "status": "planned",
+      "title": "Azure ML policy training yields a versioned checkpoint and held-out simulator evaluation",
+      "runner": "Azure ML job plus pytest evaluator",
+      "preconditions": "Approved training compute and validated data.",
+      "procedure": "Train a small policy, register its checkpoint and evaluate against the baseline on held-out episodes.",
+      "assertions": ["A real job produces the checkpoint.", "Training and evaluation IDs are linked.", "Raw episode results and baseline comparison are available.", "No claim that all training completes during a 20-minute demo."]
+    },
+    {
+      "id": "EVAL-001", "gate": "G6", "requirement_ids": ["R-MFG", "R-TRUTH"], "suite": "evaluation", "status": "planned",
+      "title": "Visual inspection quality is measured without leaking simulator labels to the model",
+      "runner": "pytest evaluation harness",
+      "preconditions": "At least 40 held-out normal/defect examples.",
+      "procedure": "Inspect captured images, compare predictions with evaluator-only truth and export a confusion matrix.",
+      "assertions": ["Recall at least 90% and false reject rate at most 10% on the frozen reference set.", "Model input excludes ground-truth labels.", "Raw failures and uncertainty are retained."]
+    },
+    {
+      "id": "MFG-001", "gate": "G6", "requirement_ids": ["R-MFG", "R-TRUTH"], "suite": "evaluation", "status": "planned",
+      "title": "Fault injection, telemetry and inspection use the same asset and environment revision",
+      "runner": "pytest scenario integration",
+      "preconditions": "Implemented bounded fault injection and telemetry adapter.",
+      "procedure": "Inject a declared defect or equipment anomaly and reset the scenario.",
+      "assertions": ["Events carry the same asset/version IDs.", "Reset removes the fault.", "Threshold detection is not labeled as a validated predictive model."]
+    },
+    {
+      "id": "OPS-001", "gate": "G7", "requirement_ids": ["R-OPS", "R-AZURE"], "suite": "infrastructure", "status": "planned",
+      "title": "IaC validates and deploys the approved app and GPU profiles reproducibly",
+      "runner": "Bicep validation plus isolated azd deployment test",
+      "preconditions": "Selected subscription, region, quota, identity and budget.",
+      "procedure": "Compile/validate IaC, inspect proposed resources, deploy and run readiness checks.",
+      "assertions": ["No arbitrary default subscription selection.", "Deployment parameters and image/model versions are recorded.", "Readiness tests verify actual endpoints."]
+    },
+    {
+      "id": "OPS-002", "gate": "G7", "requirement_ids": ["R-OPS", "R-GUARD"], "suite": "infrastructure", "status": "planned",
+      "title": "Cleanup and timeout affect only explicitly recorded test resources",
+      "runner": "Isolated cleanup integration test",
+      "preconditions": "Disposable resource group and a separate sentinel resource.",
+      "procedure": "Trigger normal cleanup and timeout cleanup; list the recorded resource IDs afterwards.",
+      "assertions": ["Owned test resources are removed or explicitly reported as retained.", "Sentinel and unrelated resources are untouched.", "Residual GPU/disk charges are not called zero cost."]
+    },
+    {
+      "id": "OPS-003", "gate": "G7", "requirement_ids": ["R-TEST", "R-TRUTH"], "suite": "release", "status": "planned",
+      "title": "Release gate rejects missing, skipped, stale or zero-test live evidence",
+      "runner": "pytest release-aggregator tests",
+      "preconditions": "Implemented strict release evidence aggregator.",
+      "procedure": "Feed reports with missing credentials, no GPU, skipped cases, zero collection, missing required IDs and wrong commit IDs.",
+      "assertions": ["Every incomplete required gate fails release.", "Planned cases cannot count as passes.", "Only complete current-candidate evidence can pass."]
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "schema_version": "1.0",
+  "environment_id": "reference-cell",
+  "display_name": "Reference inspection cell",
+  "length_unit": "m",
+  "scene": {"template_id": "inspection-cell-v1", "robot_profile": "reference-arm", "seed": 42},
+  "workspace": {"lower_m": [-1, -1, 0], "upper_m": [1, 1, 1.5]},
+  "stations": [
+    {"id": "supply", "role": "source", "position_m": [-0.5, 0, 0.2]},
+    {"id": "inspection", "role": "inspection", "position_m": [0, 0.4, 0.2]},
+    {"id": "accepted", "role": "accepted", "position_m": [0.5, 0.4, 0.2]},
+    {"id": "rejected", "role": "rejected", "position_m": [0.5, -0.4, 0.2]}
+  ],
+  "workflow": {
+    "source_station": "supply",
+    "inspect_station": "inspection",
+    "accept_station": "accepted",
+    "reject_station": "rejected"
+  },
+  "execution": {"mode": "live", "max_step_seconds": 30, "max_observation_age_ms": 2000},
+  "limits": {"max_cartesian_speed_m_s": 0.2, "max_payload_kg": 1}
+}

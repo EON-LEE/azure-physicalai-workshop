@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:physicalai:customer-environment:1.0",
+  "title": "Single-cell inspection and sorting environment",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "environment_id", "display_name", "length_unit",
+    "scene", "workspace", "stations", "workflow", "execution", "limits"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "environment_id": {"$ref": "#/$defs/identifier"},
+    "display_name": {"type": "string", "minLength": 1, "maxLength": 120, "pattern": "\\S"},
+    "length_unit": {"const": "m"},
+    "scene": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["template_id", "robot_profile", "seed"],
+      "properties": {
+        "template_id": {"$ref": "#/$defs/identifier"},
+        "robot_profile": {"$ref": "#/$defs/identifier"},
+        "seed": {"type": "integer", "minimum": 0, "maximum": 2147483647}
+      }
+    },
+    "workspace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["lower_m", "upper_m"],
+      "properties": {
+        "lower_m": {"$ref": "#/$defs/point"},
+        "upper_m": {"$ref": "#/$defs/point"}
+      }
+    },
+    "stations": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 256,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "role", "position_m"],
+        "properties": {
+          "id": {"$ref": "#/$defs/identifier"},
+          "role": {"enum": ["source", "inspection", "accepted", "rejected"]},
+          "position_m": {"$ref": "#/$defs/point"}
+        }
+      }
+    },
+    "workflow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_station", "inspect_station", "accept_station", "reject_station"],
+      "properties": {
+        "source_station": {"$ref": "#/$defs/identifier"},
+        "inspect_station": {"$ref": "#/$defs/identifier"},
+        "accept_station": {"$ref": "#/$defs/identifier"},
+        "reject_station": {"$ref": "#/$defs/identifier"}
+      }
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "max_step_seconds", "max_observation_age_ms"],
+      "properties": {
+        "mode": {"enum": ["live", "replay"]},
+        "max_step_seconds": {"type": "integer", "minimum": 1, "maximum": 300},
+        "max_observation_age_ms": {"type": "integer", "minimum": 1, "maximum": 10000}
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_cartesian_speed_m_s", "max_payload_kg"],
+      "properties": {
+        "max_cartesian_speed_m_s": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Requested limit, not authority to override a robot controller's limits."
+        },
+        "max_payload_kg": {"type": "number", "exclusiveMinimum": 0}
+      }
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9-]*(?![\\s\\S])"
+    },
+    "point": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {"type": "number"}
+    }
+  }
+}
