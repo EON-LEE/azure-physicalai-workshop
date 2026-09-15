@@ -1,0 +1,77 @@
+name: Factory web console
+
+on:
+  push:
+    paths:
+      - "apps/web/**"
+      - "contracts/customer-environment.schema.json"
+      - "examples/inspection-cell.json"
+      - ".github/workflows/web.yml"
+  pull_request:
+    paths:
+      - "apps/web/**"
+      - "contracts/customer-environment.schema.json"
+      - "examples/inspection-cell.json"
+      - ".github/workflows/web.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  cpu-web:
+    name: CPU frontend and test-only browser harness
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Restore locked dependencies
+        run: npm ci --no-fund --no-audit
+
+      - name: TypeScript check
+        run: npm run typecheck
+
+      - name: Unit and interaction tests
+        run: npm test
+
+      - name: Production build and fixture exclusion check
+        run: npm run build
+
+      - name: Install CPU browser
+        run: npx playwright install --with-deps chromium --only-shell
+
+      - name: Browser tests with labeled fixtures and strict CSP
+        run: npm run test:e2e
+
+      - name: Retain production bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: factory-web-dist
+          path: apps/web/dist
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Retain test-only browser evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: web-test-fixture-evidence-not-azure-verification
+          path: |
+            apps/web/playwright-report
+            apps/web/test-results
+          if-no-files-found: warn
+          retention-days: 7

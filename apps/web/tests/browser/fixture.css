@@ -1,0 +1,3 @@
+.fixture-warning { position: sticky; top: 0; z-index: 100; color: #663c09; background: #ffedb7; border-bottom: 2px solid #d49a1e; text-align: center; font-weight: 650; font-size: 12px; line-height: 1.6; padding: 10px; }
+.sidebar { top: 40px; }
+@media (max-width: 780px) { .sidebar { top: 0; } }
