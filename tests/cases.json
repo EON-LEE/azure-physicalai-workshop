@@ -12,6 +12,19 @@
     "Planned cases must be implemented and executed before their required release gate can pass.",
     "Missing credentials, GPU, test collection, or reports must never count as a live pass."
   ],
+  "local_component_coverage": {
+    "not_a_live_gate_pass": true,
+    "commands_and_state": "tests/test_runtime_service.py",
+    "http_and_entra_jwt": "tests/test_api.py",
+    "simulator_protocol_guards": "tests/test_simulation_core.py",
+    "foundry_sdk_contract": "tests/test_foundry_adapter.py",
+    "azure_bootstrap_and_asset_guards": "tests/test_bootstrap_and_assets.py",
+    "deployment_write_guards": "tests/test_deployment_guards.py",
+    "web_unit_tests": "apps/web/tests",
+    "strict_csp_browser_harness": "apps/web/tests/browser/console.spec.ts",
+    "api_web_wire_contract": "scripts/check-api-contract.mjs",
+    "offline_bicep_checks": "scripts/validate_infra.py"
+  },
   "cases": [
     {
       "id": "ENV-001", "gate": "G0", "requirement_ids": ["R-CUSTOM"], "suite": "environment", "status": "implemented",

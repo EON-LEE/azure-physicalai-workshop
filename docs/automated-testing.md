@@ -39,8 +39,20 @@ produce a nonzero job status; no `continue-on-error` is used.
 | G6 | Disjoint training/evaluation data, policy and inspection quality | Azure ML and simulator raw evaluation results |
 | G7 | Reproducible workspace/deployment, budget, isolation and cleanup | WSL preflight, IaC and strict release evidence |
 
-All G1-G7 cases are currently **planned, not implemented or run**. Describing an
-assertion in the catalog does not execute it.
+Backend and web components now have additional automated suites for G1/G2-style
+behavior: real HTTP routes with injected adapters, JWT validation, approval
+expiry/idempotency, cancellation, scene guards, raw JSON preservation, strict CSP,
+and camera/request cleanup. The separate test harness labels fixtures explicitly.
+`scripts/check.sh` also checks actual API response shapes against the production
+TypeScript decoders.
+
+`scripts/validate_infra.py` compiles all three Bicep templates and checks baseline
+security invariants without Azure login. This is static validation, not G7 live
+deployment/cleanup proof.
+
+The catalog's planned acceptance cases remain the full release obligations.
+Local unit coverage of a clause does not automatically complete that case or
+its Azure/GPU gate. Actual G3-G7 cloud/GPU/model acceptance is still unperformed.
 
 ## Release must fail closed
 

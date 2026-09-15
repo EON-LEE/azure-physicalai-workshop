@@ -45,7 +45,7 @@ jobs:
         run: npm run typecheck
 
       - name: Unit and interaction tests
-        run: npm test
+        run: npm test -- --reporter=default --reporter=junit --outputFile=test-results/vitest.xml
 
       - name: Production build and fixture exclusion check
         run: npm run build

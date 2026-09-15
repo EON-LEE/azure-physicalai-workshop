@@ -1,0 +1,45 @@
+name: API web contract and CPU image
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff # v6
+        with:
+          version: "0.12.1"
+          python-version: "3.13"
+          enable-cache: true
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - run: uv sync --locked --group dev
+      - run: npm ci --prefix apps/web --no-fund --no-audit
+      - name: Export actual API shapes with explicitly test-only adapters
+        run: uv run --locked python tests/export_api_contract.py
+      - name: Verify production web decoder compatibility
+        run: node --experimental-strip-types scripts/check-api-contract.mjs
+      - name: Build the production CPU image without Azure credentials
+        run: docker build --tag physicalai-api:ci .
+      - name: Verify runtime imports without starting cloud services
+        run: >-
+          docker run --rm --entrypoint /app/.venv/bin/python physicalai-api:ci
+          -c "import apps.api.main; import agents.inspection; import scripts.bootstrap"
+      - name: Retain test-only contract evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: api-web-contract-test-only
+          path: test-results/api-contract.json
+          if-no-files-found: error

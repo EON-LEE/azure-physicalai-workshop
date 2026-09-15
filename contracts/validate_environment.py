@@ -62,8 +62,12 @@ def _reject_constant(value: str) -> None:
 
 
 def load_document(path: Path) -> object:
+    return parse_document(path.read_text(encoding="utf-8"))
+
+
+def parse_document(text: str) -> object:
     return json.loads(
-        path.read_text(encoding="utf-8"),
+        text,
         object_pairs_hook=_unique_object,
         parse_constant=_reject_constant,
     )

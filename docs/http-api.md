@@ -194,6 +194,8 @@ against run ownership; the UI must fetch it with a token.
 
 It reobserves the scene, checks epoch/revision/object state, reserves one command,
 and returns the updated run. Duplicate approval must not dispatch twice.
+The current API also returns `plan.expires_at`. An expired approval requires a
+new inspection; it never silently retries motion. This is an additive field.
 The UI polls `GET /api/runs/{id}` until terminal; dispatch ACK is not success.
 If the scene changed, require a new plan rather than approving a stale decision.
 

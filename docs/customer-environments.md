@@ -1,9 +1,9 @@
 # Customer environment contract
 
 The current contract describes **one inspection-and-sorting cell**, not an
-arbitrary factory or a functioning simulation. JSON authoring and offline
-validation work today. Scene loading, browser editing, and reviewed Python
-extensions are implementation milestones.
+arbitrary factory. JSON validation, the browser editor, and reviewed Python
+scene-builder interfaces are implemented. Actual Azure/GPU execution is not
+verified yet.
 
 ## Author a configuration
 
@@ -55,14 +55,23 @@ and a human-readable `message`. Runtime verification is always false here.
 Without `--json`, errors go to stderr and success text warns that the runtime
 was not verified.
 
-## Planned code customization
+## Code customization
 
-Customers will add versioned `SceneBuilder`, `ObservationAdapter`,
-`InspectionRule`, and `SkillProvider` implementations through reviewed Python
-packages and built container images. An approved registry maps configuration IDs
-to implementations. Configuration JSON is not a Python module path.
+`simulation/extensions.py` provides `SceneBuilder` and `SceneSpec`.
+The reference registry contains `inspection-cell-v1` and
+`inspection-cell-custom-v1`. Customer packages can register a reviewed builder
+through the `physicalai.scenes` Python entry-point group in the simulator image.
+The registry rejects duplicates and unsupported API versions. Configuration JSON
+is not a Python module path and cannot install or execute a package.
 
-The environment UI will support validation, comparison, and versioned application
-of JSON while a scene is stopped. It will not run arbitrary uploaded Python.
+The current trusted controller supports only `reference-arm` (Franka) and a
+bounded inspection cell. Supporting a different robot requires a reviewed
+controller/asset integration and new real-GPU tests, not just changing an ID.
+Separate observation/inspection/skill extension interfaces and policy training
+remain follow-up work.
+
+The environment UI supports validation and version-aware saves. Scene activation
+uses the authenticated API and rejects busy/foreign-owned simulator state.
+It does not run arbitrary uploaded Python.
 Custom plugins must pass contract tests and a real second-environment
 Isaac Sim/Foundry end-to-end test before being included in a live demo release.
