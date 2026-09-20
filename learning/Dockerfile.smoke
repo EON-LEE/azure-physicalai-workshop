@@ -1,0 +1,10 @@
+ARG LEARNING_CPU_IMAGE
+FROM ${LEARNING_CPU_IMAGE}
+
+LABEL org.physicalai.purpose="test-only-cpu-learning-smoke-not-a-physical-release"
+WORKDIR /opt/dependencies
+RUN uv sync --frozen --no-dev --extra cpu --extra azure --python /usr/local/bin/python
+WORKDIR /work
+COPY learning/ learning/
+ENV OMP_NUM_THREADS=2 MKL_NUM_THREADS=2
+CMD ["python", "-m", "learning.checks.cpu_smoke", "--output", "/tmp/physicalai-cpu-smoke"]

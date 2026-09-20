@@ -14,6 +14,15 @@ held-out Azure GPU Isaac episodes pass the separate learning gate. There is no
 automatic baseline fallback, Hugging Face publication, model promotion, Azure
 resource provisioning, or license acceptance.
 
+The pinned CPU runtime has also been built and executed in **Azure Container
+Registry Tasks**. `learning/Dockerfile.smoke` layers the explicitly test-only
+CPU check onto a digest-pinned `LEARNING_CPU_IMAGE`, restores the declared Azure
+SDK extra, and runs conversion, one genuine ACT optimizer step, checkpoint reload
+and inference. This cloud check submits no Azure ML job, uses no GPU and cannot
+pass the held-out physical/learning-quality gate. Its stdout report labels the
+fixtures and records those limitations; retain the ACR run ID and image digest
+alongside it.
+
 ## Capture contract and simulator integration
 
 `physicalai.demonstrations/v1` is a closed, versioned JSON contract, implemented
