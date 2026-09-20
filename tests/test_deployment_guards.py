@@ -6,7 +6,7 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
-from scripts.deploy import AzureCLI, Deployment, main, preflight
+from scripts.deploy import AzureCLI, Deployment, job_execution_status, main, preflight
 
 
 def configuration(tmp_path):
@@ -37,6 +37,7 @@ def configuration(tmp_path):
         "licensed_assets_approved": True,
         "acknowledged_hourly_budget_usd": 10,
         "shutdown_time_utc": "2300",
+        "source_commit": "a" * 40,
     }
 
 
@@ -67,6 +68,14 @@ def test_license_approval_is_required_before_writes(tmp_path, field):
     values[field] = False
     with pytest.raises(ValueError, match="approval"):
         preflight(Deployment.model_validate(values))
+
+
+def test_web_profile_does_not_require_or_imply_nvidia_approval(tmp_path):
+    values = configuration(tmp_path)
+    values.update(runtime_profile="web", accept_nvidia_eula=False, licensed_assets_approved=False)
+    for field in ("gpu_vm_size", "licensed_asset_archive", "ssh_public_key_file"):
+        values.pop(field)
+    assert preflight(Deployment.model_validate(values)) == (None, None)
 
 
 def test_private_key_is_not_accepted_as_a_public_key(tmp_path):
@@ -101,3 +110,19 @@ def test_empty_expected_json_is_an_error(monkeypatch):
     )
     with pytest.raises(RuntimeError, match="no JSON"):
         AzureCLI(uuid4()).call("group", "show")
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        {"properties": {"status": "Failed"}},
+        {"status": "Failed"},
+    ],
+)
+def test_job_status_supports_both_core_and_extension_cli_shapes(record):
+    assert job_execution_status(record) == "Failed"
+
+
+def test_job_status_does_not_turn_missing_metadata_into_success():
+    with pytest.raises(ValueError):
+        job_execution_status({"name": "started-but-not-verified"})

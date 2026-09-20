@@ -350,7 +350,12 @@ class FactoryService:
                     message="Do not resubmit motion. Reconcile the recorded command ID.",
                 )
             )
-        return self._save(actor, reserved, run)
+        try:
+            return self._save(actor, reserved, run)
+        except Problem as exc:
+            if exc.code != "revision_conflict":
+                raise
+            return self._run(actor, run.id).value
 
     @staticmethod
     def _apply_execution(run: RunRecord, execution: Execution) -> None:
@@ -395,6 +400,17 @@ class FactoryService:
             run.events.append(
                 Event(kind=execution.status, message="Simulator terminal result received.")
             )
+            if execution.demonstration is not None:
+                run.events.append(
+                    Event(
+                        kind="demonstration",
+                        message=(
+                            "Owner-scoped demonstration uploaded to Azure."
+                            if execution.demonstration.status == "uploaded"
+                            else "Demonstration was not published; inspect simulator logs."
+                        ),
+                    )
+                )
 
     def get_run(self, actor: Principal, run_id: UUID) -> RunRecord:
         stored = self._run(actor, run_id)

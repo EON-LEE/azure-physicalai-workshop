@@ -10,16 +10,24 @@ application telemetry. No production memory store or fixture provider exists.
 
 WSL is only for authoring, dependency management and automated tests. The staged
 deployment builds both images in ACR; it does not need a local Docker daemon.
-Agent creation and TLS generation execute in an **Azure Container Apps Job**.
+Agent creation, TLS generation and a real connectivity probe execute in an
+explicit Azure bootstrap runner (private Container Instance by default;
+Container Apps Job is an alternative).
 The API and simulator authenticate with managed identities. The web client
 uses real Microsoft Entra MSAL login and delegated API tokens.
 
-## Current verification boundary
+## Current verification boundary (2026-09-20/21)
 
 The code, CPU tests, frontend build/browser harness and Bicep compilation can be
-checked without cloud writes. **No authorized subscription has been selected for
-live deployment in this session.** There is no verified Azure URL, Foundry live
-result, driver/SKU compatibility result, or GPU-success claim yet.
+checked without cloud writes. Actual deployment was subsequently authorized and
+performed: the ACR image build/execution, protected Container Apps web/API,
+Entra delegated authentication, private Cosmos configuration persistence, and
+a real Foundry agent connectivity response are verified.
+
+GPU execution and the physical closed loop remain blocked. The A10 quota
+request returned `ContactSupport`; the RTX PRO alternative returned
+`QuotaNotAvailableForResource`. NVIDIA/asset approval is also pending. No
+unsupported GPU or replay is substituted for those gates.
 
 The provided Isaac integration is pinned to Isaac Sim 5.1.0 and a reference
 Franka inspection/sorting workcell. Runtime API compatibility, robot reach,
@@ -61,6 +69,18 @@ licensed bundle; external USD references are not an approved runtime dependency.
 
 ## Deployment entry point
 
+Choose `runtime_profile: "web"` for the genuine web/agent/data plane without
+a GPU or NVIDIA assent. This mode reports the simulator unavailable, not
+working. `runtime_profile: "physical"` requires the GPU, licensed assets and
+an explicit full `source_commit`. See the two deployment example files.
+
+The default `bootstrap_runner` is `container_instance`, VNet-connected and
+one-shot; `container_app_job` is an explicit alternative. A completed ARM
+deployment is insufficient: require the bootstrap process to exit zero.
+`scripts.provision_identity` can create the two dedicated secretless apps after
+explicit authorization. It does not add directory-wide API permissions and its
+resume mode checks the recorded ownership/tenant rather than reusing arbitrary apps.
+
 From WSL at the repository root:
 
 ```bash
@@ -85,11 +105,13 @@ process; the script does not silently broaden privileges or register providers.
 
 Stages:
 
-1. Bicep creates the dedicated data, identity, Foundry, ACR, network and logging resources.
-2. Upload the approved asset archive with Entra authentication.
-3. Build API/UI and simulator images in ACR; resolve immutable image digests.
-4. Start the cloud bootstrap job to create a versioned Foundry agent and TLS material.
-5. Only after bootstrap succeeds, deploy the private GPU VM and the actual web/API image.
+1. Bicep creates dedicated data, identity, Foundry, ACR, Private Link and networking.
+2. For a physical deployment, upload the approved archive from a deployment host
+   with private Blob connectivity, such as an approved VPN/private build agent.
+   Ordinary off-VNet WSL cannot bypass a private endpoint.
+3. Build allowlisted API/UI sources, and the simulator for a physical profile, in ACR.
+4. Run the selected Azure bootstrap and retain its actual Foundry response ID.
+5. After bootstrap exit zero, deploy the web/API and, for a physical profile, the GPU.
 6. Configure the SPA redirect URI and run real authenticated acceptance tests.
 
 Role propagation or NGC base-image access can delay/fail bootstrap/build. Inspect
@@ -107,11 +129,21 @@ validates Entra token tenant, audience and the allowlisted managed identity.
 TLS is mandatory and the API validates the generated deployment CA; certificate
 verification is never disabled. Private keys remain in Key Vault and VM tmpfs.
 
-The reference baseline uses authenticated **public Azure data-service
-endpoints**, not private endpoints for every PaaS service. Local/shared-key
-authentication is disabled for Blob, Cosmos and Foundry. This is not a claim of
-compliance with a customer's private-link, residency, CSAP or production policy.
-Add and validate the required private endpoints/egress controls for that target.
+Blob, Cosmos and Key Vault have **public network access disabled** and use private
+endpoints/DNS linked to the application, bootstrap and simulator VNet.
+ACR and Foundry remain authenticated public Azure endpoints in this baseline.
+Local/shared-key authentication is disabled for Blob, Cosmos and Foundry.
+This is not a claim that every PaaS endpoint is private or that all customer
+residency/CSAP/production policies have been satisfied.
+
+Actual tenant policy forced the three data services private even when an earlier
+template requested public access. The implementation was corrected to honor that
+policy rather than weaken it. The subscription also required the Azure network
+feature named in its deployment error. A failed initial Container Apps environment
+later reported `Succeeded` while still having no ingress IP and failing to start
+containers. A fresh environment and dedicated recovery subnet fixed this.
+`app_environment_name`, `app_subnet_name` and `web_app_name` support an explicit
+recovery; they do not silently mask a failed deployment.
 
 NAT egress is provisioned for the private GPU VM. Initial OS/driver/toolkit setup
 downloads trusted vendor packages; production images are pulled from ACR and
@@ -124,6 +156,8 @@ GPU, OS disks, NAT, model use, Container Apps, storage and logs can all incur
 charges. The hourly budget field is an **acknowledgment**, not an enforced spend
 cap. The VM has a configurable daily UTC shutdown schedule; this does not remove
 disks, NAT, logs or other resources. No service is described as free.
+The web app scales to zero when idle, but Private Link, NAT, logs, registry and
+stored data can still incur charges.
 
 Use a dedicated VM; do not colocate unrelated containers. A controlled redeploy
 restarts the simulator and rotates bootstrap state/TLS. Stop active demo runs

@@ -5,11 +5,19 @@ FastAPI API, Foundry inspection adapter, Azure Cosmos/Blob persistence, a guarde
 Isaac Sim bridge, customer JSON/Python scene extension interfaces, and staged
 Azure deployment templates.
 
-**Not yet deployed or live-verified:** Azure resources, model inference, GPU
-compatibility, actual robot motion and the complete cloud loop. Subscription,
-cost, model/SKU and licensed-asset approval are still required. CPU/browser tests
-do not prove those gates. LeRobot training and production-grade telemetry
-analytics remain later milestones.
+**Actual Azure deployment verified:** the protected web/API, Entra delegated
+authentication, private Cosmos configuration writes/reads, and a real Foundry
+agent connectivity response from managed-identity bootstrap. Images are built
+and executed in ACR, not just checked as source. Blob, Cosmos and Key Vault use
+Private Link; tenant restrictions are not bypassed.
+
+**Not live-verified:** GPU compatibility, robot motion, real demonstrations,
+Azure ML training and the complete physical loop. Both attempted compatible
+GPU quota requests were declined. NVIDIA/robot-asset approval is also pending.
+The UI reports the simulator unavailable; no replay substitutes for it.
+LeRobot conversion, real ACT training/inference and Azure ML job components are
+now implemented and CPU-smoke-tested, but task quality requires real held-out
+GPU episodes. This is not a completed physical-demo release.
 
 All production workloads run on Azure. WSL is for authoring and automated tests,
 not a required production server. There is no anonymous authentication bypass,
@@ -22,6 +30,7 @@ apps/web     Korean-first console, MSAL, live-frame UI, JSON editor, approvals, 
 apps/api     Authenticated API, durable revisions/runs, approval and result verification
 agents       Versioned Foundry agent definition and typed inspection function
 simulation   Reviewed scene builders, command guards, Isaac adapter and HTTPS bridge
+learning     Scoped demonstrations, LeRobot/ACT conversion, training, inference and AML jobs
 contracts    Customer JSON Schema and offline validation CLI
 examples     Reference, custom compact, and configuration-only customer examples
 infra        Azure foundation, bootstrap job and private GPU/web templates
@@ -98,6 +107,17 @@ there is no default NVIDIA asset-server fallback.
 The [HTTP contract](docs/http-api.md) distinguishes configuration, live data,
 inspection proposals, approval, command ACK, and verified physical completion.
 Never describe an ACK, a replay, or a test-fixture image as successful robot motion.
+
+The [learning guide](docs/policy-learning.md) explains the isolated Python 3.11
+training environment and the actual CPU smoke. Optional customer configuration
+can request demonstration capture; it additionally requires trusted deployment
+enablement, real synchronized 60 Hz cameras/commands and complete provenance.
+Only finalized, validated owner-scoped manifests are published to Azure Blob.
+
+The [live acceptance harness](docs/live-acceptance.md) tests the real deployed
+endpoint. Its read-only smoke does not imply a physical gate pass. The strict
+release aggregator rejects missing/planned/skipped, stale, wrong-commit or
+fixture-only evidence for actual Azure/GPU gates.
 
 ## Automated test gates
 

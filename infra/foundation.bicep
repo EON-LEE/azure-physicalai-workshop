@@ -16,6 +16,12 @@ param modelCapacity int
 param foundryUserRoleDefinitionId string
 @description('The explicitly authorized deployment operator, for uploading licensed assets.')
 param operatorObjectId string
+@description('Attach the existing NAT gateway to the GPU subnet only when a GPU will run.')
+param deployGpuNetwork bool = true
+@description('Use a fresh environment name only for an explicitly diagnosed failed-environment recovery.')
+param appEnvironmentName string = '${prefix}-apps'
+@allowed(['apps', 'apps-recovery'])
+param appSubnetName string = 'apps'
 
 var suffix = uniqueString(resourceGroup().id, prefix)
 var compact = replace(prefix, '-', '')
@@ -60,6 +66,7 @@ resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
     allowBlobPublicAccess: false
     allowSharedKeyAccess: false
     defaultToOAuthAuthentication: true
+    publicNetworkAccess: 'Disabled'
   }
   tags: tags
 }
@@ -72,6 +79,11 @@ resource artifacts 'Microsoft.Storage/storageAccounts/blobServices/containers@20
   name: 'artifacts'
   properties: { publicAccess: 'None' }
 }
+resource demonstrations 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {
+  parent: blobService
+  name: 'demonstrations'
+  properties: { publicAccess: 'None' }
+}
 resource cosmos 'Microsoft.DocumentDB/databaseAccounts@2024-05-15' = {
   name: '${prefix}-${suffix}'
   location: location
@@ -79,7 +91,7 @@ resource cosmos 'Microsoft.DocumentDB/databaseAccounts@2024-05-15' = {
   properties: {
     databaseAccountOfferType: 'Standard'
     disableLocalAuth: true
-    publicNetworkAccess: 'Enabled'
+    publicNetworkAccess: 'Disabled'
     minimalTlsVersion: 'Tls12'
     consistencyPolicy: { defaultConsistencyLevel: 'Session' }
     capabilities: [{ name: 'EnableServerless' }]
@@ -151,7 +163,7 @@ resource vault 'Microsoft.KeyVault/vaults@2023-07-01' = {
     enableSoftDelete: true
     enablePurgeProtection: true
     softDeleteRetentionInDays: 7
-    publicNetworkAccess: 'Enabled'
+    publicNetworkAccess: 'Disabled'
   }
   tags: tags
 }
@@ -179,7 +191,7 @@ resource outboundIp 'Microsoft.Network/publicIPAddresses@2024-05-01' = {
   name: '${prefix}-egress-ip'
   location: location
   sku: { name: 'Standard' }
-  properties: { publicIPAllocationMethod: 'Static' }
+  properties: { publicIPAllocationMethod: 'Static', publicIPAddressVersion: 'IPv4' }
   tags: tags
 }
 resource nat 'Microsoft.Network/natGateways@2024-05-01' = {
@@ -204,7 +216,7 @@ resource simNsg 'Microsoft.Network/networkSecurityGroups@2024-05-01' = {
           direction: 'Inbound'
           access: 'Allow'
           protocol: 'Tcp'
-          sourceAddressPrefix: '10.42.0.0/23'
+          sourceAddressPrefix: '10.42.0.0/22'
           sourcePortRange: '*'
           destinationAddressPrefix: '*'
           destinationPortRange: '8443'
@@ -241,6 +253,18 @@ resource network 'Microsoft.Network/virtualNetworks@2024-05-01' = {
             name: 'container-apps'
             properties: { serviceName: 'Microsoft.App/environments' }
           }]
+          natGateway: { id: nat.id }
+        }
+      }
+      {
+        name: 'apps-recovery'
+        properties: {
+          addressPrefix: '10.42.2.0/23'
+          natGateway: { id: nat.id }
+          delegations: [{
+            name: 'container-apps'
+            properties: { serviceName: 'Microsoft.App/environments' }
+          }]
         }
       }
       {
@@ -248,7 +272,25 @@ resource network 'Microsoft.Network/virtualNetworks@2024-05-01' = {
         properties: {
           addressPrefix: '10.42.4.0/24'
           networkSecurityGroup: { id: simNsg.id }
+          ...(deployGpuNetwork ? { natGateway: { id: nat.id } } : {})
+        }
+      }
+      {
+        name: 'endpoints'
+        properties: {
+          addressPrefix: '10.42.6.0/24'
+          privateEndpointNetworkPolicies: 'Disabled'
+        }
+      }
+      {
+        name: 'bootstrap'
+        properties: {
+          addressPrefix: '10.42.8.0/24'
           natGateway: { id: nat.id }
+          delegations: [{
+            name: 'container-instances'
+            properties: { serviceName: 'Microsoft.ContainerInstance/containerGroups' }
+          }]
         }
       }
     ]
@@ -275,11 +317,11 @@ resource simDns 'Microsoft.Network/privateDnsZones/A@2020-06-01' = {
   properties: { ttl: 60, aRecords: [{ ipv4Address: '10.42.4.4' }] }
 }
 resource environment 'Microsoft.App/managedEnvironments@2025-07-01' = {
-  name: '${prefix}-apps'
+  name: appEnvironmentName
   location: location
   properties: {
     vnetConfiguration: {
-      infrastructureSubnetId: '${network.id}/subnets/apps'
+      infrastructureSubnetId: '${network.id}/subnets/${appSubnetName}'
       internal: false
     }
     workloadProfiles: [{ name: 'Consumption', workloadProfileType: 'Consumption' }]
@@ -293,6 +335,18 @@ resource environment 'Microsoft.App/managedEnvironments@2025-07-01' = {
     peerAuthentication: { mtls: { enabled: true } }
   }
   tags: tags
+}
+module privateData 'private-data.bicep' = {
+  name: '${prefix}-private-data'
+  params: {
+    prefix: prefix
+    location: location
+    virtualNetworkId: network.id
+    endpointSubnetId: '${network.id}/subnets/endpoints'
+    storageAccountId: storage.id
+    cosmosAccountId: cosmos.id
+    vaultId: vault.id
+  }
 }
 var imageConsumers = [apiIdentity.id, simulatorIdentity.id, bootstrapIdentity.id]
 var imagePrincipals = [apiIdentity.properties.principalId, simulatorIdentity.properties.principalId, bootstrapIdentity.properties.principalId]
@@ -323,6 +377,15 @@ resource assetReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
     principalId: simulatorIdentity.properties.principalId
     principalType: 'ServicePrincipal'
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '2a2b9908-6ea1-4ae2-8e65-a410df84e7d1')
+  }
+}
+resource demonstrationWriter 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(demonstrations.id, simulatorIdentity.id, 'DemonstrationWriter')
+  scope: demonstrations
+  properties: {
+    principalId: simulatorIdentity.properties.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')
   }
 }
 resource assetUploader 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
@@ -380,6 +443,7 @@ output modelDeployment string = modelDeploymentName
 output vaultUrl string = vault.properties.vaultUri
 output environmentId string = environment.id
 output simulationSubnetId string = '${network.id}/subnets/simulation'
+output bootstrapSubnetId string = '${network.id}/subnets/bootstrap'
 output apiIdentityId string = apiIdentity.id
 output apiClientId string = apiIdentity.properties.clientId
 output apiPrincipalId string = apiIdentity.properties.principalId

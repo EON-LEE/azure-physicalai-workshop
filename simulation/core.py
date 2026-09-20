@@ -59,7 +59,7 @@ class SimulationCore:
         self.frames: dict[str, Observation] = {}
         self.observations: OrderedDict[UUID, Observation] = OrderedDict()
         self.commands: dict[tuple[str, UUID], Execution] = {}
-        self.fingerprints: dict[tuple[str, UUID], str] = {}
+        self.fingerprints: dict[tuple[str, UUID], str | None] = {}
         self.deadlines: dict[tuple[str, UUID], datetime] = {}
         self.pending: deque[LoadScene | StartMotion | StopMotion] = deque()
         self.active_command: tuple[str, UUID] | None = None
@@ -189,7 +189,8 @@ class SimulationCore:
         key = (owner, command.command_id)
         with self.lock:
             if key in self.commands:
-                if self.fingerprints[key] != fingerprint:
+                previous = self.fingerprints[key]
+                if previous is not None and previous != fingerprint:
                     raise Problem(
                         409, "command_id_reused", "A command ID cannot be reused for changed input."
                     )
@@ -258,6 +259,21 @@ class SimulationCore:
     def cancel(self, owner: str, command_id: UUID) -> Execution:
         key = (owner, command_id)
         with self.lock:
+            if key not in self.commands:
+                if len(self.commands) >= self.max_commands:
+                    raise Problem(409, "command_capacity", "Command retention capacity reached.")
+                # Cancellation can arrive between API reservation and the dispatch HTTP request.
+                self.commands[key] = Execution(
+                    command_id=command_id,
+                    status="cancelled",
+                    completed_at=utcnow(),
+                    error=RunError(
+                        code="cancelled_before_dispatch",
+                        message="Cancellation recorded before any motion was accepted.",
+                    ),
+                )
+                self.fingerprints[key] = None
+                return self.commands[key].model_copy(deep=True)
             result = self.command(owner, command_id)
             if result.status in TERMINAL or result.status == "cancelling":
                 return result
@@ -284,11 +300,22 @@ class SimulationCore:
                 self.active_command is not None and utcnow() >= self.deadlines[self.active_command]
             )
 
+    def should_stop(self, command_id: UUID) -> bool:
+        with self.lock:
+            return (
+                self.active_command is not None
+                and self.active_command[1] == command_id
+                and self.commands[self.active_command].status == "cancelling"
+            )
+
     def finish(
         self,
         status: Literal["succeeded", "failed", "cancelled", "timed_out"],
         final_position: tuple[float, float, float] | None,
         message: str | None = None,
+        *,
+        completed_at: datetime | None = None,
+        demonstration: dict | None = None,
     ) -> None:
         with self.lock:
             key = self.active_command
@@ -305,8 +332,9 @@ class SimulationCore:
                 command_id=key[1],
                 status=status,
                 final_position=final_position,
-                completed_at=utcnow(),
+                completed_at=completed_at or utcnow(),
                 error=error,
+                demonstration=demonstration,
             )
             self.active_command = None
             self.state_revision += 1

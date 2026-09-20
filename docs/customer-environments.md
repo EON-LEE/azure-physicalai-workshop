@@ -67,8 +67,28 @@ is not a Python module path and cannot install or execute a package.
 The current trusted controller supports only `reference-arm` (Franka) and a
 bounded inspection cell. Supporting a different robot requires a reviewed
 controller/asset integration and new real-GPU tests, not just changing an ID.
-Separate observation/inspection/skill extension interfaces and policy training
-remain follow-up work.
+Separate observation/inspection/skill extension interfaces remain follow-up work.
+
+## Optional real demonstration capture
+
+Set `execution.record_demonstration` to `true` and provide
+`execution.demonstration_split` (`train`, `validation`, or `test`) to request a
+recording. Omission leaves normal control unchanged. The deployment must separately
+enable capture, pin the simulator/source/builder/assets and grant its identity
+write access only to the private demonstrations container.
+
+The existing controller keeps its actual 60 Hz cadence. Recording uses fresh,
+synchronized 60 Hz cameras at a bounded 320x320 resolution, measured nine-joint
+state and the actual held command for each interval. Preview polling is not the
+recording clock. If the camera, cadence, provenance or data budget cannot be
+verified, the episode is not published. A physical outcome and capture/upload
+failure are reported separately in execution evidence and run events.
+
+Only validated owner-scoped files are uploaded; `manifest.json` is published last.
+No arbitrary file path, executable code or pretrained model is accepted in this
+JSON. See [policy learning](policy-learning.md) for conversion, training, guarded
+inference and held-out evaluation. Real GPU capture and learned control still
+require their live acceptance gates.
 
 The environment UI supports validation and version-aware saves. Scene activation
 uses the authenticated API and rejects busy/foreign-owned simulator state.

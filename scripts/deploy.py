@@ -10,9 +10,12 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path, PurePosixPath
+from typing import Literal
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from scripts.cloud_build import reviewed_source
 
 ROOT = Path(__file__).resolve().parents[1]
 PROJECT_TAG = "azure-physicalai-workshop"
@@ -34,12 +37,19 @@ class Deployment(BaseModel):
     model_deployment_name: str = Field(pattern=r"^[a-z][a-z0-9-]+$")
     model_sku: str = Field(min_length=1)
     model_capacity: int = Field(ge=1, le=10)
-    gpu_vm_size: str = Field(pattern=r"^Standard_[A-Za-z0-9_]+$")
-    ssh_public_key_file: Path
-    licensed_asset_archive: Path
-    franka_usd_relative_path: str
-    accept_nvidia_eula: bool
-    licensed_assets_approved: bool
+    runtime_profile: Literal["web", "physical"] = "physical"
+    bootstrap_runner: Literal["container_instance", "container_app_job"] = "container_instance"
+    app_environment_name: str | None = None
+    app_subnet_name: Literal["apps", "apps-recovery"] = "apps"
+    web_app_name: str | None = None
+    source_commit: str | None = Field(default=None, pattern=r"^[a-f0-9]{40}$")
+    enable_demonstration_capture: bool = False
+    gpu_vm_size: str | None = Field(default=None, pattern=r"^Standard_[A-Za-z0-9_]+$")
+    ssh_public_key_file: Path | None = None
+    licensed_asset_archive: Path | None = None
+    franka_usd_relative_path: str = "Franka/franka.usd"
+    accept_nvidia_eula: bool = False
+    licensed_assets_approved: bool = False
     acknowledged_hourly_budget_usd: float = Field(gt=0)
     shutdown_time_utc: str = Field(pattern=r"^(?:[01][0-9]|2[0-3])[0-5][0-9]$")
 
@@ -82,6 +92,7 @@ class AzureCLI:
             text=True,
             capture_output=True,
             check=False,
+            timeout=1800,
         )
         if result.returncode:
             raise RuntimeError(f"Azure CLI {' '.join(arguments[:3])} failed:\n{result.stderr}")
@@ -121,16 +132,34 @@ class AzureCLI:
         return {key: value["value"] for key, value in result["properties"]["outputs"].items()}
 
 
-def preflight(config: Deployment) -> tuple[str, str]:
+def job_execution_status(record: dict) -> str:
+    properties = record.get("properties", record)
+    status = properties.get("status")
+    if not isinstance(status, str) or not status:
+        raise ValueError("Azure returned no job execution status; readiness is unknown.")
+    return status
+
+
+def preflight(config: Deployment) -> tuple[str | None, str | None]:
+    if config.runtime_profile == "web":
+        return None, None
     if not config.accept_nvidia_eula or not config.licensed_assets_approved:
         raise ValueError("NVIDIA terms and the right to upload the asset archive require approval.")
-    if not config.licensed_asset_archive.is_file() or not config.ssh_public_key_file.is_file():
+    if (
+        config.gpu_vm_size is None
+        or config.licensed_asset_archive is None
+        or config.ssh_public_key_file is None
+        or not config.licensed_asset_archive.is_file()
+        or not config.ssh_public_key_file.is_file()
+    ):
         raise ValueError("The approved asset archive and public SSH key files must exist.")
     if config.licensed_asset_archive.stat().st_size > 4 * 1024**3:
         raise ValueError("Asset archive exceeds 4 GiB.")
     public_key = config.ssh_public_key_file.read_text(encoding="utf-8").strip()
     if not public_key.startswith(("ssh-ed25519 ", "ssh-rsa ", "ecdsa-sha2-")):
         raise ValueError("Supply a public SSH key, never a private key.")
+    if config.source_commit is None:
+        raise ValueError("Physical deployment requires an explicit full source commit.")
     with config.licensed_asset_archive.open("rb") as source:
         checksum = hashlib.file_digest(source, "sha256").hexdigest()
     return public_key, checksum
@@ -199,40 +228,48 @@ def deploy(config: Deployment) -> dict:
             "modelCapacity": config.model_capacity,
             "foundryUserRoleDefinitionId": role_id,
             "operatorObjectId": str(config.operator_object_id),
+            "deployGpuNetwork": config.runtime_profile == "physical",
+            "appEnvironmentName": config.app_environment_name or f"{config.prefix}-apps",
+            "appSubnetName": config.app_subnet_name,
         },
     )
-    cli.call(
-        "storage",
-        "blob",
-        "upload",
-        "--account-name",
-        foundation["storageName"],
-        "--container-name",
-        "artifacts",
-        "--name",
-        "assets/franka.tar",
-        "--file",
-        str(config.licensed_asset_archive.resolve()),
-        "--auth-mode",
-        "login",
-        "--overwrite",
-        "true",
-    )
-    images = {}
-    for name, dockerfile in (("api", "Dockerfile"), ("simulator", "simulation/Dockerfile")):
-        tag = f"{name}:{revision}"
+    if config.runtime_profile == "physical":
         cli.call(
-            "acr",
-            "build",
-            "--registry",
-            foundation["registryName"],
-            "--image",
-            tag,
+            "storage",
+            "blob",
+            "upload",
+            "--account-name",
+            foundation["storageName"],
+            "--container-name",
+            "artifacts",
+            "--name",
+            "assets/franka.tar",
             "--file",
-            dockerfile,
-            str(ROOT),
-            expect_json=False,
+            str(config.licensed_asset_archive.resolve()),
+            "--auth-mode",
+            "login",
+            "--overwrite",
+            "true",
         )
+    images = {}
+    builds = [("api", "Dockerfile")]
+    if config.runtime_profile == "physical":
+        builds.append(("simulator", "simulation/Dockerfile"))
+    for name, dockerfile in builds:
+        tag = f"{name}:{revision}"
+        with reviewed_source(ROOT) as (source, source_sha256):
+            cli.call(
+                "acr",
+                "build",
+                "--registry",
+                foundation["registryName"],
+                "--image",
+                tag,
+                "--file",
+                dockerfile,
+                str(source),
+                expect_json=False,
+            )
         manifest = cli.call(
             "acr",
             "repository",
@@ -246,10 +283,15 @@ def deploy(config: Deployment) -> dict:
         if re.fullmatch(r"sha256:[a-f0-9]{64}", digest) is None:
             raise ValueError("ACR did not return an immutable image digest.")
         images[name] = f"{foundation['registryServer']}/{name}@{digest}"
+    runner_template = (
+        "bootstrap-aci.bicep"
+        if config.bootstrap_runner == "container_instance"
+        else "bootstrap.bicep"
+    )
     bootstrap = cli.template(
         "physicalai-bootstrap",
         config.resource_group,
-        "bootstrap.bicep",
+        runner_template,
         {
             "prefix": config.prefix,
             "location": config.location,
@@ -257,30 +299,50 @@ def deploy(config: Deployment) -> dict:
             "apiImage": images["api"],
         },
     )
-    execution = cli.call(
-        "containerapp",
-        "job",
-        "start",
-        "--name",
-        bootstrap["jobName"],
-        "--resource-group",
-        config.resource_group,
-    )
-    deadline = time.monotonic() + 900
-    while True:
-        current = cli.call(
+    execution = None
+    if config.bootstrap_runner == "container_app_job":
+        execution = cli.call(
             "containerapp",
             "job",
-            "execution",
-            "show",
+            "start",
             "--name",
             bootstrap["jobName"],
-            "--job-execution-name",
-            execution["name"],
             "--resource-group",
             config.resource_group,
         )
-        status = current["properties"]["status"]
+    deadline = time.monotonic() + 900
+    while True:
+        if config.bootstrap_runner == "container_instance":
+            current = cli.call(
+                "container",
+                "show",
+                "--name",
+                bootstrap["containerGroupName"],
+                "--resource-group",
+                config.resource_group,
+            )
+            status = current.get("instanceView", {}).get("state")
+            if status == "Succeeded":
+                states = [
+                    container.get("instanceView", {}).get("currentState", {})
+                    for container in current["containers"]
+                ]
+                if not states or any(state.get("exitCode") != 0 for state in states):
+                    raise RuntimeError("Bootstrap container lacks a confirmed successful exit.")
+        else:
+            current = cli.call(
+                "containerapp",
+                "job",
+                "execution",
+                "show",
+                "--name",
+                bootstrap["jobName"],
+                "--job-execution-name",
+                execution["name"],
+                "--resource-group",
+                config.resource_group,
+            )
+            status = job_execution_status(current)
         if status == "Succeeded":
             break
         if status in {"Failed", "Stopped", "Degraded"} or time.monotonic() >= deadline:
@@ -288,35 +350,48 @@ def deploy(config: Deployment) -> dict:
                 f"Azure bootstrap did not succeed: {status}. Inspect its execution logs."
             )
         time.sleep(10)
+    runtime_parameters = {
+        "prefix": config.prefix,
+        "location": config.location,
+        "foundation": foundation,
+        "apiImage": images["api"],
+        "entraTenantId": str(config.tenant_id),
+        "entraSpaClientId": str(config.spa_client_id),
+        "entraApiClientId": str(config.api_client_id),
+        "deploymentRevision": revision,
+    }
+    if config.runtime_profile == "physical":
+        runtime_parameters.update(
+            {
+                "simulatorImage": images["simulator"],
+                "gpuVmSize": config.gpu_vm_size,
+                "sshPublicKey": public_key,
+                "assetSha256": asset_hash,
+                "frankaUsdRelativePath": config.franka_usd_relative_path,
+                "acceptNvidiaEula": config.accept_nvidia_eula,
+                "shutdownTimeUtc": config.shutdown_time_utc,
+                "sourceRevision": config.source_commit,
+                "enableDemonstrationCapture": config.enable_demonstration_capture,
+            }
+        )
+    else:
+        runtime_parameters["appName"] = config.web_app_name or f"{config.prefix}-web"
     runtime = cli.template(
         "physicalai-runtime",
         config.resource_group,
-        "runtime.bicep",
-        {
-            "prefix": config.prefix,
-            "location": config.location,
-            "foundation": foundation,
-            "apiImage": images["api"],
-            "simulatorImage": images["simulator"],
-            "entraTenantId": str(config.tenant_id),
-            "entraSpaClientId": str(config.spa_client_id),
-            "entraApiClientId": str(config.api_client_id),
-            "gpuVmSize": config.gpu_vm_size,
-            "sshPublicKey": public_key,
-            "assetSha256": asset_hash,
-            "frankaUsdRelativePath": config.franka_usd_relative_path,
-            "acceptNvidiaEula": config.accept_nvidia_eula,
-            "deploymentRevision": revision,
-            "shutdownTimeUtc": config.shutdown_time_utc,
-        },
+        "runtime.bicep" if config.runtime_profile == "physical" else "web.bicep",
+        runtime_parameters,
     )
     return {
         "subscription_id": str(config.subscription_id),
         "resource_group": config.resource_group,
         "revision": revision,
         "images": images,
+        "source_sha256": source_sha256,
         "runtime": runtime,
         "live_verified": False,
+        "runtime_profile": config.runtime_profile,
+        "gpu_deployed": config.runtime_profile == "physical",
         "next_gate": (
             "Configure SPA redirect URI, then run actual Entra/Foundry/Isaac acceptance tests."
         ),

@@ -31,6 +31,8 @@ class SceneSpec:
     requested_speed: float
     requested_payload: float
     platform_color: tuple[float, float, float]
+    record_demonstration: bool = False
+    demonstration_split: str | None = None
 
     def station(self, station_id: str) -> Station:
         for station in self.stations:
@@ -68,6 +70,8 @@ class InspectionCell(SceneBuilder):
             requested_speed=doc["limits"]["max_cartesian_speed_m_s"],
             requested_payload=doc["limits"]["max_payload_kg"],
             platform_color=self.platform_color,
+            record_demonstration=doc["execution"].get("record_demonstration", False),
+            demonstration_split=doc["execution"].get("demonstration_split"),
         )
 
 

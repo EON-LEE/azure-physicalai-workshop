@@ -50,6 +50,11 @@ TypeScript decoders.
 security invariants without Azure login. This is static validation, not G7 live
 deployment/cleanup proof.
 
+The learning suite additionally validates scoped demonstrations, real LeRobot
+conversion/training interfaces, checkpoint checksums, bounded inference and
+Azure ML submission guards. An isolated real CPU smoke executes a genuine ACT
+optimizer step and inference; it is not evidence of Azure GPU task quality.
+
 The catalog's planned acceptance cases remain the full release obligations.
 Local unit coverage of a clause does not automatically complete that case or
 its Azure/GPU gate. Actual G3-G7 cloud/GPU/model acceptance is still unperformed.

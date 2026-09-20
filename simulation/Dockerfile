@@ -7,6 +7,7 @@ COPY apps/__init__.py apps/__init__.py
 COPY apps/api/ apps/api/
 COPY contracts/ contracts/
 COPY simulation/ simulation/
+COPY learning/__init__.py learning/common.py learning/contract.py learning/capture.py learning/
 ENV PYTHONPATH=/app PYTHONUNBUFFERED=1
 EXPOSE 8443
 ENTRYPOINT ["/isaac-sim/python.sh", "-m", "simulation.bootstrap_tls"]

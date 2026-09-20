@@ -3,9 +3,10 @@ from __future__ import annotations
 import hashlib
 from datetime import UTC, datetime
 from typing import Annotated, Generic, Literal, TypeVar
+from urllib.parse import urlsplit
 from uuid import UUID
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, JsonValue
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 Identifier = Annotated[str, Field(pattern=r"^[a-z][a-z0-9-]*(?![\s\S])", max_length=64)]
 Revision = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
@@ -121,6 +122,36 @@ class Plan(Decision):
     expires_at: AwareDatetime
 
 
+class DemonstrationResult(Model):
+    status: Literal["uploaded", "failed"]
+    manifest_uri: str | None = None
+    manifest_sha256: Revision | None = None
+    episode_id: UUID | None = None
+    frame_count: int | None = Field(default=None, ge=2)
+    message: str | None = None
+
+    @model_validator(mode="after")
+    def valid_receipt(self):
+        if self.status == "uploaded":
+            parsed = urlsplit(self.manifest_uri or "")
+            if (
+                parsed.scheme != "https"
+                or not parsed.hostname
+                or not parsed.hostname.endswith(".blob.core.windows.net")
+                or parsed.username
+                or parsed.password
+                or parsed.query
+                or parsed.fragment
+                or self.manifest_sha256 is None
+                or self.episode_id is None
+                or self.frame_count is None
+            ):
+                raise ValueError("An uploaded demonstration requires complete Azure evidence.")
+        elif not self.message:
+            raise ValueError("A failed demonstration requires an explicit reason.")
+        return self
+
+
 class Execution(Model):
     command_id: UUID
     status: Literal[
@@ -129,6 +160,7 @@ class Execution(Model):
     final_position: Position | None = None
     completed_at: AwareDatetime | None = None
     error: RunError | None = None
+    demonstration: DemonstrationResult | None = None
 
 
 class RunRecord(Model):

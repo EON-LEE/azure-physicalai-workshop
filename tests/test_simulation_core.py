@@ -67,6 +67,15 @@ def test_idempotent_dispatch_and_changed_payload_rejection(ready_core):
         core.dispatch(ACTOR.owner_key, motion.model_copy(update={"target_station_id": "accepted"}))
 
 
+def test_cancellation_arriving_before_dispatch_tombstones_the_command(ready_core):
+    core, environment = ready_core
+    motion = command(core, environment)
+    assert core.cancel(ACTOR.owner_key, motion.command_id).status == "cancelled"
+    assert core.dispatch(ACTOR.owner_key, motion).status == "cancelled"
+    assert core.next_action() is None
+    assert core.active_command is None
+
+
 @pytest.mark.parametrize(
     "update",
     [

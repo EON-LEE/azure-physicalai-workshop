@@ -3,11 +3,15 @@
 import logging
 import threading
 import time
+from dataclasses import asdict
 from pathlib import Path
 
 import uvicorn
+from azure.core.exceptions import AzureError
 
+from apps.api.models import utcnow
 from simulation.core import LoadScene, SimulationCore, StartMotion, StopMotion
+from simulation.demonstrations import Demonstration
 from simulation.extensions import SceneRegistry
 from simulation.http import BridgeSettings, create_bridge_app
 
@@ -44,30 +48,59 @@ def main() -> None:
     thread = threading.Thread(target=server.run, name="authenticated-bridge", daemon=True)
     thread.start()
     last_capture = 0.0
+
+    def finish(status, message=None):
+        completed_at = utcnow()
+        position = hardware.position()
+        demonstration = None
+        if hardware.recording is not None:
+            hardware.stop()
+            with core.lock:
+                core.ready = False
+                core.frames.clear()
+            try:
+                receipt = hardware.finish_recording(truncated=status != "succeeded")
+                demonstration = {"status": "uploaded", **asdict(receipt)}
+            except (ValueError, OSError, AzureError):
+                log.exception("Demonstration was not published; physical outcome is separate")
+                hardware.recording = None
+                demonstration = {
+                    "status": "failed",
+                    "message": "Capture failed; no dataset was published.",
+                }
+        core.finish(
+            status, position, message, completed_at=completed_at, demonstration=demonstration
+        )
+        if status == "succeeded":
+            hardware.world.play()
+
     try:
         while simulation_app.is_running() and thread.is_alive():
             action = core.next_action()
             try:
                 if isinstance(action, LoadScene):
                     hardware.load(action.spec)
-                elif isinstance(action, StopMotion):
+                elif isinstance(action, StopMotion) and core.should_stop(action.command_id):
                     hardware.stop()
-                    core.finish("cancelled", hardware.position(), "Simulation stop confirmed.")
+                    finish("cancelled", "Simulation stop confirmed.")
                 elif isinstance(action, StartMotion) and core.begin_motion(
                     action.command.command_id
                 ):
-                    hardware.start(action.target_id)
+                    recording = (
+                        Demonstration(core, action.command.command_id)
+                        if core.spec.record_demonstration
+                        else None
+                    )
+                    hardware.start(action.target_id, recording)
                 if core.deadline_expired():
                     hardware.stop()
-                    core.finish(
-                        "timed_out", hardware.position(), "Simulation command deadline expired."
-                    )
+                    finish("timed_out", "Simulation command deadline expired.")
                 if hardware.world is None:
                     simulation_app.update()
                 else:
                     completed = hardware.advance()
                     if completed:
-                        core.finish("succeeded", hardware.position())
+                        finish("succeeded")
                     if time.monotonic() - last_capture >= 0.2:
                         for camera in ("overview", "inspection"):
                             image = hardware.capture(camera)
@@ -79,6 +112,8 @@ def main() -> None:
             except (RuntimeError, ValueError, TypeError, OSError) as exc:
                 log.exception("Isaac scene or command failed")
                 hardware.stop()
+                if hardware.recording is not None:
+                    finish("failed", "Simulation or capture failed.")
                 core.fail_scene(str(exc))
             time.sleep(0.001)
     finally:

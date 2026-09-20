@@ -65,8 +65,20 @@
       "properties": {
         "mode": {"enum": ["live", "replay"]},
         "max_step_seconds": {"type": "integer", "minimum": 1, "maximum": 300},
-        "max_observation_age_ms": {"type": "integer", "minimum": 1, "maximum": 10000}
-      }
+        "max_observation_age_ms": {"type": "integer", "minimum": 1, "maximum": 10000},
+        "record_demonstration": {"type": "boolean"},
+        "demonstration_split": {"enum": ["train", "validation", "test"]}
+      },
+      "allOf": [{
+        "if": {
+          "required": ["record_demonstration"],
+          "properties": {"record_demonstration": {"const": true}}
+        },
+        "then": {
+          "properties": {"demonstration_split": {"enum": ["train", "validation", "test"]}},
+          "required": ["demonstration_split"]
+        }
+      }]
     },
     "limits": {
       "type": "object",

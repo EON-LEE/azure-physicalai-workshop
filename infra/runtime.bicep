@@ -17,6 +17,8 @@ param frankaUsdRelativePath string = 'Franka/franka.usd'
 param acceptNvidiaEula bool
 @description('New value per controlled rollout to refresh GPU TLS and API bootstrap state.')
 param deploymentRevision string
+param sourceRevision string
+param enableDemonstrationCapture bool = false
 @description('Daily UTC deallocation time, HHmm. This is not a hard spend cap.')
 param shutdownTimeUtc string = '2300'
 @minValue(128)
@@ -38,6 +40,9 @@ var runtimeConfiguration = {
   ACCEPT_EULA: acceptNvidiaEula ? 'Y' : 'N'
   PRIVACY_CONSENT: 'N'
   NVIDIA_DRIVER_CAPABILITIES: 'all'
+  SOURCE_REVISION: sourceRevision
+  CAPTURE_ENABLED: enableDemonstrationCapture ? 'true' : 'false'
+  DEMONSTRATION_CONTAINER: 'demonstrations'
 }
 var startScript = replace(
   loadTextContent('start-simulator.sh'),
@@ -138,63 +143,20 @@ resource shutdown 'Microsoft.DevTestLab/schedules@2018-09-15' = {
     notificationSettings: { status: 'Disabled' }
   }
 }
-resource web 'Microsoft.App/containerApps@2025-07-01' = {
-  name: '${prefix}-web'
-  location: location
-  identity: {
-    type: 'UserAssigned'
-    userAssignedIdentities: { '${foundation.apiIdentityId}': {} }
-  }
-  properties: {
-    managedEnvironmentId: foundation.environmentId
-    configuration: {
-      activeRevisionsMode: 'Single'
-      ingress: { external: true, allowInsecure: false, targetPort: 8000, transport: 'http' }
-      registries: [{
-        server: foundation.registryServer
-        identity: foundation.apiIdentityId
-      }]
-    }
-    template: {
-      containers: [{
-        name: 'web'
-        image: apiImage
-        resources: { cpu: json('1.0'), memory: '2Gi' }
-        env: [
-          { name: 'DEPLOYMENT_MODE', value: 'azure' }
-          { name: 'AZURE_CLIENT_ID', value: foundation.apiClientId }
-          { name: 'ENTRA_TENANT_ID', value: entraTenantId }
-          { name: 'ENTRA_SPA_CLIENT_ID', value: entraSpaClientId }
-          { name: 'ENTRA_API_CLIENT_ID', value: entraApiClientId }
-          { name: 'FOUNDRY_PROJECT_ENDPOINT', value: foundation.foundryEndpoint }
-          { name: 'FOUNDRY_AGENT_NAME', value: '${prefix}-inspection' }
-          { name: 'COSMOS_ENDPOINT', value: foundation.cosmosEndpoint }
-          { name: 'STORAGE_ACCOUNT_URL', value: foundation.storageUrl }
-          { name: 'SIM_BRIDGE_ENDPOINT', value: 'https://sim.physicalai.internal:8443' }
-          { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: foundation.insightsConnectionString }
-          { name: 'AZURE_TRACING_GEN_AI_CONTENT_RECORDING_ENABLED', value: 'false' }
-          { name: 'DEPLOYMENT_REVISION', value: deploymentRevision }
-        ]
-        probes: [
-          {
-            type: 'Liveness'
-            httpGet: { path: '/healthz', port: 8000 }
-            initialDelaySeconds: 15
-            periodSeconds: 30
-          }
-          {
-            type: 'Startup'
-            httpGet: { path: '/healthz', port: 8000 }
-            periodSeconds: 10
-            failureThreshold: 30
-          }
-        ]
-      }]
-      scale: { minReplicas: 1, maxReplicas: 2 }
-    }
+module web 'web.bicep' = {
+  name: '${prefix}-web-deployment'
+  params: {
+    prefix: prefix
+    location: location
+    foundation: foundation
+    apiImage: apiImage
+    entraTenantId: entraTenantId
+    entraSpaClientId: entraSpaClientId
+    entraApiClientId: entraApiClientId
+    deploymentRevision: deploymentRevision
   }
 }
 
-output webUrl string = 'https://${web.properties.configuration.ingress.fqdn}'
+output webUrl string = web.outputs.webUrl
 output simulatorId string = simulator.id
 output controllerPrincipalId string = foundation.apiPrincipalId

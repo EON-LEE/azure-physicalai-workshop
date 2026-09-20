@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import time
+from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
 
@@ -10,12 +12,15 @@ import numpy as np
 from isaacsim.core.api import World
 from isaacsim.core.api.objects import DynamicCuboid, FixedCuboid
 from isaacsim.core.utils.stage import create_new_stage
+from isaacsim.core.utils.types import ArticulationAction
 from isaacsim.robot.manipulators.examples.franka import Franka
 from isaacsim.robot.manipulators.examples.franka.controllers import PickPlaceController
 from isaacsim.sensors.camera import Camera
 from PIL import Image
 from pxr import Gf, Sdf, UsdGeom, UsdLux
 
+from learning.capture import resolve_joint_targets
+from learning.contract import CameraSample, FrameSample
 from simulation.asset_references import local_reference
 from simulation.extensions import SceneSpec
 
@@ -32,6 +37,8 @@ class IsaacWorkcell:
         self.phase = 0
         self.steps = 0
         self.last_effector_position = None
+        self.recording = None
+        self.issued_targets = None
 
     def load(self, spec: SceneSpec) -> None:
         self._validate_asset_bundle()
@@ -99,8 +106,8 @@ class IsaacWorkcell:
             camera = Camera(
                 prim_path=f"/World/{name}",
                 name=name,
-                frequency=10,
-                resolution=(1280, 720),
+                frequency=60 if spec.record_demonstration else 10,
+                resolution=(320, 320) if spec.record_demonstration else (1280, 720),
             )
             view = Gf.Matrix4d().SetLookAt(Gf.Vec3d(*eye), Gf.Vec3d(*target), Gf.Vec3d(0, 1, 0))
             quaternion = view.GetInverse().ExtractRotationQuat()
@@ -159,7 +166,7 @@ class IsaacWorkcell:
 
             layer.Traverse(Sdf.Path.absoluteRootPath, attribute)
 
-    def start(self, target_id: str) -> None:
+    def start(self, target_id: str, recording=None) -> None:
         self.target = target_id
         self.phase = 0
         self.controller = PickPlaceController(
@@ -169,7 +176,58 @@ class IsaacWorkcell:
         )
         self.robot.gripper.set_joint_positions(self.robot.gripper.joint_opened_positions)
         self.last_effector_position = None
+        self.recording = recording
+        if recording is not None:
+            hold = tuple(float(value) for value in self.robot.get_joint_positions())
+            self.robot.apply_action(ArticulationAction(joint_positions=np.array(hold)))
+            self.issued_targets = resolve_joint_targets(None, hold)
         self.world.play()
+
+    def _sample_before_command(
+        self, targets: tuple[float, ...], *, terminated: bool = False, truncated: bool = False
+    ) -> FrameSample:
+        images = {}
+        for name, camera in self.cameras.items():
+            metadata = camera.get_current_frame()
+            rendering_time = metadata.get("rendering_time")
+            if (
+                rendering_time is None
+                or abs(float(rendering_time) - self.world.current_time) > self.dt / 2
+            ):
+                raise ValueError(
+                    "Demonstration camera is not synchronized with the current physics observation."
+                )
+            image = self.capture(name, consumer="recording")
+            if image is None:
+                raise ValueError(
+                    "A genuinely new camera frame is required for every recorded control step."
+                )
+            images[name] = CameraSample(
+                image, int(metadata["rendering_frame"]), self.steps, time.monotonic_ns()
+            )
+        return FrameSample(
+            captured_at_utc=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            monotonic_ns=time.monotonic_ns(),
+            physics_step=self.steps,
+            joint_positions=tuple(float(value) for value in self.robot.get_joint_positions()),
+            commanded_joint_targets=targets,
+            images=images,
+            terminated=terminated,
+            truncated=truncated,
+        )
+
+    def finish_recording(self, truncated: bool):
+        if self.recording is None:
+            return None
+        recorder = self.recording
+        try:
+            sample = self._sample_before_command(
+                self.issued_targets, terminated=not truncated, truncated=truncated
+            )
+            recorder.append(sample)
+        finally:
+            self.recording = None
+        return recorder.finalize_and_upload()
 
     def position(self) -> tuple[float, float, float]:
         return tuple(float(value) for value in self.part.get_world_pose()[0])
@@ -184,7 +242,21 @@ class IsaacWorkcell:
                 placing_position=np.array(self.spec.station(destination).position),
                 current_joint_positions=self.robot.get_joint_positions(),
             )
+            if self.recording is not None:
+                positions = actions.joint_positions
+                if positions is None:
+                    raise ValueError("The controller returned no position command to record.")
+                indices = actions.joint_indices
+                targets = resolve_joint_targets(
+                    self.issued_targets,
+                    positions.tolist() if isinstance(positions, np.ndarray) else positions,
+                    indices.tolist() if isinstance(indices, np.ndarray) else indices,
+                )
+                sample = self._sample_before_command(targets)
             self.robot.apply_action(actions)
+            if self.recording is not None:
+                self.issued_targets = targets
+                self.recording.append(sample)
         self.world.step(render=True)
         self.steps += 1
         if self.controller is not None:
@@ -210,18 +282,19 @@ class IsaacWorkcell:
                     return True
         return False
 
-    def capture(self, name: str) -> bytes | None:
+    def capture(self, name: str, consumer: str = "preview") -> bytes | None:
         camera = self.cameras[name]
         frame = camera.get_current_frame()
         render_frame = frame.get("rendering_frame")
-        if render_frame is None or self.last_render_frame.get(name) == render_frame:
+        key = (name, consumer)
+        if render_frame is None or self.last_render_frame.get(key) == render_frame:
             return None
         rgba = camera.get_rgba()
         if rgba is None or rgba.size == 0:
             return None
         output = BytesIO()
         Image.fromarray(rgba[:, :, :3].astype(np.uint8)).save(output, format="PNG")
-        self.last_render_frame[name] = render_frame
+        self.last_render_frame[key] = render_frame
         return output.getvalue()
 
     def stop(self) -> None:

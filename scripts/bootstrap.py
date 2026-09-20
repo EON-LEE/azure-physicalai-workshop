@@ -28,6 +28,8 @@ class BootstrapManifest(BaseModel):
     agent_version: str
     sim_ca_sha256: str
     created_at: AwareDatetime
+    probe_response_id: str | None = None
+    probe_scope: str | None = None
 
 
 def certificates(hostname: str, private_ip: str) -> tuple[bytes, bytes, bytes]:
@@ -122,6 +124,20 @@ def main() -> None:
         agent = project.agents.create_version(
             agent_name=name, definition=agent_definition(os.environ["FOUNDRY_MODEL_DEPLOYMENT"])
         )
+        with project.get_openai_client().with_options(timeout=45, max_retries=0) as inference:
+            probe = inference.responses.create(
+                input="Deployment connectivity probe only. Do not inspect a part or move a robot.",
+                tool_choice="none",
+                extra_body={
+                    "agent_reference": {
+                        "type": "agent_reference",
+                        "name": agent.name,
+                        "version": agent.version,
+                    }
+                },
+            )
+        if not probe.id:
+            raise RuntimeError("Foundry returned no response ID for the deployment probe.")
         ca, certificate, private_key = certificates(
             os.environ["SIM_HOSTNAME"], os.environ["SIM_PRIVATE_IP"]
         )
@@ -140,6 +156,8 @@ def main() -> None:
             agent_version=agent.version,
             sim_ca_sha256=hashlib.sha256(ca).hexdigest(),
             created_at=datetime.now(UTC),
+            probe_response_id=probe.id,
+            probe_scope="agent_connectivity_only_not_physical_inspection",
         )
         container.upload_blob(
             "bootstrap/runtime.json",
@@ -149,7 +167,13 @@ def main() -> None:
         )
         print(
             json.dumps(
-                {"agent_name": agent.name, "agent_version": agent.version, "bootstrap": "written"}
+                {
+                    "agent_name": agent.name,
+                    "agent_version": agent.version,
+                    "probe_response_id": probe.id,
+                    "probe_scope": "agent_connectivity_only_not_physical_inspection",
+                    "bootstrap": "written",
+                }
             )
         )
 
