@@ -49,6 +49,26 @@ appropriate only when interruption is acceptable. Spot has no availability SLA
 and can be reclaimed with 30 seconds notice. A maximum compute price does not cap
 disk/network charges, and a deallocated Spot VM can still incur disk charges.
 
+## Subsequent actual allocation probe
+
+On 2026-09-21 a real `Standard_NC24lds_xl_RTXPRO6000BSE_v6` **Spot** VM in
+West US 2 was successfully created using `scripts.gpu_capacity_probe`.
+Its instance view reported `PowerState/running`, and a guest startup probe read
+an NVIDIA display-class PCI device (`vendor=0x10de`, `device=0x2bb5`) from sysfs.
+This was an actual allocation, not merely a price or quota lookup.
+
+The VM compute price ceiling was USD 0.30/hour. It was explicitly deallocated
+after verification; a one-hour UTC shutdown schedule was also configured.
+There is no public IP and inbound traffic is denied. Failed probes may clean
+only resources carrying their exact random probe ID.
+
+The probe did not install NVIDIA applications, accept NVIDIA terms, run Isaac
+Sim, or prove graphics-driver/rendering compatibility. Those remain separate
+gates. The retained deallocated VM/disk can be inspected by the operator;
+restarting Spot capacity is not guaranteed and retained disks incur charges.
+The regular-family quota rejection did not imply that the separate Spot quota
+pool could not allocate this VM.
+
 ## Sources
 
 - [Azure Retail Prices API](https://prices.azure.com/api/retail/prices)

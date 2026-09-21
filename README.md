@@ -11,9 +11,11 @@ agent connectivity response from managed-identity bootstrap. Images are built
 and executed in ACR, not just checked as source. Blob, Cosmos and Key Vault use
 Private Link; tenant restrictions are not bypassed.
 
-**Not live-verified:** GPU compatibility, robot motion, real demonstrations,
-Azure ML training and the complete physical loop. Both attempted compatible
-GPU quota requests were declined. NVIDIA/robot-asset approval is also pending.
+**Not live-verified:** graphics-driver/Isaac compatibility, robot motion, real
+demonstrations, Azure ML training and the complete physical loop. Regular GPU
+quota requests were declined, but a subsequent real Spot RTX PRO allocation
+succeeded and the guest NVIDIA PCI device was confirmed. The probe VM was then
+deallocated. NVIDIA/robot-asset approval is still pending.
 The UI reports the simulator unavailable; no replay substitutes for it.
 LeRobot conversion, real ACT training/inference and Azure ML job components are
 now implemented and CPU-smoke-tested, but task quality requires real held-out
