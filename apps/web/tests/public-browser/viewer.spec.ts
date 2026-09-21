@@ -1,57 +1,211 @@
-import { expect, test } from '@playwright/test';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { expect, test, type Page } from '@playwright/test';
+import type { DemoSnapshot } from '../../src/public/api';
+import { epoch, makePresentation, makeSnapshot, nextEpoch, referenceSnapshot } from '../fixtures/public';
 
-const reference = JSON.parse(readFileSync(join(process.cwd(), '../../examples/inspection-cell.json'), 'utf8'));
-const snapshot = {
-  api_version: 'public-demo-v1', access: 'public_read_only', deployment: 'azure',
-  mode: 'reference', observed_at: new Date().toISOString(),
-  scene: { id: 'inspection-cell-v1', name: 'Inspection and sorting cell', length_unit: 'm', stations: reference.stations, robot: 'Franka reference arm', data_origin: 'synthetic_reference_configuration' },
-  simulation: { status: 'not_published', live_available: false, message_code: 'live_not_published', frame_url: null },
-  agent: { provider: 'microsoft_foundry', connectivity: 'configured', verified_at: null, verification_scope: 'connectivity_only' },
-  learning: { status: 'cpu_smoke_verified', execution_location: 'azure_acr', data_kind: 'test_fixture', optimizer_steps: 1, quality_verified: false },
-  capabilities: { anonymous_control: false, anonymous_editing: false, public_live_video: false },
-};
-
-test('the actual production entry opens a public viewer with no auth, private requests or writes', async ({ page }) => {
-  const requests: string[] = [];
+async function fixturePage(page: Page, readSnapshot: () => DemoSnapshot, options: { wrongEpoch?: boolean; wrongEvidence?: boolean } = {}) {
+  const requests: Array<{ method: string; path: string; authorization?: string }> = [];
   const errors: string[] = [];
+  let servedSnapshot = readSnapshot();
+  const png = await page.evaluate(() => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 1280;
+    canvas.height = 720;
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('Test PNG canvas unavailable');
+    context.fillStyle = '#172840';
+    context.fillRect(0, 0, 1280, 720);
+    context.strokeStyle = '#345575';
+    context.lineWidth = 2;
+    context.strokeRect(70, 70, 1140, 580);
+    context.fillStyle = '#d0e3ff';
+    context.textAlign = 'center';
+    context.font = 'bold 30px sans-serif';
+    context.fillText('PUBLIC_PRESENTATION_TEST_FIXTURE', 640, 310);
+    context.font = '20px sans-serif';
+    context.fillText('NOT AZURE / GPU / FOUNDRY VERIFICATION', 640, 365);
+    context.font = '17px sans-serif';
+    context.fillText('Static test PNG. Production has no fixture image or replacement camera.', 640, 408);
+    return canvas.toDataURL('image/png').split(',')[1] ?? '';
+  });
   page.on('pageerror', (error) => errors.push(error.message));
-  page.on('request', (request) => requests.push(`${request.method()} ${new URL(request.url()).pathname}`));
-  await page.route('**/api/demo', (route) => route.fulfill({ json: snapshot }));
-  await page.goto('/');
-  await expect(page.getByRole('heading', { name: '비전 검사 · 부품 분류' })).toBeVisible();
+  page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()); });
+  page.on('request', (request) => {
+    const url = new URL(request.url());
+    if (url.protocol === 'http:' || url.protocol === 'https:') requests.push({ method: request.method(), path: url.pathname, authorization: request.headers().authorization });
+  });
+  await page.route('https://**/*', (route) => route.abort('blockedbyclient'));
+  await page.route('**/*', async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path === '/test-only-csp.js') {
+      return route.fulfill({
+        contentType: 'application/javascript',
+        body: "try { new Function('return 1')(); document.body.dataset.cspEvalBlocked = 'false'; } catch { document.body.dataset.cspEvalBlocked = 'true'; }",
+      });
+    }
+    if (path === '/test-only-fixture.css') {
+      return route.fulfill({
+        contentType: 'text/css',
+        body: '.public-fixture-banner{background:#ffedb7;color:#633a08;border-bottom:2px solid #c68f21;text-align:center;padding:10px 14px;font:600 12px/1.6 system-ui,sans-serif;overflow-wrap:anywhere}',
+      });
+    }
+    if (request.resourceType() !== 'document') return route.continue();
+    const response = await route.fetch();
+    const html = (await response.text()).replace('</head>', '<link rel="stylesheet" href="/test-only-fixture.css"></head>')
+      .replace('<body>', '<body><div class="public-fixture-banner" role="note">TEST-ONLY FIXTURES · 브라우저 동작 검증용 · Azure / GPU / 실제 Foundry 검증 아님</div>');
+    return route.fulfill({ response, body: html });
+  });
+  await page.route('**/api/**', async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname === '/api/demo') {
+      servedSnapshot = readSnapshot();
+      return route.fulfill({ json: servedSnapshot, headers: { 'Cache-Control': 'no-store' } });
+    }
+    const decision = servedSnapshot.presentation?.decision;
+    if (url.pathname === '/api/demo/frame') {
+      return route.fulfill({
+        body: Buffer.from(png, 'base64'), contentType: 'image/png',
+        headers: {
+          'Cache-Control': 'no-store',
+          'X-Frame-Id': 'test-only-public-live-frame',
+          'X-Scene-Epoch': options.wrongEpoch ? nextEpoch : url.searchParams.get('epoch') ?? epoch,
+          'X-Captured-At': new Date().toISOString(), 'X-Physics-Steps': '125',
+        },
+      });
+    }
+    if (url.pathname === '/api/demo/evidence' && decision) {
+      return route.fulfill({
+        body: Buffer.from(png, 'base64'), contentType: 'image/png',
+        headers: { 'Cache-Control': 'no-store', 'X-Frame-Id': options.wrongEvidence ? nextEpoch : decision.observation_id, 'X-Captured-At': decision.captured_at },
+      });
+    }
+    return route.fulfill({ status: 503, json: { error: { code: 'test_only_unavailable', message: 'TEST ONLY: protected configuration not supplied.' } } });
+  });
+  return { requests, errors };
+}
+
+test('production public entry shows same-cycle evidence and live state without auth, writes or private modules', async ({ page }) => {
+  const presentation = makePresentation();
+  const { requests, errors } = await fixturePage(page, () => makeSnapshot({ presentation }));
+  await page.goto('/?view=demo');
+  await expect(page.getByRole('note')).toContainText('실제 Foundry 검증 아님');
+  await expect(page.getByText('LIVE · 실제 카메라 수신')).toBeVisible();
+  await expect(page.getByRole('img', { name: /현재 Foundry 판단에 실제 사용된/ })).toBeVisible();
+  await expect(page.getByText('서버 입력: 표면 흠집 부품')).toBeVisible();
+  await expect(page.getByText('불량으로 판단', { exact: true })).toBeVisible();
+  await expect(page.getByText('대상 트레이로 이동', { exact: true })).toBeVisible();
+  await expect(page.getByText('종합 성공 확인', { exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '양품 흐름' })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Microsoft로 로그인' })).toHaveCount(0);
-  await expect(page.getByText('작업 셀 구성도 · 실제 시뮬레이션 아님')).toBeVisible();
-  const normal = page.getByRole('button', { name: '양품 흐름' });
-  await normal.focus();
-  await page.keyboard.press('Enter');
-  await expect(normal).toHaveAttribute('aria-pressed', 'true');
-  await page.getByRole('button', { name: /04.*결과를 다시/ }).click();
-  await expect(page.getByText('설명 경로: 검사 → 다음 공정')).toBeVisible();
-  expect(requests.filter((item) => item.includes('/api/'))).toEqual(['GET /api/demo']);
-  expect(requests.some((item) => /msal-|OperatorEntry-/.test(item))).toBe(false);
+  for (const request of requests.filter((item) => item.path.startsWith('/api/'))) {
+    expect(['/api/demo', '/api/demo/frame', '/api/demo/evidence']).toContain(request.path);
+    expect(request.method).toBe('GET');
+    expect(request.authorization).toBeUndefined();
+  }
+  expect(requests.some((item) => /msal-|OperatorEntry-/.test(item.path))).toBe(false);
   expect(errors).toEqual([]);
-  await page.screenshot({ path: 'test-results/public-viewer-reference-preview.png', fullPage: true });
+  await page.screenshot({ path: 'test-results/public-moving-TEST-FIXTURE-not-azure.png', fullPage: true });
 });
 
-test('public navigation remains usable at mobile width and reduced motion', async ({ page }) => {
+test('pause is keyboard accessible and stops viewing requests, not a robot command', async ({ page }) => {
+  const { requests } = await fixturePage(page, () => makeSnapshot());
+  await page.goto('/');
+  await expect(page.getByText('LIVE · 실제 카메라 수신')).toBeVisible();
+  await page.getByRole('button', { name: '관람 일시 정지' }).focus();
+  await page.keyboard.press('Enter');
+  await expect(page.getByRole('heading', { name: '영상 관람을 일시 정지했습니다' })).toBeVisible();
+  const reads = requests.filter((item) => item.path.startsWith('/api/')).length;
+  await page.waitForTimeout(2400);
+  expect(requests.filter((item) => item.path.startsWith('/api/')).length).toBe(reads);
+  await expect(page.getByText('LIVE · 실제 카메라 수신')).toHaveCount(0);
+  expect(requests.every((request) => request.method === 'GET')).toBe(true);
+  await page.getByRole('button', { name: '관람 재개' }).focus();
+  await page.keyboard.press('Enter');
+  await expect(page.getByText('LIVE · 실제 카메라 수신')).toBeVisible();
+});
+
+test('actual outcome requires correct inspection as well as completed physical movement', async ({ page }) => {
+  let presentation = makePresentation();
+  await fixturePage(page, () => makeSnapshot({ presentation }));
+  await page.goto('/');
+  await expect(page.getByText('최종 결과 대기')).toBeVisible();
+  presentation = makePresentation({
+    status: 'completed',
+    motion: { status: 'succeeded', phase: 'complete', part_position_m: [0.22, -0.38, 0.2], target_position_m: [0.22, -0.38, 0.2] },
+    result: { status: 'succeeded', physical_success: true, inspection_correct: false, final_position_m: [0.22, -0.38, 0.2], completed_at: new Date().toISOString(), message: '테스트 표본: 이동은 완료되었지만 검사 정답이 다릅니다.' },
+  });
+  await expect(page.getByText('종합 성공 미확인', { exact: true })).toBeVisible();
+  await expect(page.getByText('입력 정답과 불일치', { exact: true })).toBeVisible();
+  await expect(page.getByText('물리 목표 도달 확인', { exact: true })).toBeVisible();
+  await expect(page.getByText('종합 성공 확인', { exact: true })).toHaveCount(0);
+  const finalResult = presentation.result;
+  if (!finalResult) throw new Error('Test result required');
+  presentation = { ...presentation, result: { ...finalResult, inspection_correct: true } };
+  await expect(page.getByText('종합 성공 확인', { exact: true })).toBeVisible();
+});
+
+test('wrong scene/evidence responses never appear as current images; strict CSP remains effective', async ({ page }) => {
+  const { errors } = await fixturePage(page, () => makeSnapshot(), { wrongEpoch: true, wrongEvidence: true });
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: '관측과 게시 회차가 일치하지 않습니다' })).toBeVisible();
+  await expect(page.getByText('불량으로 판단', { exact: true })).toHaveCount(0);
+  await expect(page.locator('main img')).toHaveCount(0);
+  await expect(page.getByText('LIVE · 실제 카메라 수신')).toHaveCount(0);
+  expect(errors).toEqual([]);
+  await page.addScriptTag({ url: '/test-only-csp.js' });
+  expect(await page.evaluate(() => document.body.dataset.cspEvalBlocked)).toBe('true');
+});
+
+test('new cycle clears old classification and images instead of reusing prior outcome', async ({ page }) => {
+  let presentation = makePresentation();
+  await fixturePage(page, () => makeSnapshot({ presentation }));
+  await page.goto('/');
+  await expect(page.getByText('불량으로 판단', { exact: true })).toBeVisible();
+  presentation = makePresentation({
+    cycle: 2, scenario: 'normal', status: 'preparing', scene_epoch: null, run_id: null, decision: null, motion: null, result: null,
+  });
+  await expect(page.getByText('서버 입력: 정상 부품')).toBeVisible();
+  await expect(page.getByRole('heading', { name: '실제 시연을 준비하고 있습니다' })).toBeVisible();
+  await expect(page.getByText('불량으로 판단', { exact: true })).toHaveCount(0);
+  await expect(page.locator('main img')).toHaveCount(0);
+  await expect(page.getByText('종합 성공 확인', { exact: true })).toHaveCount(0);
+});
+
+test('reference and missing-presentation responses have no schematic, replay or camera substitute', async ({ page }) => {
+  const { requests } = await fixturePage(page, referenceSnapshot);
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: '게시된 자동 시연이 없습니다' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '시연 상태 다시 확인' })).toBeVisible();
+  await expect(page.getByRole('navigation', { name: '시나리오 단계' })).toHaveCount(0);
+  await expect(page.locator('main img, .demo-cell-svg')).toHaveCount(0);
+  expect(requests.filter((item) => item.path.startsWith('/api/')).every((item) => item.path === '/api/demo')).toBe(true);
+  await page.screenshot({ path: 'test-results/public-unavailable-TEST-FIXTURE-not-azure.png', fullPage: true });
+});
+
+test('390px layout, long copy, reduced motion and focus remain accessible', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.emulateMedia({ reducedMotion: 'reduce' });
-  await page.route('**/api/demo', (route) => route.fulfill({ json: snapshot }));
-  await page.goto('/?path=rejected&step=sort');
-  await expect(page.getByRole('button', { name: '불량 격리' })).toHaveAttribute('aria-pressed', 'true');
-  await expect(page.getByText('설명 경로: 검사 → 불량 격리 트레이')).toBeVisible();
+  const presentation = makePresentation({ instruction: '테스트 전용 긴 작업 설명입니다. '.repeat(40) });
+  if (presentation.decision) presentation.decision.summary = '테스트 전용 긴 판단 요약이며 실제 모델의 검증 결과가 아닙니다. '.repeat(30);
+  await fixturePage(page, () => makeSnapshot({ presentation }));
+  await page.goto('/');
+  await expect(page.getByRole('button', { name: '관람 재개' })).toBeVisible();
+  await expect(page.getByText('LIVE · 실제 카메라 수신')).toHaveCount(0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  await page.screenshot({ path: 'test-results/public-viewer-mobile-reference-preview.png', fullPage: true });
+  await page.getByRole('button', { name: '관람 재개' }).focus();
+  expect(await page.getByRole('button', { name: '관람 재개' }).evaluate((element) => getComputedStyle(element).outlineStyle)).not.toBe('none');
+  await page.keyboard.press('Enter');
+  await expect(page.getByText('LIVE · 실제 카메라 수신')).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: 'test-results/public-mobile-TEST-FIXTURE-not-azure.png', fullPage: true });
 });
 
-test('operator entry is still explicitly authenticated', async ({ page }) => {
-  const requests: string[] = [];
-  page.on('request', (request) => requests.push(new URL(request.url()).pathname));
-  await page.route('**/api/config', (route) => route.fulfill({ status: 503, json: { error: { code: 'offline', message: 'Test-only operator configuration failure.' } } }));
-  await page.goto('/operator');
-  await expect.poll(() => requests.includes('/api/config')).toBe(true);
-  expect(requests.includes('/api/demo')).toBe(false);
-  await expect(page.getByRole('heading', { name: '비전 검사 · 부품 분류' })).toHaveCount(0);
+test('operator path still requires config/auth even with public query parameters', async ({ page }) => {
+  const { requests } = await fixturePage(page, referenceSnapshot);
+  await page.goto('/operator?view=demo');
+  await expect(page.getByRole('heading', { name: '작업 공간에 로그인' })).toBeVisible();
+  await expect(page.getByRole('alert')).toContainText('콘솔을 시작할 수 없습니다');
+  expect(requests.some((request) => request.path === '/api/config')).toBe(true);
+  expect(requests.some((request) => request.path === '/api/demo')).toBe(false);
+  await expect(page.getByRole('heading', { name: '실제 작업 셀 카메라' })).toHaveCount(0);
 });

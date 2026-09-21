@@ -15,7 +15,7 @@
     "pretest": "npm run generate:schema",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "playwright test",
+    "test:e2e": "playwright test && playwright test --config playwright.public.config.ts",
     "test:public-e2e": "playwright test --config playwright.public.config.ts",
     "prebuild": "npm run generate:schema",
     "build": "tsc --noEmit && vite build && node scripts/check-production.mjs",

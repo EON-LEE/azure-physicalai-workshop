@@ -20,6 +20,15 @@ function visit(key) {
 }
 visit('index.html');
 assert(!firstLoad.has(operator.file), 'Public page must not eagerly load operator authentication');
+const msal = Object.values(manifest).find((entry) => entry.src === 'src/auth/msal.ts');
+assert(msal?.isDynamicEntry, 'MSAL must be loaded only by the protected operator route');
+assert(!firstLoad.has(msal.file), 'Public page must not eagerly load MSAL');
+for (const asset of firstLoad) {
+  const content = await readFile(join(dist, asset), 'utf8');
+  for (const forbidden of ['/api/config', '/api/runtime', '/api/environments', '/api/runs', 'acquireTokenSilent', 'login.microsoftonline.com']) {
+    assert(!content.includes(forbidden), `Protected API/authentication reached public first load: ${asset}: ${forbidden}`);
+  }
+}
 
 const markers = [
   'TEST_ONLY_FACTORY_FIXTURE',
@@ -28,6 +37,9 @@ const markers = [
   'test:fixture-server',
   '127.0.0.1:4178',
   '/tests/browser/',
+  'PUBLIC_PRESENTATION_TEST_FIXTURE',
+  '/test-only-fixture.css',
+  'WorkcellDiagram',
 ];
 let checked = 0;
 async function inspect(directory) {
@@ -42,4 +54,4 @@ async function inspect(directory) {
   }
 }
 await inspect(dist);
-console.log(`Production boundary verified: public entry, lazy protected operator, ${checked} assets, no test-fixture markers.`);
+console.log(`Production boundary verified: public read-only entry, lazy operator/MSAL, ${checked} assets, no private first-load APIs or test fixtures.`);

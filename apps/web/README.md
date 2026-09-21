@@ -5,13 +5,19 @@ Korean-first React/TypeScript demonstration viewer and protected operator consol
 [`public demo API`](../../docs/public-demo-api.md). `/operator` retains the
 authenticated [`operator API`](../../docs/http-api.md).
 
-The public reference view is a clearly labeled workcell schematic and interactive
-explanation, not browser-simulated robot motion or fabricated live footage.
+The public page shows an authorized, bounded automatic presentation: actual
+Isaac Sim camera, same-cycle Foundry image input and decision, actual motion
+telemetry, and independently measured inspection/physical results. The story is
+to keep a surface-defective part out of the downstream process and isolate it.
+There are no local scenario selectors, fabricated progress, schematic fallback,
+replay clips or replacement camera images.
 Actual camera PNGs are shown only after a pinned synthetic reference publication.
 Private environments, histories, editing, approvals and motion remain protected.
 
-The web/API are deployed on Azure. GPU/physical execution is still blocked;
-neither browser tests nor the reference schematic prove live Isaac Sim operation.
+The web/API deployment and GPU/physical acceptance are owned by the parent
+workstream. Frontend CPU/browser tests do not verify deployed Azure, Foundry
+classification, robot motion or real hardware. The viewer reports the current
+public API state instead of hard-coding a deployment or readiness claim.
 
 ## Build and serve
 
@@ -40,8 +46,8 @@ browser and works with `script-src 'self'` without `unsafe-eval`. At runtime,
 blocks validation and save rather than silently using an old schema.
 
 `npm run dev` binds Vite to `127.0.0.1:5173` and forwards `/api` to
-`http://127.0.0.1:8000`. The development server still requires the real API and
-real Entra configuration. `npm run preview` serves the production assets for
+`http://127.0.0.1:8000`. The development server still requires the real public API; operator access
+also requires real Entra configuration. `npm run preview` serves the production assets for
 inspection; it is not a production managed runtime.
 
 ### Windows + WSL
@@ -65,8 +71,21 @@ workaround, not a CI requirement.
 
 `src/main.tsx` selects the public audience entry by default. It requests only
 `GET /api/demo` without cookies or bearer tokens; it does not load MSAL or call
-private APIs. Reference-path and explanation-step selections are local URL state,
-not cloud commands.
+private APIs. `/` and `/?view=demo` are the same public experience. The public
+client permits only three same-origin read-only routes:
+
+- `GET /api/demo`: additive optional/nullable `presentation` metadata.
+- `GET /api/demo/frame?camera=overview&epoch=<UUID>`: only when base
+  `mode`, `simulation.live_available`, `simulation.status`, `frame_url` and
+  publication capabilities allow live imagery, and the current presentation
+  has an unexpired matching scene epoch.
+- `GET /api/demo/evidence?observation_id=<UUID>`: the original image for the
+  currently published decision; the URL is allowlisted, never arbitrary.
+
+Every public request uses `credentials: omit`, `cache: no-store`,
+`redirect: error`, no bearer token and a 15-second timeout covering the body.
+No public interaction starts/stops a server task, requests a model invocation,
+edits a scene, or dispatches robot motion.
 
 Only `/operator` lazy-loads the existing authentication entry, which fetches
 `GET /api/config` and initializes MSAL. Tenant ID, SPA client ID and delegated
@@ -94,7 +113,48 @@ font host or third-party analytics is required.
 
 ## Customer workflow
 
-Audience members need no login to explore the public inspection/sorting scenario.
+### Public presentation
+
+The default view is the actual current server scenario, not a visitor-selected
+expected result. The approved presentation alternates normal and surface-defect
+synthetic parts. Missing/null presentation means **no published automatic
+presentation**, even when older base camera-ready flags are present.
+
+Public snapshots poll every two seconds and camera PNGs at most once per second
+while visible. PNG signature, content type, bounded size, capture timestamp,
+frame ID and physics-step headers are checked. `X-Scene-Epoch` must match the
+snapshot's epoch. Evidence requires `X-Frame-Id` equal to `observation_id` and the
+original `X-Captured-At` matching the decision. Historical evidence is clearly
+labeled **not LIVE** and is not subject to the live five-second freshness limit.
+Camera and evidence mismatches return conflict semantics, hide the mismatched
+images/decision and refresh the snapshot. A new cycle/epoch/run clears previous
+images before reading matching data. No frame with an error, decode failure,
+stale/future timestamp or hidden-view state is labeled LIVE.
+
+Progress labels derive only from actual presentation/motion fields, never
+elapsed time. Missing `motion.phase` is shown as unavailable. A command ACK,
+`motion.status: succeeded` or `presentation.status: completed` alone is not
+task success. **A successful task requires a succeeded result with both
+`physical_success: true` and `inspection_correct: true`.** The two outcomes
+are shown separately, alongside measured part/target positions and the
+server's literal result message. No confidence score, accuracy percentage or
+throughput is invented. Last recorded outcomes may remain visible when the
+camera is unavailable, explicitly labeled as historical rather than live.
+
+**Pause/resume viewing** stops browser reads and image display, not the robot.
+It is keyboard-accessible and uses `?viewing=paused` URL state. Reduced-motion
+visitors start paused with a one-time metadata read. Hidden tabs and unmounted
+views abort reads and revoke object URLs. Stopped, failed, expired, unavailable
+and preparing states are prominent; retry buttons issue GETs only.
+
+Secondary disclosure distinguishes Foundry connectivity-only evidence,
+test-fixture Azure CPU training smoke, and current inspection/physics outcomes.
+The demo is **Foundry inspection plus bounded conventional robotics/PhysX**,
+not a trained VLA/policy controlling the robot.
+
+### Protected operator console
+
+Audience members need no login to view the public inspection/sorting presentation.
 The controls below belong to the separately protected operator area.
 
 - **Environment Studio:** Select an API reference template, explicitly load a
@@ -155,17 +215,29 @@ npx playwright install chromium --only-shell
 npm run test:e2e
 ```
 
-The browser harness lives entirely in `tests/browser/`. It explicitly injects
+`npm run test:e2e` runs both the preserved operator harness and public production
+entry browser tests. `npm run test:public-e2e` runs only public browser tests.
+
+The operator browser harness lives entirely in `tests/browser/`. It explicitly injects
 a test API into `ConsoleApp`, runs under a strict CSP and never authenticates
 to or calls Azure. Its static PNG and every screenshot are labeled
 **TEST-ONLY FIXTURES — not Azure/GPU verification**. Browser checks cover
 keyboard approval, delayed terminal confirmation, raw JSON/conflict handling,
-navigation cleanup and narrow-screen layout.
+navigation cleanup and narrow-screen layout. The public tests in
+`tests/public-browser/` run the actual built entry with test-only intercepted
+GET responses and an external same-origin **TEST-ONLY** banner. Static test
+PNGs and screenshot filenames explicitly say they are not Azure/GPU/Foundry
+verification. They cover current-cycle evidence, phase/result transitions,
+missing publication, image conflicts, pause/resume, 390px long-text layout,
+reduced motion, strict CSP, and the still-authenticated `/operator`.
 
 Production always builds `index.html` → `src/main.tsx`; there is no environment
 variable, URL parameter or fixture service that changes this. Vite rejects any
 `tests`/`fixtures` module in the production module graph. The post-build check
-requires one production entry and scans built assets for test-only markers.
+requires one public production entry with lazy operator/MSAL chunks, rejects
+private API/auth modules in the public static import graph, and scans built
+assets for test-only markers. The preview CSP allows only self-hosted scripts
+and styles, without `unsafe-eval` or inline-style allowances.
 Test outputs and the separate `.fixture-dist/` are ignored and must never be
 packaged into the API image.
 
