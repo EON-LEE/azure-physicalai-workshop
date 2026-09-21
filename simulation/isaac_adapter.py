@@ -29,7 +29,7 @@ from apps.api.models import MotionPhase
 from learning.capture import resolve_joint_targets
 from learning.contract import CameraSample, FrameSample
 from simulation.asset_references import validate_usd_bundle
-from simulation.extensions import SceneSpec
+from simulation.extensions import SceneSpec, can_reset_in_place
 from simulation.motion import (
     GripperRamp,
     InspectionRoute,
@@ -63,6 +63,11 @@ class IsaacWorkcell:
     def load(self, spec: SceneSpec) -> None:
         self._validate_asset_bundle()
         self.stop()
+        if self.world is not None and can_reset_in_place(self.spec, spec):
+            self.spec = spec
+            self.world.reset(soft=True)
+            self._prepare_episode()
+            return
         for camera in self.cameras.values():
             camera.destroy()
         self.cameras.clear()
@@ -129,32 +134,7 @@ class IsaacWorkcell:
                 ),
             )
         )
-        if spec.defective:
-            crack = UsdGeom.Cube.Define(stage, "/World/Part/SurfaceDefect")
-            crack.CreateSizeAttr(1)
-            crack.CreateDisplayColorAttr([Gf.Vec3f(0.015, 0.015, 0.015)])
-            transform = UsdGeom.Xformable(crack.GetPrim())
-            transform.AddTranslateOp().Set(Gf.Vec3d(0, 0, 0.501))
-            transform.AddScaleOp().Set(Gf.Vec3f(0.08, 0.8, 0.01))
-            defect_material = UsdShade.Material.Define(stage, "/World/DefectMaterial")
-            defect_shader = UsdShade.Shader.Define(stage, "/World/DefectMaterial/Surface")
-            defect_shader.CreateIdAttr("UsdPreviewSurface")
-            defect_shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(
-                Gf.Vec3f(0.015, 0.015, 0.015)
-            )
-            defect_shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.8)
-            defect_material.CreateSurfaceOutput().ConnectToSource(
-                defect_shader.ConnectableAPI(), "surface"
-            )
-            parent_binding = UsdShade.MaterialBindingAPI(stage.GetPrimAtPath("/World/Part"))
-            # The default cube binding otherwise overrides the child's dark material.
-            UsdShade.MaterialBindingAPI.SetMaterialBindingStrength(
-                parent_binding.GetDirectBindingRel(), UsdShade.Tokens.weakerThanDescendants
-            )
-            UsdShade.MaterialBindingAPI.Apply(crack.GetPrim()).Bind(defect_material)
-            bound_material, _ = UsdShade.MaterialBindingAPI(crack.GetPrim()).ComputeBoundMaterial()
-            if bound_material.GetPath() != defect_material.GetPath():
-                raise RuntimeError("The reference surface-defect material is not visibly bound.")
+        self._create_defect()
         source = spec.station(spec.source_id).position
         for name, eye, target, up in (
             ("overview", (1.3, 1.15, 1.2), (0.25, 0, 0.28), (0, 0, 1)),
@@ -183,8 +163,49 @@ class IsaacWorkcell:
         self.dynamics.initialize()
         for camera in self.cameras.values():
             camera.initialize()
+        self._prepare_episode()
+
+    def _create_defect(self) -> None:
+        stage = self.world.stage
+        self.defect = UsdGeom.Cube.Define(stage, "/World/Part/SurfaceDefect")
+        self.defect.CreateSizeAttr(1)
+        self.defect.CreateDisplayColorAttr([Gf.Vec3f(0.015, 0.015, 0.015)])
+        transform = UsdGeom.Xformable(self.defect.GetPrim())
+        transform.AddTranslateOp().Set(Gf.Vec3d(0, 0, 0.501))
+        transform.AddScaleOp().Set(Gf.Vec3f(0.08, 0.8, 0.01))
+        material = UsdShade.Material.Define(stage, "/World/DefectMaterial")
+        shader = UsdShade.Shader.Define(stage, "/World/DefectMaterial/Surface")
+        shader.CreateIdAttr("UsdPreviewSurface")
+        shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(
+            Gf.Vec3f(0.015, 0.015, 0.015)
+        )
+        shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.8)
+        material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+        parent_binding = UsdShade.MaterialBindingAPI(stage.GetPrimAtPath("/World/Part"))
+        UsdShade.MaterialBindingAPI.SetMaterialBindingStrength(
+            parent_binding.GetDirectBindingRel(), UsdShade.Tokens.weakerThanDescendants
+        )
+        UsdShade.MaterialBindingAPI.Apply(self.defect.GetPrim()).Bind(material)
+        bound, _ = UsdShade.MaterialBindingAPI(self.defect.GetPrim()).ComputeBoundMaterial()
+        if bound.GetPath() != material.GetPath():
+            raise RuntimeError("The reference surface-defect material is not visibly bound.")
+
+    def _prepare_episode(self) -> None:
+        self.defect.GetVisibilityAttr().Set(
+            UsdGeom.Tokens.inherited if self.spec.defective else UsdGeom.Tokens.invisible
+        )
+        self.last_render_frame.clear()
+        self.empty_frames.clear()
         self.robot.gripper.set_joint_positions(self.robot.gripper.joint_opened_positions)
+        self.robot.set_joint_velocities(np.zeros(9))
+        self.robot.apply_action(
+            ArticulationAction(
+                joint_positions=self.robot.get_joint_positions(), joint_velocities=np.zeros(9)
+            )
+        )
         self.world.play()
+        for camera in self.cameras.values():
+            camera.resume()
         self.steps = 0
         self.target = None
         self.route = None

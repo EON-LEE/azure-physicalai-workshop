@@ -13,4 +13,5 @@ COPY simulation/ simulation/
 COPY learning/__init__.py learning/common.py learning/contract.py learning/capture.py learning/
 ENV PYTHONPATH=/app PYTHONUNBUFFERED=1 ISAAC_SIM_VERSION=6.0.0
 USER 1234:1234
+HEALTHCHECK --interval=15s --timeout=5s --start-period=240s --retries=2 CMD ["/isaac-sim/python.sh", "-m", "simulation.health"]
 ENTRYPOINT ["/isaac-sim/python.sh", "-m", "simulation.bootstrap_tls"]

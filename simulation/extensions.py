@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from importlib.metadata import entry_points
 from math import hypot
 
@@ -39,6 +39,14 @@ class SceneSpec:
             if station.id == station_id:
                 return station
         raise Problem(422, "unknown_station", "The requested station is not in the loaded scene.")
+
+
+def can_reset_in_place(previous: SceneSpec, current: SceneSpec) -> bool:
+    return (
+        not previous.record_demonstration
+        and not current.record_demonstration
+        and replace(previous, seed=current.seed, defective=current.defective) == current
+    )
 
 
 class SceneBuilder(ABC):

@@ -13,6 +13,7 @@ from apps.api.models import utcnow
 from simulation.core import LoadScene, SimulationCore, StartMotion, StopMotion
 from simulation.demonstrations import Demonstration
 from simulation.extensions import SceneRegistry
+from simulation.health import HEARTBEAT
 from simulation.http import BridgeSettings, create_bridge_app
 
 log = logging.getLogger(__name__)
@@ -60,6 +61,7 @@ def main() -> None:
     thread.start()
     last_capture = 0.0
     active_epoch = None
+    last_heartbeat = 0.0
 
     def finish(status, message=None):
         completed_at = utcnow()
@@ -140,12 +142,18 @@ def main() -> None:
                 if active_epoch is None:
                     raise
                 core.fail_scene(str(exc), epoch=active_epoch)
+            if time.monotonic() - last_heartbeat >= 1:
+                temporary = HEARTBEAT.with_suffix(".new")
+                temporary.write_text(str(time.monotonic()), encoding="ascii")
+                temporary.replace(HEARTBEAT)
+                last_heartbeat = time.monotonic()
             time.sleep(0.001)
     finally:
         hardware.stop()
         server.should_exit = True
         thread.join(timeout=10)
         simulation_app.close()
+        HEARTBEAT.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

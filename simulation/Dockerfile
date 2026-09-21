@@ -22,4 +22,5 @@ COPY --from=assets /reference/bundle.json /opt/physicalai/reference/bundle.json
 ENV PYTHONPATH=/app PYTHONUNBUFFERED=1
 USER 1234:1234
 EXPOSE 8443
+HEALTHCHECK --interval=15s --timeout=5s --start-period=240s --retries=2 CMD ["/isaac-sim/python.sh", "-m", "simulation.health"]
 ENTRYPOINT ["/isaac-sim/python.sh", "-m", "simulation.bootstrap_tls"]

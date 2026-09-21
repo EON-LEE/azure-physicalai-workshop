@@ -44,6 +44,13 @@ contacts and the 0.2 m/s configured watchdog remain enabled. Its measured-state
 route retains gripper drive targets after contact, checks that the part lifts,
 and checks its actual destination. Scene frames and motion telemetry are fenced
 by the producer's scene epoch. These controls are not industrial safety certification.
+Repeated destruction/recreation of the reference stage exhausted RTX resource
+descriptors during a long live run. Normal/defect episodes with identical geometry
+now reset the existing world and toggle the actual defect material's visibility;
+different geometry and demonstration recording still require a full scene load.
+The new protocol epoch and genuinely rendered camera warm-up remain mandatory.
+Container health checks use a main-thread heartbeat so a responsive HTTP thread
+cannot hide a stalled physics/render loop.
 
 ## Required approvals and inputs
 
