@@ -94,6 +94,30 @@ describe('anonymous same-cycle public images', () => {
     await expect(getDemoEvidence(decision, signal())).resolves.toMatchObject({ frameId: observationId, capturedAt: decision.captured_at });
     expect(fetch).toHaveBeenCalledWith(`/api/demo/evidence?observation_id=${observationId}`, expect.objectContaining({ credentials: 'omit', cache: 'no-store' }));
   });
+  it.each([
+    ['2026-09-21T16:00:00+00:00', '2026-09-21T16:00:00Z'],
+    ['2026-09-21T16:00:00Z', '2026-09-21T16:00:00+00:00'],
+    ['2026-09-21T16:00:00.123456+00:00', '2026-09-21T16:00:00.123456Z'],
+    ['2026-09-21T16:00:00.120000+00:00', '2026-09-21T16:00:00.12Z'],
+    ['2026-09-22T01:00:00+09:00', '2026-09-21T16:00:00Z'],
+  ])('matches evidence header %s to JSON %s by instant, not spelling', async (capturedAt, decisionTime) => {
+    const decision = { ...makePresentation().decision!, captured_at: decisionTime };
+    const snapshot = makeSnapshot({ presentation: makePresentation({ decision }) });
+    expect(demoSchema.safeParse(snapshot).success).toBe(true);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(pngBytes, { headers: {
+      'Content-Type': 'image/png', 'X-Frame-Id': decision.observation_id, 'X-Captured-At': capturedAt,
+    } })));
+    await expect(getDemoEvidence(decision, signal())).resolves.toMatchObject({
+      frameId: decision.observation_id, capturedAt,
+    });
+  });
+  it('still rejects a one-millisecond evidence mismatch across UTC timestamp spellings', async () => {
+    const decision = { ...makePresentation().decision!, captured_at: '2026-09-21T16:00:00.123Z' };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(pngBytes, { headers: {
+      'Content-Type': 'image/png', 'X-Frame-Id': decision.observation_id, 'X-Captured-At': '2026-09-21T16:00:00.124000+00:00',
+    } })));
+    await expect(getDemoEvidence(decision, signal())).rejects.toMatchObject({ code: 'evidence_changed', status: 409 });
+  });
   it.each(['id', 'time'])('rejects the wrong current evidence %s and refreshes via conflict semantics', async (kind) => {
     const decision = makePresentation().decision!;
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(pngBytes, { headers: {
