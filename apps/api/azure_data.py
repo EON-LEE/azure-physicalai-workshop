@@ -13,7 +13,7 @@ from azure.storage.blob import BlobServiceClient, ContentSettings
 from pydantic import BaseModel
 
 from apps.api.errors import Problem, unavailable
-from apps.api.models import EnvironmentRecord, RunRecord, Stored
+from apps.api.models import EnvironmentRecord, PresentationRecord, RunRecord, Stored
 
 log = logging.getLogger(__name__)
 T = TypeVar("T")
@@ -116,6 +116,18 @@ class CosmosStore:
 
     def get_run(self, owner: str, run_id: UUID) -> Stored[RunRecord] | None:
         return self._read(owner, f"run:{run_id}", RunRecord)
+
+    def get_presentation(
+        self, owner: str, presentation_id: str
+    ) -> Stored[PresentationRecord] | None:
+        return self._read(owner, f"presentation:{presentation_id}", PresentationRecord)
+
+    def put_presentation(
+        self, owner: str, record: PresentationRecord, etag: str | None
+    ) -> Stored[PresentationRecord]:
+        if record.owner_key != owner:
+            raise Problem(403, "presentation_owner", "Presentation owner does not match.")
+        return self._write(owner, f"presentation:{record.id}", "presentation", record, etag)
 
     def list_runs(self, owner: str) -> list[RunRecord]:
         return self._list(owner, "run", RunRecord)

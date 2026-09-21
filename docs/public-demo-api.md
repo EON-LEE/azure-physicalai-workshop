@@ -40,6 +40,7 @@ Response:
     "message_code": "live_not_published",
     "frame_url": null
   },
+  "presentation": null,
   "agent": {
     "provider": "microsoft_foundry",
     "connectivity": "verified",
@@ -76,21 +77,200 @@ does; it must not claim execution or send a write to any API.
 
 ## Actual live frames, only after deliberate publication
 
-`GET /api/demo/frame?camera=overview|inspection` is anonymous but works only when
+`GET /api/demo/frame?camera=overview|inspection&epoch=<UUID>` is anonymous but works only when
 the operator has explicitly enabled a public live publication with a fixed
 owner, environment ID and immutable revision. The backend rejects new/private
 revisions rather than automatically republishing them.
 
 A successful response is a real `image/png`, with `X-Frame-Id`,
-`X-Captured-At`, `X-Physics-Steps`. Fetch without an Authorization header.
+`X-Captured-At`, `X-Physics-Steps`, and `X-Scene-Epoch`. Fetch without an Authorization header.
 Use bounded polling only while visible and in live mode; revoke object URLs and
 abort requests on navigation/unmount. Missing publication or live failure returns
 503 with the normal structured error envelope, never a substitute frame.
+An epoch mismatch is 409. Omitting `epoch` supports legacy clients, but paired
+presentation clients must send the current `presentation.scene_epoch`. The API
+checks the pinned scene before and after capture, including same-revision resets;
+it never returns an old cached image across epochs. All image responses are
+`Cache-Control: no-store`.
 
 The public snapshot never exposes tenant IDs, object IDs, auth scopes, keys,
-private run IDs, instructions, manifests, arbitrary artifact paths, or internal
+private run IDs, private instructions, manifests, arbitrary artifact paths, or internal
 simulator exceptions. The scene in this release is the approved synthetic
 reference scene, not a public projection of all Cosmos environments.
+
+## Bounded alternating reference presentation
+
+The optional additive `presentation` field uses the frozen public-demo-v1 shape
+below. `null` means no presentation is configured or the dedicated record has
+not been created yet. It does **not** hide storage, authorization, or validation
+errors: those return a generic structured 503. `/api/demo` uses `no-store` when
+a presentation is configured. Legacy single-scene publication still works when
+none of the three new paired settings is supplied.
+
+This is an illustrative payload, **not a claim of live completion**:
+
+```json
+{
+  "id": "approved-reference-window",
+  "status": "awaiting_motion",
+  "cycle": 2,
+  "total_cycles": 20,
+  "scenario": "surface_defect",
+  "instruction": "Inspect the synthetic part and sort it using the configured accepted or rejected station.",
+  "updated_at": "2026-09-21T12:00:15+00:00",
+  "expires_at": "2026-09-21T12:30:00+00:00",
+  "scene_epoch": "12345678-1234-4234-8234-123456789abc",
+  "run_id": "23456789-1234-4234-8234-123456789abc",
+  "decision": {
+    "classification": "rejected",
+    "summary": "Illustrative visible-surface inspection summary.",
+    "target_station_id": "rejected",
+    "observation_id": "34567890-1234-4234-8234-123456789abc",
+    "captured_at": "2026-09-21T12:00:12+00:00",
+    "image_url": "/api/demo/evidence"
+  },
+  "motion": null,
+  "result": null,
+  "counts": {
+    "attempted": 2,
+    "succeeded": 1,
+    "failed": 0,
+    "inspected_correctly": 2,
+    "physically_completed": 1
+  }
+}
+```
+
+| Field | Contract |
+|---|---|
+| `status` | `preparing`, `inspecting`, `awaiting_motion`, `moving`, `completed`, `stopped`, or `failed` |
+| `scenario` | `normal` on odd cycles, `surface_defect` on even cycles |
+| `cycle`, `total_cycles` | Integers, 1 through 1000; current cycle cannot exceed total |
+| `scene_epoch`, `run_id` | UUID or null; cleared at the start of each new cycle |
+| `decision` | Null or the original Foundry classification, summary, target, observation UUID, original capture timestamp, and literal `/api/demo/evidence` |
+| `motion` | Null or `{status, phase, part_position_m, target_position_m}` |
+| `motion.status` | `queued`, `running`, `succeeded`, `failed`, `cancelled`, `timed_out`, or `cancelling` |
+| `motion.phase` | Null or `idle`, `approaching`, `grasping`, `lifting`, `inspection_station`, `transporting`, `releasing`, `returning`, `complete`, `stopped` |
+| `motion.part_position_m` | Three finite numbers or null; only current matching real telemetry |
+| `motion.target_position_m` | Three finite numbers from the actual plan's canonical target |
+| `result` | Null or `{status, physical_success, inspection_correct, final_position_m, completed_at, message}` |
+| `result.status` | `succeeded`, `failed`, `cancelled`, or `timed_out` |
+| `result.inspection_correct` | Boolean, or null if no inspection decision exists |
+| `result.final_position_m` | Three finite numbers or null; never inferred from a desired destination |
+| `counts` | Integer `attempted`, `succeeded`, `failed`, `inspected_correctly`, `physically_completed` |
+
+All timestamps are timezone-aware ISO 8601. `completed` means the bounded
+presentation finished its authorized cycles; use the independent result and
+counts to evaluate quality, not this lifecycle label. `succeeded` requires both
+correct inspection and physically verified sorting. An acknowledged command or
+model text is never physical completion.
+
+`GET /api/demo/evidence?observation_id=<UUID>` returns **only the current
+authorized presentation run's original input PNG**, from Azure Blob with checksum
+verification. It returns `X-Frame-Id` equal to the requested observation UUID and
+`X-Captured-At` equal to the original capture time. This is recorded inspection
+input, not a current camera stream, so do not apply live-frame freshness rules.
+The query is required; an old observation returns 409 (or generic unavailable).
+There is no owner/run/blob-path selector. The API rereads the presentation binding
+after fetching pixels to detect cycle changes in flight.
+
+Clients must clear previous camera/evidence images when cycle, epoch, or
+observation changes. Decision, motion and result become null on a new cycle;
+historical counters persist but an old outcome is never relabeled as the new
+scenario. A frame/backend failure sets base `simulation.live_available=false`;
+the last recorded terminal outcome can remain visible as history. Expired or
+stale active state projects `stopped`, with no invented cancellation/completion.
+Moving/awaiting-motion heartbeats expire after 10 seconds; bounded synchronous
+Foundry planning allows 150 seconds. An unconfirmed queued/running/cancelling
+motion is hidden when stopped, rather than shown moving forever.
+
+Motion phase comes only from optional private `SimulationStatus.motion`:
+
+```json
+{
+  "command_id": "23456789-1234-4234-8234-123456789abc",
+  "phase": "grasping",
+  "object_position": [0.35, 0.25, 0.2],
+  "target_station_id": "rejected"
+}
+```
+
+`command_id` and `target_station_id` may be null for idle telemetry. The public
+phase/position are null if absent, disconnected, or not matched to the current
+epoch, command and planned target. They are never computed from elapsed time.
+
+### Exact deployment settings
+
+Configure these identically on the web API and explicitly authorized runner:
+
+| Environment variable | Meaning |
+|---|---|
+| `PUBLIC_DEMO_PUBLISH_LIVE=true` | Explicit public reference publication |
+| `PUBLIC_DEMO_OWNER_ID` | Approved operator object UUID in `ENTRA_TENANT_ID` |
+| `PUBLIC_DEMO_ENVIRONMENT_ID` | Approved normal environment ID |
+| `PUBLIC_DEMO_REVISION` | SHA-256 revision of the exact approved normal document |
+| `PUBLIC_DEMO_DEFECT_ENVIRONMENT_ID` | Distinct approved surface-defect environment ID |
+| `PUBLIC_DEMO_DEFECT_REVISION` | SHA-256 revision of the exact approved defect document |
+| `PUBLIC_DEMO_PRESENTATION_ID` | Single-use, lowercase identifier for this approved window, at most 64 characters |
+
+The new three settings are all-or-nothing. Both documents must already be saved
+under the configured owner. They must exactly match
+`examples/inspection-cell.json`, apart from environment ID/display name and the
+explicit normal seed **42** versus defect seed **43**. Geometry, workflow,
+payload/speed limits, freshness and live 30-second deadlines cannot vary. Pinning
+a custom document hash alone does not authorize its public exposure.
+
+The runner additionally requires `ALLOW_REFERENCE_PRESENTATION=true` and
+`PRESENTATION_MAX_SECONDS` (30 through **21600**, explicitly supplied).
+`PRESENTATION_CYCLES` defaults to **20**, maximum **1000**. Optional legacy
+`PRESENTATION_ID`, if supplied, must equal `PUBLIC_DEMO_PRESENTATION_ID`.
+All normal managed-identity API/Cosmos/Blob/Foundry/simulator settings still apply;
+no new credentials or anonymous identity are introduced.
+
+Launch only in an approved Azure job using the root locked environment:
+
+```bash
+uv run --locked python -m scripts.run_reference_demo
+```
+
+The runner creates one dedicated Cosmos `presentation:<id>` document in the
+approved owner's partition. It uses create-if-absent and ETag conditional writes,
+not an in-memory production store and not `list_runs`. The authorization window,
+total cycles, owner, both revisions and runner claim are persisted before any
+activation/inference/motion. Deterministic UUIDv5 run IDs bind owner,
+presentation, both environment IDs/revisions and the 1-based cycle. Changing
+duration/cycles cannot reuse the ID. A competing or crashed runner cannot renew
+or take over the claim; a completed/stopped/failed invocation only returns its
+recorded outcome without more paid calls or motion. Reconcile any unconfirmed
+command and deliberately configure a **new approved presentation ID** before
+another window; automatic restart is not reauthorization.
+
+For each cycle, the runner activates the pinned revision and requires a newly
+ready epoch, then sends actual observation image plus the same generic task
+through the existing Foundry planner. Seed, expected label and evaluation result
+are **never sent to Foundry**. The original input PNG, response decision and
+model-response ID remain in the existing owner-scoped run/artifact records.
+The dedicated presentation references only its deterministic current run, and
+the public reader validates document, request fingerprint, instruction,
+authorization time, epoch and artifact binding before projecting a safe DTO.
+No arbitrary operator history, prompt, account identifier or artifact path is
+published.
+
+Synthetic expected labels are used only for evaluation **after** the real model
+decision. A mismatch preserves the decision, cancels before motion, publishes a
+failed inspection and counts no physical success. The operator window and ETag
+claim are checked after inference and immediately before approval. The existing
+30-second simulator task deadline/final target tolerance remain unchanged.
+The runner reconciles actual terminal events, stops after three unsuccessful
+cycles (inspection or physical), and never claims a cancellation ACK is terminal.
+On expiry/error it may use at most a bounded extra cancellation-confirmation
+window, but cannot authorize another command. Storage errors propagate; no
+successful emptiness or private exception text is substituted.
+
+This feature does not relax `live_acceptance`'s 20-episode/18-success physical
+suite, imply balanced evaluation accuracy, or turn a public demo into all G0-G7
+release evidence. A Spot GPU may disappear; a publication is not an always-on
+availability guarantee. No live execution is implied by backend unit tests.
 
 ## UI priorities
 

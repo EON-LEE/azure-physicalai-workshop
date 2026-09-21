@@ -1,143 +1,349 @@
-"""Run a bounded, operator-authorized reference presentation entirely inside Azure."""
+"""Single-use, operator-authorized paired presentation. No anonymous inference or motion."""
 
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
-from datetime import UTC, datetime
-from uuid import NAMESPACE_URL, uuid5
+from datetime import timedelta
+from uuid import uuid4
 
 from apps.api.errors import Problem
 from apps.api.main import azure_service
-from apps.api.models import TERMINAL, Principal, StartRun
-from apps.api.public_demo import is_reference_scene
+from apps.api.models import (
+    TERMINAL,
+    PresentationOutcome,
+    PresentationRecord,
+    RunRecord,
+    StartRun,
+    utcnow,
+)
+from apps.api.presentation import (
+    INSTRUCTION,
+    cycle_run_id,
+    inspection_correct,
+    publication,
+    result_for,
+    slot,
+    validate_record,
+    validate_run,
+)
 from apps.api.settings import Settings
+
+log = logging.getLogger(__name__)
+
+
+class Runner:
+    def __init__(self, service, settings: Settings, cycles: int, maximum_seconds: int):
+        self.service, self.settings = service, settings
+        self.actor, self.environments = publication(settings, service, paired=True)
+        self.cycles, self.maximum_seconds = cycles, maximum_seconds
+        self.stored = None
+        self.monotonic_deadline = time.monotonic() + maximum_seconds
+
+    @property
+    def record(self) -> PresentationRecord:
+        return self.stored.value
+
+    def remaining(self) -> float:
+        return min(
+            self.monotonic_deadline - time.monotonic(),
+            (self.record.expires_at - utcnow()).total_seconds(),
+        )
+
+    def persist(self, **changes) -> None:
+        record = PresentationRecord.model_validate(
+            self.record.model_copy(update={**changes, "updated_at": utcnow()}).model_dump()
+        )
+        validate_record(record, self.settings, self.actor)
+        self.stored = self.service.store.put_presentation(
+            self.actor.owner_key,
+            record,
+            self.stored.etag,
+        )
+
+    def guard(self) -> None:
+        if self.remaining() <= 0:
+            raise Problem(409, "presentation_expired", "The presentation authorization expired.")
+        publication(self.settings, self.service, paired=True)
+        persisted = self.service.store.get_presentation(self.actor.owner_key, self.record.id)
+        if (
+            persisted is None
+            or persisted.etag != self.stored.etag
+            or persisted.value.runner_id != self.record.runner_id
+            or persisted.value.expires_at != self.record.expires_at
+        ):
+            raise Problem(409, "presentation_claim_changed", "The presentation claim changed.")
+
+    def summary(self, *, reused: bool = False) -> dict:
+        record = self.record
+        return {
+            "kind": "actual_reference_presentation",
+            "presentation_id": record.id,
+            "status": record.status,
+            "started_at": record.started_at.isoformat(),
+            "expires_at": record.expires_at.isoformat(),
+            "updated_at": record.updated_at.isoformat(),
+            "total_cycles": record.total_cycles,
+            "stop_reason": record.stop_reason,
+            "cycles": [outcome.model_dump(mode="json") for outcome in record.outcomes],
+            "successes": sum(o.result.status == "succeeded" for o in record.outcomes),
+            "anonymous_control": False,
+            "reused": reused,
+        }
+
+    def claim(self) -> bool:
+        previous = self.service.store.get_presentation(
+            self.actor.owner_key,
+            self.settings.public_demo_presentation_id,
+        )
+        if previous is not None:
+            validate_record(previous.value, self.settings, self.actor)
+            if (
+                previous.value.total_cycles != self.cycles
+                or (previous.value.expires_at - previous.value.started_at).total_seconds()
+                != self.maximum_seconds
+            ):
+                raise Problem(
+                    409,
+                    "authorization_changed",
+                    "A presentation ID cannot change its original authorization.",
+                )
+            if previous.value.status not in {"completed", "stopped", "failed"}:
+                raise Problem(
+                    409,
+                    "presentation_already_claimed",
+                    "Reconcile the existing presentation; restarting cannot renew it.",
+                )
+            self.stored = previous
+            return False
+        started = utcnow()
+        normal, defect = self.environments
+        record = PresentationRecord(
+            id=self.settings.public_demo_presentation_id,
+            owner_key=self.actor.owner_key,
+            normal_environment_id=normal.environment_id,
+            normal_revision=normal.revision,
+            defect_environment_id=defect.environment_id,
+            defect_revision=defect.revision,
+            runner_id=uuid4(),
+            started_at=started,
+            expires_at=started + timedelta(seconds=self.maximum_seconds),
+            updated_at=started,
+            total_cycles=self.cycles,
+            cycle=1,
+            status="preparing",
+        )
+        self.stored = self.service.store.put_presentation(self.actor.owner_key, record, None)
+        return True
+
+    def checked_run(self, run: RunRecord) -> RunRecord:
+        validate_run(self.record, run, self.environments[(self.record.cycle - 1) % 2])
+        return run
+
+    def guard_scene(self) -> None:
+        environment_id, revision, _ = slot(self.record)
+        status = self.service.runtime(self.actor)
+        if (
+            status.status != "ready"
+            or status.environment_id != environment_id
+            or status.revision != revision
+            or status.epoch != self.record.scene_epoch
+        ):
+            raise Problem(409, "scene_changed", "The authorized scene is no longer ready.")
+
+    def cancel(self, run: RunRecord) -> RunRecord:
+        if run.status in TERMINAL:
+            return run
+        run = self.checked_run(self.service.cancel(self.actor, run.id))
+        deadline = time.monotonic() + 10
+        while run.status not in TERMINAL and time.monotonic() < deadline:
+            self.persist(status="stopped", stop_reason="time_limit")
+            time.sleep(0.5)
+            run = self.checked_run(self.service.get_run(self.actor, run.id))
+        if run.status not in TERMINAL:
+            raise Problem(
+                503,
+                "cancellation_unconfirmed",
+                "No simulator terminal event confirmed cancellation.",
+            )
+        return run
+
+    def outcome(self, run: RunRecord) -> None:
+        outcome = PresentationOutcome(
+            cycle=self.record.cycle,
+            run_id=run.id,
+            result=result_for(self.record, run),
+        )
+        self.persist(outcomes=[*self.record.outcomes, outcome])
+
+    def cycle(self) -> None:
+        self.guard()
+        environment_id, revision, _ = slot(self.record)
+        run_id = cycle_run_id(self.record, self.record.cycle)
+        if self.service.store.get_run(self.actor.owner_key, run_id) is not None:
+            raise Problem(
+                409,
+                "presentation_run_exists",
+                "A prior run cannot be adopted into a new presentation.",
+            )
+        previous_epoch = self.service.runtime(self.actor).epoch
+        self.service.activate(self.actor, environment_id, revision)
+        ready_deadline = time.monotonic() + min(300, self.remaining())
+        while time.monotonic() < ready_deadline:
+            self.guard()
+            status = self.service.runtime(self.actor)
+            if (
+                status.status == "ready"
+                and status.environment_id == environment_id
+                and status.revision == revision
+                and status.epoch is not None
+                and status.epoch != previous_epoch
+            ):
+                break
+            if status.status == "unavailable":
+                raise Problem(
+                    503, "simulator_unavailable", "The reference simulator is unavailable."
+                )
+            self.persist(status="preparing")
+            time.sleep(1)
+        else:
+            raise Problem(503, "activation_timeout", "No new ready scene epoch was observed.")
+        self.persist(status="inspecting", scene_epoch=status.epoch, run_id=run_id)
+        self.guard()
+        run = self.checked_run(
+            self.service.start(
+                self.actor,
+                StartRun(
+                    request_id=run_id,
+                    environment_id=environment_id,
+                    revision=revision,
+                    instruction=INSTRUCTION,
+                ),
+            )
+        )
+        if run.status == "awaiting_approval" and run.plan is not None:
+            self.persist(status="awaiting_motion")
+            if inspection_correct(self.record, run) is not True:
+                run = self.cancel(run)
+            elif self.remaining() <= 0:
+                run = self.cancel(run)
+                self.persist(status="stopped", stop_reason="time_limit")
+            else:
+                # Recheck the durable authorization after inference, immediately before approval.
+                self.guard()
+                self.persist(status="moving")
+                self.guard()
+                self.guard_scene()
+                run = self.checked_run(
+                    self.service.approve(
+                        self.actor,
+                        run.id,
+                        run.plan.model_response_id,
+                    )
+                )
+        deadline = time.monotonic() + min(35, max(0, self.remaining()))
+        while run.status not in TERMINAL and time.monotonic() < deadline:
+            self.guard()
+            self.guard_scene()
+            self.persist(status="moving" if run.execution is not None else "inspecting")
+            time.sleep(min(0.5, max(0, deadline - time.monotonic())))
+            run = self.checked_run(self.service.get_run(self.actor, run.id))
+            self.guard_scene()
+        if run.status not in TERMINAL:
+            run = self.cancel(run)
+            self.persist(status="stopped", stop_reason="time_limit")
+        self.outcome(run)
+
+    def run(self) -> dict:
+        if not self.claim():
+            return self.summary(reused=True)
+        failures = 0
+        try:
+            for cycle in range(1, self.cycles + 1):
+                if self.remaining() <= 0:
+                    self.persist(status="stopped", stop_reason="time_limit")
+                    break
+                self.persist(cycle=cycle, status="preparing", scene_epoch=None, run_id=None)
+                self.cycle()
+                failures += self.record.outcomes[-1].result.status != "succeeded"
+                if self.record.status == "stopped":
+                    break
+                if failures >= 3:
+                    self.persist(status="failed", stop_reason="repeated_failures")
+                    break
+                self.persist(status="completed" if cycle == self.cycles else "preparing")
+                if cycle != self.cycles:
+                    time.sleep(min(2, max(0, self.remaining())))
+        except (Problem, TimeoutError) as exc:
+            # Never expose dependency messages, prompts or arbitrary operator records publicly.
+            log.warning("Reference presentation stopped (%s)", type(exc).__name__)
+            reason = "dependency_unavailable"
+            if isinstance(exc, Problem):
+                if exc.code == "presentation_expired":
+                    reason = "time_limit"
+                elif exc.code == "scene_changed":
+                    reason = "scene_changed"
+                elif exc.code == "cancellation_unconfirmed":
+                    reason = "cancellation_unconfirmed"
+            if self.record.run_id is not None:
+                saved = self.service.store.get_run(self.actor.owner_key, self.record.run_id)
+                if saved is not None:
+                    run = self.checked_run(saved.value)
+                    try:
+                        run = self.cancel(run)
+                        if reason != "scene_changed" and (
+                            not self.record.outcomes
+                            or self.record.outcomes[-1].cycle != self.record.cycle
+                        ):
+                            self.outcome(run)
+                    except Problem:
+                        log.warning("Reference presentation cancellation remains unconfirmed")
+                        reason = "cancellation_unconfirmed"
+            self.persist(
+                status="stopped" if reason == "time_limit" else "failed", stop_reason=reason
+            )
+        return self.summary()
 
 
 def run_cycles(
     service,
-    actor: Principal,
-    environment_id: str,
-    revision: str,
-    presentation_id: str,
+    settings: Settings,
+    *,
     cycles: int,
     maximum_seconds: int,
+    authorized: bool = False,
 ) -> dict:
-    if not 1 <= cycles <= 100 or not 30 <= maximum_seconds <= 21600:
+    if not authorized:
+        raise ValueError("Explicit operator authorization is required.")
+    if (
+        type(cycles) is not int
+        or type(maximum_seconds) is not int
+        or not 1 <= cycles <= 1000
+        or not 30 <= maximum_seconds <= 21600
+    ):
         raise ValueError("Presentation cycles and duration must be explicitly bounded.")
-    environment = service.environment(actor, environment_id).value
-    if environment.revision != revision or not is_reference_scene(environment.document):
-        raise ValueError("Only the explicitly approved synthetic reference revision can repeat.")
-    started = time.monotonic()
-    report = {
-        "kind": "actual_reference_presentation",
-        "started_at": datetime.now(UTC).isoformat(),
-        "presentation_id": presentation_id,
-        "cycles": [],
-        "anonymous_control": False,
-    }
-    failures = 0
-    for index in range(cycles):
-        if time.monotonic() - started >= maximum_seconds:
-            report["stop_reason"] = "presentation_time_limit"
-            break
-        run_id = uuid5(
-            NAMESPACE_URL, f"physicalai-presentation:{presentation_id}:{revision}:{index}"
-        )
-        previous = service.store.get_run(actor.owner_key, run_id)
-        if previous is not None:
-            result = service.get_run(actor, run_id)
-            if result.status not in TERMINAL:
-                raise Problem(
-                    409, "previous_cycle_active", "Reconcile the prior presentation cycle."
-                )
-            report["cycles"].append({"id": str(run_id), "status": result.status, "reused": True})
-            continue
-        service.activate(actor, environment_id, revision)
-        ready_deadline = min(started + maximum_seconds, time.monotonic() + 300)
-        while time.monotonic() < ready_deadline:
-            status = service.runtime(actor)
-            if status.status == "ready" and status.revision == revision:
-                break
-            if status.status == "unavailable":
-                raise Problem(
-                    503, "simulator_unavailable", status.message or "Simulator unavailable."
-                )
-            time.sleep(1)
-        else:
-            raise TimeoutError(
-                "Reference scene did not become ready within the presentation limit."
-            )
-        result = service.start(
-            actor,
-            StartRun(
-                request_id=run_id,
-                environment_id=environment_id,
-                revision=revision,
-                instruction=(
-                    "Inspect the synthetic part and sort it using the configured "
-                    "accepted or rejected station."
-                ),
-            ),
-        )
-        if result.status == "awaiting_approval" and result.plan is not None:
-            if time.monotonic() >= started + maximum_seconds:
-                result = service.cancel(actor, run_id)
-                report["stop_reason"] = "presentation_time_limit"
-            else:
-                # Approval is the operator's bounded authorization, never an anonymous request.
-                result = service.approve(actor, run_id, result.plan.model_response_id)
-        cycle_deadline = min(started + maximum_seconds, time.monotonic() + 45)
-        while result.status not in TERMINAL and time.monotonic() < cycle_deadline:
-            time.sleep(0.5)
-            result = service.get_run(actor, run_id)
-        if result.status not in TERMINAL:
-            result = service.cancel(actor, run_id)
-            raise TimeoutError(
-                "A presentation cycle did not terminate; cancellation was requested."
-            )
-        entry = {
-            "id": str(run_id),
-            "status": result.status,
-            "model_response_id": result.plan.model_response_id if result.plan else None,
-            "execution": result.execution.model_dump(mode="json") if result.execution else None,
-        }
-        report["cycles"].append(entry)
-        print(json.dumps({"cycle": index + 1, **entry}), flush=True)
-        if result.status != "succeeded":
-            failures += 1
-            if failures >= 3:
-                report["stop_reason"] = "repeated_physical_failures"
-                break
-        time.sleep(2)
-    report["finished_at"] = datetime.now(UTC).isoformat()
-    report["successes"] = sum(item["status"] == "succeeded" for item in report["cycles"])
-    return report
+    return Runner(service, settings, cycles, maximum_seconds).run()
 
 
 def main() -> None:
     if os.environ.get("ALLOW_REFERENCE_PRESENTATION") != "true":
-        raise RuntimeError(
-            "Explicit operator authorization is required for a repeating presentation."
-        )
+        raise RuntimeError("Explicit operator authorization is required for the presentation.")
     settings = Settings()
-    if not settings.public_demo_publish_live or settings.public_demo_owner_id is None:
-        raise ValueError("A pinned public reference publication is required.")
-    actor = Principal(tenant_id=settings.entra_tenant_id, object_id=settings.public_demo_owner_id)
+    if os.environ.get("PRESENTATION_ID", settings.public_demo_presentation_id) != (
+        settings.public_demo_presentation_id
+    ):
+        raise ValueError("PRESENTATION_ID must match the pinned PUBLIC_DEMO_PRESENTATION_ID.")
+    cycles = int(os.environ.get("PRESENTATION_CYCLES", "20"))
+    seconds = int(os.environ["PRESENTATION_MAX_SECONDS"])
     service, resources = azure_service(settings)
     try:
         report = run_cycles(
-            service,
-            actor,
-            settings.public_demo_environment_id,
-            settings.public_demo_revision,
-            os.environ["PRESENTATION_ID"],
-            int(os.environ.get("PRESENTATION_CYCLES", "20")),
-            int(os.environ.get("PRESENTATION_MAX_SECONDS", "1800")),
+            service, settings, cycles=cycles, maximum_seconds=seconds, authorized=True
         )
         print(json.dumps(report), flush=True)
-        if report["successes"] != len(report["cycles"]) or not report["cycles"]:
+        if report["status"] != "completed" or report["successes"] != cycles:
             raise SystemExit(2)
     finally:
         for resource in resources:

@@ -102,6 +102,12 @@ class MemoryStore:
             if key[0] == owner and key[1] == "run"
         ]
 
+    def get_presentation(self, owner, presentation_id):
+        return self._get(owner, "presentation", presentation_id)
+
+    def put_presentation(self, owner, record, etag):
+        return self._put(owner, "presentation", record.id, record, etag)
+
 
 class MemoryArtifacts:
     def __init__(self):

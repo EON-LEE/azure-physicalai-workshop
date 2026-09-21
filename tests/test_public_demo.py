@@ -123,7 +123,8 @@ def test_changed_revision_revokes_even_a_cached_public_frame():
         public.frame("overview")
     assert failure.value.code == "public_live_unavailable"
     assert record.environment_id not in failure.value.message
-    assert not public._frames
+    with pytest.raises(Problem):
+        public.frame("overview")
 
 
 def test_custom_customer_layout_is_not_published_even_when_revision_is_pinned():

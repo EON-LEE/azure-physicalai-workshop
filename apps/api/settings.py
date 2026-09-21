@@ -38,6 +38,13 @@ class Settings(BaseSettings):
         default=None, pattern=r"^[a-z][a-z0-9-]*$", max_length=64
     )
     public_demo_revision: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    public_demo_defect_environment_id: str | None = Field(
+        default=None, pattern=r"^[a-z][a-z0-9-]*$", max_length=64
+    )
+    public_demo_defect_revision: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    public_demo_presentation_id: str | None = Field(
+        default=None, pattern=r"^[a-z][a-z0-9-]*$", max_length=64
+    )
 
     @model_validator(mode="after")
     def publication_is_explicit(self):
@@ -47,6 +54,18 @@ class Settings(BaseSettings):
             raise ValueError(
                 "Public live viewing requires an explicit owner, environment and revision."
             )
+        paired = (
+            self.public_demo_defect_environment_id,
+            self.public_demo_defect_revision,
+            self.public_demo_presentation_id,
+        )
+        if any(paired) and not (
+            all(paired)
+            and self.public_demo_publish_live
+            and self.public_demo_environment_id != self.public_demo_defect_environment_id
+            and self.public_demo_revision != self.public_demo_defect_revision
+        ):
+            raise ValueError("A presentation requires a complete, distinct pinned reference pair.")
         return self
 
     @field_validator(

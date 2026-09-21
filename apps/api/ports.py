@@ -8,6 +8,7 @@ from apps.api.models import (
     Execution,
     MotionCommand,
     Observation,
+    PresentationRecord,
     RunRecord,
     SimulationStatus,
     Stored,
@@ -15,6 +16,13 @@ from apps.api.models import (
 
 
 class Store(Protocol):
+    def get_presentation(
+        self, owner: str, presentation_id: str
+    ) -> Stored[PresentationRecord] | None: ...
+    def put_presentation(
+        self, owner: str, record: PresentationRecord, etag: str | None
+    ) -> Stored[PresentationRecord]: ...
+
     def get_environment(
         self, owner: str, environment_id: str
     ) -> Stored[EnvironmentRecord] | None: ...

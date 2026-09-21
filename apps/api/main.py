@@ -171,7 +171,11 @@ def create_app(
         )
         if request.url.path.startswith("/api"):
             response.headers["Cache-Control"] = "no-store"
-        if request.url.path in {"/api/demo", "/api/demo/frame"} and response.status_code == 200:
+        if (
+            request.url.path == "/api/demo"
+            and response.status_code == 200
+            and configuration.public_demo_presentation_id is None
+        ):
             response.headers["Cache-Control"] = "public, max-age=1"
         return response
 
@@ -189,8 +193,12 @@ def create_app(
         return request.app.state.public_demo.snapshot()
 
     @app.get("/api/demo/frame")
-    def public_frame(request: Request, camera: Literal["overview", "inspection"] = "overview"):
-        image, observation = request.app.state.public_demo.frame(camera)
+    def public_frame(
+        request: Request,
+        camera: Literal["overview", "inspection"] = "overview",
+        epoch: UUID | None = None,
+    ):
+        image, observation = request.app.state.public_demo.frame(camera, epoch)
         return Response(
             image,
             media_type="image/png",
@@ -198,6 +206,19 @@ def create_app(
                 "X-Frame-Id": str(observation.observation_id),
                 "X-Captured-At": observation.captured_at.isoformat(),
                 "X-Physics-Steps": str(observation.physics_steps),
+                "X-Scene-Epoch": str(observation.epoch),
+            },
+        )
+
+    @app.get("/api/demo/evidence")
+    def public_evidence(request: Request, observation_id: UUID):
+        image, run = request.app.state.public_demo.evidence(observation_id)
+        return Response(
+            image,
+            media_type="image/png",
+            headers={
+                "X-Frame-Id": str(run.evidence.observation_id),
+                "X-Captured-At": run.evidence.captured_at.isoformat(),
             },
         )
 
