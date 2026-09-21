@@ -194,6 +194,27 @@ class Activation(Model):
     status: Literal["loading"] = "loading"
 
 
+MotionPhase = Literal[
+    "idle",
+    "approaching",
+    "grasping",
+    "lifting",
+    "inspection_station",
+    "transporting",
+    "releasing",
+    "returning",
+    "complete",
+    "stopped",
+]
+
+
+class MotionTelemetry(Model):
+    command_id: UUID | None
+    phase: MotionPhase
+    object_position: Position
+    target_station_id: Identifier | None
+
+
 class SimulationStatus(Model):
     backend: Literal["isaac_sim"] = "isaac_sim"
     status: Literal["ready", "loading", "unavailable", "occupied"]
@@ -202,6 +223,132 @@ class SimulationStatus(Model):
     epoch: UUID | None = None
     physics_steps: int | None = None
     message: str | None = None
+    motion: MotionTelemetry | None = None
+
+
+PresentationStatus = Literal[
+    "preparing", "inspecting", "awaiting_motion", "moving", "completed", "stopped", "failed"
+]
+
+
+class PresentationResult(Model):
+    status: Literal["succeeded", "failed", "cancelled", "timed_out"]
+    physical_success: bool
+    inspection_correct: bool | None
+    final_position_m: Position | None
+    completed_at: AwareDatetime
+    message: Literal[
+        "Inspection and physical sorting completed.",
+        "Inspection disagreed with the reference evaluation; motion was not authorized.",
+        "Physical completion was not verified.",
+        "The authorized presentation time expired.",
+        "The reference cycle was cancelled.",
+    ]
+
+    @model_validator(mode="after")
+    def evidence_consistent(self):
+        if self.physical_success and self.final_position_m is None:
+            raise ValueError("Physical success requires a final position.")
+        if (self.status == "succeeded") != (
+            self.physical_success and self.inspection_correct is True
+        ):
+            raise ValueError("Success requires correct inspection and physical completion.")
+        return self
+
+
+class PresentationOutcome(Model):
+    cycle: int = Field(ge=1, le=1000)
+    run_id: UUID
+    result: PresentationResult
+
+
+class PresentationRecord(Model):
+    """Dedicated publication state, never an index of an operator's private history."""
+
+    id: Identifier
+    owner_key: Revision
+    normal_environment_id: Identifier
+    normal_revision: Revision
+    defect_environment_id: Identifier
+    defect_revision: Revision
+    runner_id: UUID
+    started_at: AwareDatetime
+    expires_at: AwareDatetime
+    updated_at: AwareDatetime
+    total_cycles: int = Field(ge=1, le=1000)
+    cycle: int = Field(ge=1, le=1000)
+    status: PresentationStatus
+    scene_epoch: UUID | None = None
+    run_id: UUID | None = None
+    outcomes: list[PresentationOutcome] = Field(default_factory=list, max_length=1000)
+    stop_reason: (
+        Literal[
+            "time_limit",
+            "repeated_failures",
+            "dependency_unavailable",
+            "scene_changed",
+            "runner_interrupted",
+            "cancellation_unconfirmed",
+        ]
+        | None
+    ) = None
+
+    @model_validator(mode="after")
+    def bounded_history(self):
+        if not self.started_at <= self.updated_at or not (
+            30 <= (self.expires_at - self.started_at).total_seconds() <= 21600
+        ):
+            raise ValueError("Invalid presentation authorization timestamps.")
+        if self.cycle > self.total_cycles:
+            raise ValueError("Current cycle exceeds authorization.")
+        if [outcome.cycle for outcome in self.outcomes] != list(
+            range(1, len(self.outcomes) + 1)
+        ) or len(self.outcomes) > self.cycle:
+            raise ValueError("Presentation history must be ordered and contiguous.")
+        return self
+
+
+class PresentationDecision(Model):
+    classification: Literal["accepted", "rejected"]
+    summary: str
+    target_station_id: Identifier
+    observation_id: UUID
+    captured_at: AwareDatetime
+    image_url: Literal["/api/demo/evidence"] = "/api/demo/evidence"
+
+
+class PresentationMotion(Model):
+    status: Literal[
+        "queued", "running", "succeeded", "failed", "cancelled", "timed_out", "cancelling"
+    ]
+    phase: MotionPhase | None
+    part_position_m: Position | None
+    target_position_m: Position
+
+
+class PresentationCounts(Model):
+    attempted: int = Field(ge=0)
+    succeeded: int = Field(ge=0)
+    failed: int = Field(ge=0)
+    inspected_correctly: int = Field(ge=0)
+    physically_completed: int = Field(ge=0)
+
+
+class PublicPresentation(Model):
+    id: str
+    status: PresentationStatus
+    cycle: int
+    total_cycles: int
+    scenario: Literal["normal", "surface_defect"]
+    instruction: str
+    updated_at: AwareDatetime
+    expires_at: AwareDatetime
+    scene_epoch: UUID | None
+    run_id: UUID | None
+    decision: PresentationDecision | None
+    motion: PresentationMotion | None
+    result: PresentationResult | None
+    counts: PresentationCounts
 
 
 class MotionCommand(Model):
