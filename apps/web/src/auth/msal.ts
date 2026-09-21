@@ -11,13 +11,13 @@ export function createMsalAuth(config: PublicConfig): AuthAdapter {
   const scopes = [config.auth.scope];
   const tenantId = config.auth.tenant_id.toLowerCase();
   const belongsToTenant = (account: AccountInfo) => account.tenantId.toLowerCase() === tenantId;
-  const redirectUri = `${window.location.origin}/`;
+  const redirectUri = `${window.location.origin}/operator`;
   const client = new PublicClientApplication({
     auth: {
       clientId: config.auth.client_id,
       authority: `https://login.microsoftonline.com/${tenantId}`,
       redirectUri,
-      postLogoutRedirectUri: redirectUri,
+      postLogoutRedirectUri: `${window.location.origin}/`,
       navigateToLoginRequestUrl: false,
     },
     cache: { cacheLocation: 'sessionStorage' },

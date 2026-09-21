@@ -1,0 +1,20 @@
+{
+  "schema": "public-demo-evidence-v1",
+  "publication_scope": "synthetic_reference_demo",
+  "learning_cpu": {
+    "status": "cpu_smoke_verified",
+    "execution_location": "azure_acr",
+    "data_kind": "test_fixture",
+    "optimizer_steps": 1,
+    "quality_verified": false
+  },
+  "provenance": {
+    "source": "actual Azure ACR Tasks execution",
+    "verified_at": "2026-09-20T16:40:16+00:00",
+    "run": "ch7",
+    "image": "sha256:a49367ecf042d4e14d78bd2828c3a280144b70350844ffc8547e25a8f566d7fb",
+    "scope": "conversion, one ACT CPU optimizer step, local checkpoint inference; fixtures only",
+    "gpu_verified": false,
+    "azure_ml_training_verified": false
+  }
+}

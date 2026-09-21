@@ -20,13 +20,15 @@ now implemented and CPU-smoke-tested, but task quality requires real held-out
 GPU episodes. This is not a completed physical-demo release.
 
 All production workloads run on Azure. WSL is for authoring and automated tests,
-not a required production server. There is no anonymous authentication bypass,
-memory-store fallback, stock camera frame, or automatic replay mode.
+not a required production server. The default web page is a login-free,
+read-only public demonstration. `/operator` retains authenticated editing,
+approval, motion and private data. This is not an anonymous authentication bypass.
+There is no memory-store fallback, stock camera frame, or automatic replay mode.
 
 ## What exists
 
 ```text
-apps/web     Korean-first console, MSAL, live-frame UI, JSON editor, approvals, history
+apps/web     Public audience viewer plus protected MSAL operator console
 apps/api     Authenticated API, durable revisions/runs, approval and result verification
 agents       Versioned Foundry agent definition and typed inspection function
 simulation   Reviewed scene builders, command guards, Isaac adapter and HTTPS bridge
@@ -107,6 +109,9 @@ there is no default NVIDIA asset-server fallback.
 The [HTTP contract](docs/http-api.md) distinguishes configuration, live data,
 inspection proposals, approval, command ACK, and verified physical completion.
 Never describe an ACK, a replay, or a test-fixture image as successful robot motion.
+The [public viewer contract](docs/public-demo-api.md) separately permits anonymous
+read-only viewing of a curated synthetic reference scene. It never exposes all
+Cosmos environments or invokes paid agents/robot actions on behalf of visitors.
 
 The [learning guide](docs/policy-learning.md) explains the isolated Python 3.11
 training environment and the actual CPU smoke. Optional customer configuration

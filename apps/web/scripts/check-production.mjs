@@ -8,7 +8,18 @@ const dist = join(root, 'dist');
 const manifest = JSON.parse(await readFile(join(dist, '.vite', 'manifest.json'), 'utf8'));
 const entries = Object.values(manifest).filter((entry) => entry.isEntry);
 assert.equal(entries.length, 1, 'Production must have exactly one entry point');
-assert.equal(entries[0].src, 'index.html', 'Only the authenticated production HTML can be an entry point');
+assert.equal(entries[0].src, 'index.html', 'Only the production HTML can be an entry point');
+const operator = Object.values(manifest).find((entry) => entry.src === 'src/auth/OperatorEntry.tsx');
+assert(operator?.isDynamicEntry, 'Operator authentication must remain a lazy, separate entry');
+const firstLoad = new Set();
+function visit(key) {
+  const entry = manifest[key];
+  if (!entry || firstLoad.has(entry.file)) return;
+  firstLoad.add(entry.file);
+  for (const dependency of entry.imports ?? []) visit(dependency);
+}
+visit('index.html');
+assert(!firstLoad.has(operator.file), 'Public page must not eagerly load operator authentication');
 
 const markers = [
   'TEST_ONLY_FACTORY_FIXTURE',
@@ -31,4 +42,4 @@ async function inspect(directory) {
   }
 }
 await inspect(dist);
-console.log(`Production boundary verified: one authenticated entry, ${checked} assets, no test-fixture markers.`);
+console.log(`Production boundary verified: public entry, lazy protected operator, ${checked} assets, no test-fixture markers.`);

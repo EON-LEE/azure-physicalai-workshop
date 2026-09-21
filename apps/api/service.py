@@ -5,7 +5,7 @@ import binascii
 import hashlib
 import json
 from dataclasses import asdict
-from datetime import timedelta
+from datetime import datetime, timedelta
 from io import BytesIO
 from typing import Literal
 from uuid import UUID
@@ -85,12 +85,15 @@ class FactoryService:
         planner: Planner,
         bridge: Bridge,
         approval_ttl_seconds: int = 300,
+        *,
+        agent_probe_verified_at: datetime | None = None,
     ) -> None:
         self.store = store
         self.artifacts = artifacts
         self.planner = planner
         self.bridge = bridge
         self.approval_ttl_seconds = approval_ttl_seconds
+        self.agent_probe_verified_at = agent_probe_verified_at
 
     def environment(self, actor: Principal, environment_id: str) -> Stored[EnvironmentRecord]:
         record = self.store.get_environment(actor.owner_key, environment_id)

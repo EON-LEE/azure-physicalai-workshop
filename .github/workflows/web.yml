@@ -56,6 +56,9 @@ jobs:
       - name: Browser tests with labeled fixtures and strict CSP
         run: npm run test:e2e
 
+      - name: Public no-login entry and protected operator browser tests
+        run: npm run test:public-e2e
+
       - name: Retain production bundle
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

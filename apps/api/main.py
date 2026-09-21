@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from apps.api.auth import EntraTokens
 from apps.api.errors import Problem
 from apps.api.models import ActivateEnvironment, ApproveRun, Principal, SaveEnvironment, StartRun
+from apps.api.public_demo import PublicDemo
 from apps.api.service import FactoryService
 from apps.api.settings import Settings
 from contracts.validate_environment import SCHEMA
@@ -75,6 +76,7 @@ def azure_service(settings: Settings):
     artifacts = BlobArtifacts(settings.storage_account_url, credential, settings.storage_container)
     version = settings.foundry_agent_version
     ca_pem = settings.sim_bridge_ca_pem
+    agent_probe_verified_at = None
     if version is None or ca_pem is None:
         from scripts.bootstrap import BootstrapManifest
 
@@ -89,6 +91,11 @@ def azure_service(settings: Settings):
                 "Azure bootstrap manifest belongs to a different Foundry deployment."
             )
         version = version or manifest.agent_version
+        if (
+            manifest.probe_response_id
+            and manifest.probe_scope == "agent_connectivity_only_not_physical_inspection"
+        ):
+            agent_probe_verified_at = manifest.created_at
         if ca_pem is None:
             ca = artifacts.get(settings.sim_ca_blob)
             if hashlib.sha256(ca).hexdigest() != manifest.sim_ca_sha256:
@@ -108,7 +115,14 @@ def azure_service(settings: Settings):
         settings.bridge_timeout_seconds,
         ca_pem,
     )
-    return FactoryService(store, artifacts, planner, bridge, settings.approval_ttl_seconds), [
+    return FactoryService(
+        store,
+        artifacts,
+        planner,
+        bridge,
+        settings.approval_ttl_seconds,
+        agent_probe_verified_at=agent_probe_verified_at,
+    ), [
         bridge,
         planner,
         artifacts,
@@ -143,6 +157,7 @@ def create_app(
             app.state.service = actual
         else:
             app.state.service = service
+        app.state.public_demo = PublicDemo(configuration, app.state.service)
         try:
             yield
         finally:
@@ -194,6 +209,8 @@ def create_app(
         )
         if request.url.path.startswith("/api"):
             response.headers["Cache-Control"] = "no-store"
+        if request.url.path in {"/api/demo", "/api/demo/frame"} and response.status_code == 200:
+            response.headers["Cache-Control"] = "public, max-age=1"
         return response
 
     def actor(authorization: Annotated[str | None, Header()] = None) -> Principal:
@@ -204,6 +221,23 @@ def create_app(
 
     Actor = Annotated[Principal, Depends(actor)]
     Service = Annotated[FactoryService, Depends(factory)]
+
+    @app.get("/api/demo")
+    def public_demo(request: Request):
+        return request.app.state.public_demo.snapshot()
+
+    @app.get("/api/demo/frame")
+    def public_frame(request: Request, camera: Literal["overview", "inspection"] = "overview"):
+        image, observation = request.app.state.public_demo.frame(camera)
+        return Response(
+            image,
+            media_type="image/png",
+            headers={
+                "X-Frame-Id": str(observation.observation_id),
+                "X-Captured-At": observation.captured_at.isoformat(),
+                "X-Physics-Steps": str(observation.physics_steps),
+            },
+        )
 
     @app.get("/healthz")
     def health():

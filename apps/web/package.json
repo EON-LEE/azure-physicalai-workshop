@@ -16,6 +16,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
+    "test:public-e2e": "playwright test --config playwright.public.config.ts",
     "prebuild": "npm run generate:schema",
     "build": "tsc --noEmit && vite build && node scripts/check-production.mjs",
     "preview": "vite preview --host 127.0.0.1",

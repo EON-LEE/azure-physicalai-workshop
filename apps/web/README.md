@@ -1,14 +1,17 @@
 # Factory Console
 
-Korean-first React/TypeScript customer console for the frozen
-[`docs/http-api.md`](../../docs/http-api.md) v1 API. Production uses Microsoft
-Entra authentication, Azure API responses and Isaac Sim camera PNGs. It does not
-contain a demo backend, anonymous mode, browser robot animation, replay fallback,
-training endpoint or uploaded-Python runner.
+Korean-first React/TypeScript demonstration viewer and protected operator console.
+`/` opens immediately without login and uses only the curated anonymous
+[`public demo API`](../../docs/public-demo-api.md). `/operator` retains the
+authenticated [`operator API`](../../docs/http-api.md).
 
-**Deployment is not authorized or verified.** Building this console and passing
-CPU tests do not verify Azure resources, Entra registration/permissions, Foundry
-model calls, Isaac Sim, GPU physics or real hardware.
+The public reference view is a clearly labeled workcell schematic and interactive
+explanation, not browser-simulated robot motion or fabricated live footage.
+Actual camera PNGs are shown only after a pinned synthetic reference publication.
+Private environments, histories, editing, approvals and motion remain protected.
+
+The web/API are deployed on Azure. GPU/physical execution is still blocked;
+neither browser tests nor the reference schematic prove live Isaac Sim operation.
 
 ## Build and serve
 
@@ -24,7 +27,7 @@ npm run build
 
 `dist/` is the production output and is intentionally ignored by Git. The parent
 API container should build and copy this directory, serve it on the API's origin,
-and route `/api/*` to the real authenticated API, not to an SPA fallback. Static
+and route `/api/*` to the actual API, not to an SPA fallback. Static
 assets and fonts do not depend on a CDN. The CI workflow retains `dist` as an
 artifact; it does not deploy anything or use cloud credentials.
 
@@ -60,14 +63,20 @@ workaround, not a CI requirement.
 
 ## Authentication and HTTP
 
-`src/main.tsx` always boots through `GET /api/config`, validates the Azure v1
-configuration and loads `@azure/msal-browser`. Tenant ID, SPA client ID and
-delegated scope come exclusively from that response. No credentials or tenant
-defaults are bundled.
+`src/main.tsx` selects the public audience entry by default. It requests only
+`GET /api/demo` without cookies or bearer tokens; it does not load MSAL or call
+private APIs. Reference-path and explanation-step selections are local URL state,
+not cloud commands.
+
+Only `/operator` lazy-loads the existing authentication entry, which fetches
+`GET /api/config` and initializes MSAL. Tenant ID, SPA client ID and delegated
+scope come exclusively from that response. No credentials or tenant defaults
+are bundled.
 
 MSAL initializes and handles redirect results, selects only an unambiguous
 account in the configured tenant, and uses `loginRedirect` plus
-`acquireTokenSilent`. The redirect URI is the current origin followed by `/`.
+`acquireTokenSilent`. The login redirect URI is the current origin followed by `/operator`.
+Logout returns to the public root. Register both URLs on the dedicated SPA.
 The actual Entra SPA registration and API permission must be configured by an
 authorized deployment operator; this frontend does not create them.
 
@@ -84,6 +93,9 @@ Production CSP can allow scripts/styles/assets from `self`, images from
 font host or third-party analytics is required.
 
 ## Customer workflow
+
+Audience members need no login to explore the public inspection/sorting scenario.
+The controls below belong to the separately protected operator area.
 
 - **Environment Studio:** Select an API reference template, explicitly load a
   saved environment, or import a `.json` file up to 1 MiB. Reference templates

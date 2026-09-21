@@ -50,7 +50,7 @@ describe('small MSAL redirect adapter', () => {
       auth: {
         clientId: config.auth.client_id,
         authority: `https://login.microsoftonline.com/${config.auth.tenant_id}`,
-        redirectUri: `${window.location.origin}/`,
+        redirectUri: `${window.location.origin}/operator`,
         postLogoutRedirectUri: `${window.location.origin}/`,
         navigateToLoginRequestUrl: false,
       },
