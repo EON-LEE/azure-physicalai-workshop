@@ -265,7 +265,107 @@ def test_motion_uses_only_matching_real_telemetry(prepared):
     assert payload["motion"]["part_position_m"] == [0.35, 0.25, 0.2]
     telemetry.command_id = uuid4()
     payload = PublicDemo(settings, backend).snapshot()["presentation"]
-    assert payload["motion"]["phase"] is payload["motion"]["part_position_m"] is None
+    assert payload["motion"] is payload["decision"] is None
+
+
+@pytest.mark.parametrize("terminal", [False, True])
+def test_same_epoch_private_command_blocks_frames_and_current_decision(prepared, terminal):
+    backend, settings, _ = prepared
+    if terminal:
+        completed(prepared)
+        record = backend.store.get_presentation(
+            ACTOR.owner_key, settings.public_demo_presentation_id
+        ).value
+        run = backend.store.get_run(ACTOR.owner_key, record.run_id).value
+    else:
+        _, run = planned(prepared)
+    status = backend.bridge.status
+    backend.bridge.status = lambda owner: status(owner).model_copy(
+        update={
+            "motion": MotionTelemetry(
+                command_id=uuid4(),
+                phase="transporting",
+                object_position=(0.4, 0.1, 0.3),
+                target_station_id=run.plan.target_station_id,
+            ),
+        }
+    )
+    backend.bridge.observe = Mock(side_effect=AssertionError("Never capture a private command"))
+    with TestClient(create_app(settings, backend)) as client:
+        snapshot = client.get("/api/demo")
+        assert snapshot.status_code == 200
+        payload = snapshot.json()
+        assert payload["simulation"]["live_available"] is False
+        assert payload["presentation"]["decision"] is payload["presentation"]["motion"] is None
+        frame = client.get("/api/demo/frame", params={"epoch": str(run.evidence.epoch)})
+        assert frame.status_code == 409
+        assert frame.json()["error"]["code"] == "public_command_changed"
+        if terminal:
+            assert payload["presentation"]["result"]["status"] == "succeeded"
+            assert payload["presentation"]["counts"]["succeeded"] == 2
+        else:
+            assert payload["presentation"]["status"] == "stopped"
+
+
+def test_same_epoch_private_command_race_discards_captured_frame_and_decision(prepared):
+    _, run = planned(prepared)
+    backend, settings, _ = prepared
+    status, observe = backend.bridge.status, backend.bridge.observe
+
+    def private_command_after_capture(*args):
+        observation = observe(*args)
+        backend.bridge.status = lambda owner: status(owner).model_copy(
+            update={
+                "motion": MotionTelemetry(
+                    command_id=uuid4(),
+                    phase="grasping",
+                    object_position=(0.35, 0.25, 0.2),
+                    target_station_id="accepted",
+                ),
+            }
+        )
+        return observation
+
+    backend.bridge.observe = private_command_after_capture
+    public = PublicDemo(settings, backend)
+    payload = public.snapshot()
+    assert payload["simulation"]["live_available"] is False
+    assert payload["presentation"]["decision"] is payload["presentation"]["motion"] is None
+    backend.bridge.status = status
+    with pytest.raises(Problem) as failure:
+        public.frame("overview", run.evidence.epoch)
+    assert failure.value.code == "public_command_changed"
+
+
+@pytest.mark.parametrize("terminal", [False, True])
+def test_idle_before_dispatch_and_matching_completed_command_remain_public(prepared, terminal):
+    backend, settings, _ = prepared
+    if terminal:
+        completed(prepared)
+        record = backend.store.get_presentation(
+            ACTOR.owner_key, settings.public_demo_presentation_id
+        ).value
+        run = backend.store.get_run(ACTOR.owner_key, record.run_id).value
+    else:
+        _, run = planned(prepared)
+    status = backend.bridge.status
+    backend.bridge.status = lambda owner: status(owner).model_copy(
+        update={
+            "motion": MotionTelemetry(
+                command_id=run.id if terminal else None,
+                phase="complete" if terminal else "idle",
+                object_position=(0.35, 0.25, 0.2),
+                target_station_id=run.plan.target_station_id if terminal else None,
+            ),
+        }
+    )
+    public = PublicDemo(settings, backend)
+    payload = public.snapshot()
+    assert payload["simulation"]["live_available"] is True
+    assert payload["presentation"]["decision"]["observation_id"] == str(run.evidence.observation_id)
+    assert public.frame("overview", run.evidence.epoch)[0] == PNG
+    if terminal:
+        assert payload["presentation"]["motion"]["phase"] == "complete"
 
 
 @pytest.mark.parametrize("failure", ["expired", "heartbeat", "camera", "backend"])

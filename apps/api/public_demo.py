@@ -114,6 +114,15 @@ class PublicDemo:
             or (record is not None and status.epoch != record.scene_epoch)
         ):
             raise Problem(503, "public_scene_unavailable", "The published scene is not ready.")
+        if (
+            record is not None
+            and status.motion is not None
+            and status.motion.command_id is not None
+            and status.motion.command_id != record.run_id
+        ):
+            raise Problem(
+                409, "public_command_changed", "The published command changed; reload its state."
+            )
         return environment, status
 
     def _frame(
@@ -247,6 +256,7 @@ class PublicDemo:
                 "frame_url": None,
             }
             record = run = telemetry = None
+            command_changed = False
             if self.settings.public_demo_publish_live:
                 try:
                     scope = self._scope()
@@ -269,7 +279,10 @@ class PublicDemo:
                         "message_code": "live_ready",
                         "frame_url": "/api/demo/frame",
                     }
-                except (Problem, ValidationError):
+                except (Problem, ValidationError) as exc:
+                    command_changed = (
+                        isinstance(exc, Problem) and exc.code == "public_command_changed"
+                    )
                     simulation = {
                         "status": "loading"
                         if record and record.status == "preparing"
@@ -278,6 +291,14 @@ class PublicDemo:
                         "message_code": "live_unavailable",
                         "frame_url": None,
                     }
+            presentation = (
+                self._presentation(record, run, telemetry, simulation["live_available"])
+                if record
+                else None
+            )
+            if command_changed and presentation is not None:
+                presentation["decision"] = None
+                presentation["motion"] = None
             verified_at = self.service.agent_probe_verified_at
             return {
                 "api_version": "public-demo-v1",
@@ -294,11 +315,7 @@ class PublicDemo:
                     "data_origin": "synthetic_reference_configuration",
                 },
                 "simulation": simulation,
-                "presentation": (
-                    self._presentation(record, run, telemetry, simulation["live_available"])
-                    if record
-                    else None
-                ),
+                "presentation": presentation,
                 "agent": {
                     "provider": "microsoft_foundry",
                     "connectivity": "verified" if verified_at is not None else "configured",
@@ -323,7 +340,10 @@ class PublicDemo:
                 image, observation, _ = self._frame(camera, epoch, self._scope())
                 return image, observation
             except (Problem, ValidationError) as exc:
-                if isinstance(exc, Problem) and exc.code == "public_epoch_changed":
+                if isinstance(exc, Problem) and exc.code in {
+                    "public_epoch_changed",
+                    "public_command_changed",
+                }:
                     raise
                 raise Problem(
                     503,

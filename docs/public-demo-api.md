@@ -92,6 +92,13 @@ presentation clients must send the current `presentation.scene_epoch`. The API
 checks the pinned scene before and after capture, including same-revision resets;
 it never returns an old cached image across epochs. All image responses are
 `Cache-Control: no-store`.
+For a paired presentation, non-null motion telemetry naming a different command
+also revokes live viewing, even in the same epoch after the presentation completed.
+The command binding is checked both before and after capture: mismatch returns
+409, and the snapshot suppresses current decision/motion while retaining labeled
+historical outcomes. Idle telemetry with no command and matching completed-command
+telemetry remain valid. Recorded original inspection evidence remains owner- and
+presentation-bound; it is not recaptured from another command.
 
 The public snapshot never exposes tenant IDs, object IDs, auth scopes, keys,
 private run IDs, private instructions, manifests, arbitrary artifact paths, or internal
