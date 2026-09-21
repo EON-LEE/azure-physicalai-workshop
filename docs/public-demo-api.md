@@ -185,6 +185,10 @@ verification. It returns `X-Frame-Id` equal to the requested observation UUID an
 `X-Captured-At` equal to the original capture time. This is recorded inspection
 input, not a current camera stream, so do not apply live-frame freshness rules.
 The query is required; an old observation returns 409 (or generic unavailable).
+Between cycles, the runner holds the verified result for up to five seconds
+within the remaining authorized window, so visitors can read the outcome before
+the next scene is activated. This hold is after physical completion and does not
+extend the task's 30-second deadline.
 There is no owner/run/blob-path selector. The API rereads the presentation binding
 after fetching pixels to detect cycle changes in flight.
 

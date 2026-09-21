@@ -328,7 +328,7 @@ class Runner:
                     break
                 self.persist(status="completed" if cycle == self.cycles else "preparing")
                 if cycle != self.cycles:
-                    time.sleep(min(2, max(0, self.remaining())))
+                    time.sleep(min(5, max(0, self.remaining())))
         except (Problem, TimeoutError) as exc:
             # Never expose dependency messages, prompts or arbitrary operator records publicly.
             log.warning("Reference presentation stopped (%s)", type(exc).__name__)
