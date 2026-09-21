@@ -14,9 +14,16 @@ from fastapi.staticfiles import StaticFiles
 from apps.api.auth import EntraTokens
 from apps.api.errors import Problem
 from apps.api.middleware import BodyLimit
-from apps.api.models import ActivateEnvironment, ApproveRun, Principal, SaveEnvironment, StartRun
+from apps.api.models import (
+    ActivateEnvironment,
+    ApproveRun,
+    Principal,
+    SaveEnvironment,
+    StartRun,
+    utcnow,
+)
 from apps.api.public_demo import PublicDemo
-from apps.api.service import FactoryService
+from apps.api.service import FactoryService, check_fresh
 from apps.api.settings import Settings
 from contracts.validate_environment import SCHEMA
 
@@ -199,6 +206,7 @@ def create_app(
         epoch: UUID | None = None,
     ):
         image, observation = request.app.state.public_demo.frame(camera, epoch)
+        check_fresh(observation, 2000)
         return Response(
             image,
             media_type="image/png",
@@ -207,6 +215,7 @@ def create_app(
                 "X-Captured-At": observation.captured_at.isoformat(),
                 "X-Physics-Steps": str(observation.physics_steps),
                 "X-Scene-Epoch": str(observation.epoch),
+                "X-Server-Time": utcnow().isoformat(),
             },
         )
 
@@ -223,7 +232,8 @@ def create_app(
         )
 
     @app.get("/healthz")
-    def health():
+    def health(response: Response):
+        response.headers["X-Server-Time"] = utcnow().isoformat()
         return {"status": "process_running", "deployment": "azure"}
 
     @app.get("/api/config")

@@ -193,6 +193,10 @@ Container Apps subnet, then deny other inbound traffic. The bridge independently
 validates Entra token tenant, audience and the allowlisted managed identity.
 TLS is mandatory and the API validates the generated deployment CA; certificate
 verification is never disabled. Private keys remain in Key Vault and VM tmpfs.
+The bridge client expires pooled connections before the server's idle timeout.
+One read-only GET can be retried after a closed-connection protocol error within
+its original timeout budget; scene, dispatch and cancel POSTs are never
+automatically repeated.
 
 Blob, Cosmos and Key Vault have **public network access disabled** and use private
 endpoints/DNS linked to the application, bootstrap and simulator VNet.

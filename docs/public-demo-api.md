@@ -83,7 +83,14 @@ owner, environment ID and immutable revision. The backend rejects new/private
 revisions rather than automatically republishing them.
 
 A successful response is a real `image/png`, with `X-Frame-Id`,
-`X-Captured-At`, `X-Physics-Steps`, and `X-Scene-Epoch`. Fetch without an Authorization header.
+`X-Captured-At`, `X-Physics-Steps`, `X-Scene-Epoch`, and a precise UTC `X-Server-Time`.
+Fetch without an Authorization header.
+The API rechecks the 2000 ms camera-age bound after publication fencing. Public
+viewers compare capture time with server time, include the full monotonic
+request/body duration conservatively, and expire LIVE at the unchanged five-second
+display deadline. A skewed viewer clock must not relabel a fresh image as future
+or keep a frozen image live. `/healthz` also returns `X-Server-Time` for bounded
+validation-clock calibration; it does not change captured timestamps.
 Use bounded polling only while visible and in live mode; revoke object URLs and
 abort requests on navigation/unmount. Missing publication or live failure returns
 503 with the normal structured error envelope, never a substitute frame.

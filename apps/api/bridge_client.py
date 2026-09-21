@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import ssl
+import time
 from typing import Literal
 from uuid import UUID
 
@@ -34,6 +35,7 @@ class AzureSimulatorBridge:
     ) -> None:
         self.credential = credential
         self.scope = scope
+        self.timeout = timeout
         context = ssl.create_default_context()
         if ca_pem:
             context.load_verify_locations(cadata=ca_pem)
@@ -43,19 +45,31 @@ class AzureSimulatorBridge:
             verify=context,
             transport=transport,
             follow_redirects=False,
+            limits=httpx.Limits(keepalive_expiry=2),
         )
+
+    def _send(self, method: str, path: str, **kwargs) -> httpx.Response:
+        deadline = time.monotonic() + self.timeout
+        try:
+            return self.http.request(method, path, **kwargs)
+        except httpx.RemoteProtocolError:
+            remaining = deadline - time.monotonic()
+            if method != "GET" or remaining <= 0:
+                raise
+            log.warning("Retrying one read-only simulator GET after a closed connection: %s", path)
+            return self.http.request(method, path, timeout=remaining, **kwargs)
 
     def _request(self, method: str, path: str, owner: str, **kwargs) -> dict:
         try:
             token = self.credential.get_token(self.scope).token
-            response = self.http.request(
+            response = self._send(
                 method,
                 path,
                 headers={"Authorization": f"Bearer {token}", "X-Environment-Owner": owner},
                 **kwargs,
             )
         except (httpx.HTTPError, AzureError) as exc:
-            log.exception("Simulator request failed")
+            log.exception("Simulator %s %s request failed", method, path)
             raise unavailable("Isaac Sim bridge") from exc
         if response.status_code >= 300:
             if response.status_code in (404, 409, 422):
