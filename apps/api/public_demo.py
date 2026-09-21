@@ -281,7 +281,46 @@ class PublicDemo:
                 try:
                     if scope is None:
                         raise Problem(503, "public_state_unavailable", "Publication unavailable.")
-                    _, _, telemetry = self._frame("overview", None, scope)
+                    for attempt in range(2):
+                        try:
+                            _, _, telemetry = self._frame("overview", None, scope)
+                            break
+                        except Problem as frame_error:
+                            if (
+                                frame_error.code
+                                not in {
+                                    "public_scene_unavailable",
+                                    "public_epoch_changed",
+                                    "public_command_changed",
+                                    "public_frame_refresh",
+                                }
+                                or record is None
+                            ):
+                                raise
+                            if attempt:
+                                if frame_error.code == "public_frame_refresh" or (
+                                    frame_error.code == "public_scene_unavailable"
+                                    and record.status == "preparing"
+                                ):
+                                    raise
+                                raise Problem(
+                                    503,
+                                    "public_state_unavailable",
+                                    "The published presentation changed during the snapshot.",
+                                ) from frame_error
+                            try:
+                                latest_scope = self._scope()
+                            except (Problem, ValidationError) as exc:
+                                raise Problem(
+                                    503,
+                                    "public_state_unavailable",
+                                    "The published presentation state is unavailable.",
+                                ) from exc
+                            if self._binding(record) == self._binding(latest_scope[2]):
+                                raise
+                            scope = latest_scope
+                            _, _, record, run = scope
+                            telemetry = None
                     simulation = {
                         "status": "ready",
                         "live_available": True,
@@ -289,6 +328,12 @@ class PublicDemo:
                         "frame_url": "/api/demo/frame",
                     }
                 except (Problem, ValidationError) as exc:
+                    if (
+                        isinstance(exc, Problem)
+                        and exc.code == "public_state_unavailable"
+                        and self.settings.public_demo_presentation_id
+                    ):
+                        raise
                     command_changed = (
                         isinstance(exc, Problem) and exc.code == "public_command_changed"
                     )

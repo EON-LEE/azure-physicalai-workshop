@@ -232,6 +232,151 @@ def test_live_frame_race_rejects_reset_epoch_even_for_same_revision(prepared):
     assert failure.value.status in (409, 503)
 
 
+def advance_snapshot_cycle(prepared, runner, *, inspecting):
+    backend, settings, _ = prepared
+    runner.persist(cycle=2, status="preparing", run_id=None, scene_epoch=None)
+    backend.activate(
+        ACTOR, settings.public_demo_defect_environment_id, settings.public_demo_defect_revision
+    )
+    if inspecting:
+        run_id = cycle_run_id(runner.record, 2)
+        runner.persist(status="inspecting", run_id=run_id, scene_epoch=backend.bridge.epoch)
+        backend.start(
+            ACTOR,
+            StartRun(
+                request_id=run_id,
+                environment_id=settings.public_demo_defect_environment_id,
+                revision=settings.public_demo_defect_revision,
+                instruction=INSTRUCTION,
+            ),
+        )
+
+
+@pytest.mark.parametrize("inspecting", [False, True])
+@pytest.mark.parametrize("timing", ["runtime", "capture"])
+def test_snapshot_rereads_changed_cycle_without_projecting_old_motion_stopped(
+    prepared, inspecting, timing
+):
+    runner, run = planned(prepared)
+    backend, settings, clock = prepared
+    backend.approve(ACTOR, run.id, run.plan.model_response_id)
+    runner.persist(status="moving")
+    clock.sleep(0.5)
+    runner.outcome(backend.get_run(ACTOR, run.id))
+    original = getattr(backend.bridge, "status" if timing == "runtime" else "observe")
+
+    def advance(*args):
+        setattr(backend.bridge, "status" if timing == "runtime" else "observe", original)
+        observation = original(*args) if timing == "capture" else None
+        advance_snapshot_cycle(prepared, runner, inspecting=inspecting)
+        return observation if timing == "capture" else original(*args)
+
+    setattr(backend.bridge, "status" if timing == "runtime" else "observe", advance)
+    payload = PublicDemo(settings, backend).snapshot()
+    current = payload["presentation"]
+    assert current["cycle"] == 2
+    assert current["status"] == ("inspecting" if inspecting else "preparing")
+    assert current["scenario"] == "surface_defect"
+    assert current["result"] is current["motion"] is None
+    assert current["counts"]["succeeded"] == 1
+    assert payload["simulation"]["live_available"] is inspecting
+    if inspecting:
+        latest_run = backend.store.get_run(ACTOR.owner_key, runner.record.run_id).value
+        assert current["scene_epoch"] == str(latest_run.evidence.epoch)
+        assert current["decision"]["observation_id"] == str(latest_run.evidence.observation_id)
+        assert current["decision"]["observation_id"] != str(run.evidence.observation_id)
+        assert current["decision"]["classification"] == "rejected"
+    else:
+        assert current["run_id"] is current["scene_epoch"] is current["decision"] is None
+        assert payload["simulation"]["frame_url"] is None
+
+
+def test_snapshot_same_cycle_wrong_epoch_is_not_treated_as_cycle_advance(prepared):
+    runner, _ = planned(prepared)
+    backend, settings, _ = prepared
+    runner.persist(status="moving")
+    backend.bridge.epoch = uuid4()
+    payload = PublicDemo(settings, backend).snapshot()
+    assert payload["presentation"]["cycle"] == 1
+    assert payload["presentation"]["status"] == "stopped"
+    assert payload["simulation"]["live_available"] is False
+
+
+@pytest.mark.parametrize("elapsed", [11, 61])
+def test_snapshot_new_binding_does_not_renew_heartbeat_or_authorization(prepared, elapsed):
+    runner, _ = planned(prepared)
+    backend, settings, clock = prepared
+    runner.persist(status="moving")
+    status = backend.bridge.status
+
+    def advance(owner):
+        backend.bridge.status = status
+        advance_snapshot_cycle(prepared, runner, inspecting=True)
+        runner.persist(status="moving")
+        clock.sleep(elapsed)
+        return status(owner)
+
+    backend.bridge.status = advance
+    payload = PublicDemo(settings, backend).snapshot()
+    assert payload["presentation"]["cycle"] == 2
+    assert payload["presentation"]["status"] == "stopped"
+    assert payload["presentation"]["motion"] is None
+
+
+@pytest.mark.parametrize("failure", ["another_race", "foreign_command", "storage", "scope"])
+def test_snapshot_retry_is_bounded_and_revalidates_scope(prepared, failure):
+    runner, _ = planned(prepared)
+    backend, settings, _ = prepared
+    runner.persist(status="moving")
+    status = backend.bridge.status
+    calls = 0
+
+    def advance(owner):
+        nonlocal calls
+        calls += 1
+        backend.bridge.status = status
+        advance_snapshot_cycle(prepared, runner, inspecting=True)
+        if failure == "storage":
+            backend.store.get_presentation = Mock(side_effect=Problem(503, "db", "PRIVATE STORAGE"))
+        elif failure == "scope":
+            key = (ACTOR.owner_key, "presentation", runner.record.id)
+            record = runner.record.model_copy(update={"owner_key": "f" * 64})
+            backend.store.items[key] = runner.stored.model_copy(update={"value": record})
+        else:
+
+            def mismatch(owner):
+                nonlocal calls
+                calls += 1
+                if failure == "another_race":
+                    backend.bridge.epoch = uuid4()
+                    runner.persist(scene_epoch=backend.bridge.epoch, run_id=None)
+                    # Runtime advances again after the retry has loaded its scope.
+                    backend.bridge.epoch = uuid4()
+                    return status(owner)
+                return status(owner).model_copy(
+                    update={
+                        "motion": MotionTelemetry(
+                            command_id=uuid4(),
+                            phase="grasping",
+                            object_position=(0.35, 0.25, 0.2),
+                            target_station_id="rejected",
+                        )
+                    }
+                )
+
+            backend.bridge.status = mismatch
+        return status(owner)
+
+    backend.bridge.status = advance
+    with TestClient(create_app(settings, backend)) as client:
+        response = client.get("/api/demo")
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "public_state_unavailable"
+    assert "PRIVATE" not in response.text
+    assert "presentation" not in response.json()
+    assert calls <= 2
+
+
 def test_new_cycle_clears_decision_and_result_without_relabeling_history(prepared):
     runner, run = planned(prepared)
     backend, settings, clock = prepared

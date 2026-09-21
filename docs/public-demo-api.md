@@ -106,6 +106,13 @@ The command binding is checked both before and after capture: mismatch returns
 historical outcomes. Idle telemetry with no command and matching completed-command
 telemetry remain valid. Recorded original inspection evidence remains owner- and
 presentation-bound; it is not recaptured from another command.
+If a snapshot's scene/command check races a persisted cycle/epoch/run binding
+change, it validates the current publication again and retries capture once using
+only that new scope. It never combines the prior decision/result with new telemetry
+or projects an old moving cycle as stopped solely because the next cycle began.
+Unchanged-binding mismatches retain their guards; an unresolved retry mismatch
+returns 503 rather than looping. Preparing/loading still publishes no live frame,
+and rereading does not renew heartbeat or authorization timestamps.
 
 The public snapshot never exposes tenant IDs, object IDs, auth scopes, keys,
 private run IDs, private instructions, manifests, arbitrary artifact paths, or internal
