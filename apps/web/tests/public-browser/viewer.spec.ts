@@ -63,13 +63,14 @@ async function fixturePage(page: Page, readSnapshot: () => DemoSnapshot, options
     }
     const decision = servedSnapshot.presentation?.decision;
     if (url.pathname === '/api/demo/frame') {
+      const now = new Date().toISOString();
       return route.fulfill({
         body: Buffer.from(png, 'base64'), contentType: 'image/png',
         headers: {
           'Cache-Control': 'no-store',
           'X-Frame-Id': 'test-only-public-live-frame',
           'X-Scene-Epoch': options.wrongEpoch ? nextEpoch : url.searchParams.get('epoch') ?? epoch,
-          'X-Captured-At': new Date().toISOString(), 'X-Physics-Steps': '125',
+          'X-Captured-At': now, 'X-Server-Time': now, 'X-Physics-Steps': '125',
         },
       });
     }

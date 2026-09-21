@@ -65,7 +65,10 @@ export function referenceSnapshot(): DemoSnapshot {
 }
 
 export function frame(overrides: Partial<PublicFrame> = {}): PublicFrame {
-  return { blob: fixturePng(), frameId: 'test-only-public-frame', capturedAt: new Date().toISOString(), physicsSteps: 125, sceneEpoch: epoch, ...overrides };
+  return {
+    blob: fixturePng(), frameId: 'test-only-public-frame', capturedAt: new Date().toISOString(),
+    physicsSteps: 125, sceneEpoch: epoch, expiresAtMonotonicMs: performance.now() + 5000, ...overrides,
+  };
 }
 export function evidence(presentation: Presentation): PublicEvidence {
   if (!presentation.decision) throw new Error('This fixture requires a decision.');

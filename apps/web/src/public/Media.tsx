@@ -1,8 +1,8 @@
-import { useCallback, useEffect } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Camera, Clock3, FileImage, Radio, RefreshCw, Unplug } from 'lucide-react';
 import { describeError } from '../api/errors';
 import { useProtectedImage } from '../hooks/useProtectedImage';
-import { FRAME_MAX_AGE_MS, getDemoEvidence, getDemoFrame, needsSnapshotRefresh, type PublicDecision } from './api';
+import { getDemoEvidence, getDemoFrame, needsSnapshotRefresh, type PublicDecision } from './api';
 import { formatCount, formatTime } from './presentation';
 
 export function CameraUnavailable({ title, description, retry, loading = false }: {
@@ -26,11 +26,23 @@ export function PublicLiveCamera({ epoch, onSceneChanged }: {
 }) {
   const load = useCallback((signal: AbortSignal) => getDemoFrame(epoch, signal), [epoch]);
   const image = useProtectedImage(load, 1000);
+  const [expiredDeadline, setExpiredDeadline] = useState<number | null>(null);
+  const deadline = image.data?.expiresAtMonotonicMs ?? null;
+  useEffect(() => {
+    if (deadline === null || !Number.isFinite(deadline) || image.paused) return;
+    let timer: ReturnType<typeof setTimeout>;
+    const expire = () => {
+      const remaining = deadline - performance.now();
+      if (remaining > 0) timer = setTimeout(expire, Math.ceil(remaining));
+      else setExpiredDeadline(deadline);
+    };
+    expire();
+    return () => clearTimeout(timer);
+  }, [deadline, image.paused]);
   useEffect(() => {
     if (needsSnapshotRefresh(image.error)) onSceneChanged();
   }, [image.error, onSceneChanged]);
-  const age = image.data ? image.clock - Date.parse(image.data.capturedAt) : null;
-  const stale = age !== null && (age > FRAME_MAX_AGE_MS || age < -FRAME_MAX_AGE_MS);
+  const stale = deadline !== null && (!Number.isFinite(deadline) || performance.now() >= deadline || expiredDeadline === deadline);
   const connected = Boolean(image.url && image.data && !image.error && !image.decodeError && !image.paused && !stale);
   const retry = () => { onSceneChanged(); image.refresh(); };
 

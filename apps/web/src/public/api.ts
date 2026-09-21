@@ -118,11 +118,20 @@ export interface PublicEvidence {
 export interface PublicFrame extends PublicEvidence {
   physicsSteps: number;
   sceneEpoch: string;
+  expiresAtMonotonicMs: number;
 }
 export const FRAME_MAX_AGE_MS = 5000;
+const SERVER_FRAME_MAX_AGE_MS = 2000;
+const SERVER_FRAME_MAX_FUTURE_MS = 500;
 export const SNAPSHOT_MAX_AGE_MS = 10_000;
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 const errorEnvelope = z.object({ error: z.object({ code: z.string(), message: z.string() }) });
+
+function timestampRemainderMs(value: string): number {
+  // Date.parse drops Python's sub-millisecond digits; preserve them for the freshness bounds.
+  const fraction = /\.(\d+)(?:Z|[+-]\d{2}:\d{2})$/.exec(value)?.[1] ?? '';
+  return Number(`0.${fraction.slice(3)}`);
+}
 
 async function publicRequest<T>(path: string, signal: AbortSignal, image: boolean, read: (response: Response) => Promise<T>): Promise<T> {
   const controller = new AbortController();
@@ -214,6 +223,7 @@ async function readImage(response: Response, signal: AbortSignal): Promise<Publi
 export async function getDemoFrame(epoch: string, signal: AbortSignal): Promise<PublicFrame> {
   if (!z.uuid().safeParse(epoch).success) throw new ApiError('invalid_epoch', '현재 시연의 씬 정보를 확인할 수 없습니다.');
   const query = new URLSearchParams({ camera: 'overview', epoch });
+  const requestStartedAt = performance.now();
   return publicRequest(`/api/demo/frame?${query}`, signal, true, async (response) => {
     const sceneEpoch = response.headers.get('X-Scene-Epoch');
     if (!sceneEpoch || sceneEpoch.toLowerCase() !== epoch.toLowerCase()) {
@@ -223,12 +233,23 @@ export async function getDemoFrame(epoch: string, signal: AbortSignal): Promise<
     if (steps === null || !/^\d+$/.test(steps) || !Number.isSafeInteger(Number(steps))) {
       throw new ApiError('invalid_frame_metadata', '프레임의 실제 물리 스텝을 확인할 수 없습니다.');
     }
+    const serverTime = response.headers.get('X-Server-Time');
+    if (!serverTime || !timestamp.safeParse(serverTime).success || !/(?:Z|\+00:00)$/.test(serverTime)) {
+      throw new ApiError('invalid_server_time', '카메라 응답의 서버 시각을 확인할 수 없습니다. 다시 연결해 주세요.');
+    }
     const image = await readImage(response, signal);
-    const age = Date.now() - Date.parse(image.capturedAt);
-    if (age < -FRAME_MAX_AGE_MS || age > FRAME_MAX_AGE_MS) {
+    const receivedAt = performance.now();
+    const requestDuration = receivedAt - requestStartedAt;
+    const serverAge = Date.parse(serverTime) - Date.parse(image.capturedAt) +
+      timestampRemainderMs(serverTime) - timestampRemainderMs(image.capturedAt);
+    // Charge the full request/body duration, not half an RTT or a client/server clock offset.
+    const ageUpperBound = Math.max(0, serverAge) + requestDuration;
+    if (!Number.isFinite(requestDuration) || requestDuration < 0 ||
+      !Number.isFinite(serverAge) || serverAge < -SERVER_FRAME_MAX_FUTURE_MS ||
+      serverAge > SERVER_FRAME_MAX_AGE_MS || ageUpperBound >= FRAME_MAX_AGE_MS) {
       throw new ApiError('stale_frame', '카메라 촬영 시각이 최신이 아닙니다. 연결을 다시 확인합니다.', 503);
     }
-    return { ...image, physicsSteps: Number(steps), sceneEpoch };
+    return { ...image, physicsSteps: Number(steps), sceneEpoch, expiresAtMonotonicMs: receivedAt + FRAME_MAX_AGE_MS - ageUpperBound };
   });
 }
 

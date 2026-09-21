@@ -123,7 +123,15 @@ presentation**, even when older base camera-ready flags are present.
 Public snapshots poll every two seconds and camera PNGs at most once per second
 while visible. PNG signature, content type, bounded size, capture timestamp,
 frame ID and physics-step headers are checked. `X-Scene-Epoch` must match the
-snapshot's epoch. Evidence requires `X-Frame-Id` equal to `observation_id` and the
+snapshot's epoch. Public live frames also require a valid UTC `X-Server-Time`.
+Their capture age is measured against that server stamp, not the browser wall
+clock, and must be within 2,000 ms old / 500 ms future. The **entire** monotonic
+request plus body-read/validation duration is charged against the unchanged
+five-second display budget. The remaining display time expires using
+`performance.now()`, including between polling ticks; client clock skew or clock
+adjustments cannot extend it. Original `X-Captured-At` remains unchanged.
+The protected operator image hook and its clock behavior are not modified.
+Evidence requires `X-Frame-Id` equal to `observation_id` and the
 original `X-Captured-At` matching the decision. Historical evidence is clearly
 labeled **not LIVE** and is not subject to the live five-second freshness limit.
 Camera and evidence mismatches return conflict semantics, hide the mismatched

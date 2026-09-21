@@ -7,9 +7,10 @@ import { pngBytes } from './fixtures/data';
 afterEach(() => vi.unstubAllGlobals());
 const signal = () => new AbortController().signal;
 function imageHeaders() {
+  const now = new Date().toISOString();
   return {
     'Content-Type': 'image/png', 'X-Frame-Id': 'test-only-frame',
-    'X-Captured-At': new Date().toISOString(), 'X-Physics-Steps': '125', 'X-Scene-Epoch': epoch,
+    'X-Captured-At': now, 'X-Server-Time': now, 'X-Physics-Steps': '125', 'X-Scene-Epoch': epoch,
     'Cache-Control': 'no-store',
   };
 }
@@ -67,7 +68,7 @@ describe('anonymous same-cycle public images', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(pngBytes, { headers })));
     await expect(getDemoFrame(epoch, signal())).rejects.toMatchObject({ code: 'scene_changed', status: 409 });
   });
-  it.each(['X-Frame-Id', 'X-Captured-At', 'X-Physics-Steps'])('rejects missing %s rather than using synthetic values', async (key) => {
+  it.each(['X-Frame-Id', 'X-Captured-At', 'X-Physics-Steps', 'X-Server-Time'])('rejects missing %s rather than using synthetic values', async (key) => {
     const headers: Record<string, string> = imageHeaders();
     delete headers[key];
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(pngBytes, { headers })));
@@ -85,6 +86,89 @@ describe('anonymous same-cycle public images', () => {
     await expect(getDemoFrame(epoch, signal())).rejects.toMatchObject({ code: 'invalid_image_metadata' });
     await expect(getDemoFrame(epoch, signal())).rejects.toMatchObject({ code: 'invalid_image' });
     await expect(getDemoFrame(epoch, signal())).rejects.toMatchObject({ code: 'invalid_image_size' });
+  });
+  it.each([-600_000, 600_000])('uses the server capture age with a client clock skew of %sms', async (skew) => {
+    const capturedAt = '2026-09-22T00:00:00.123456+00:00';
+    const serverTime = '2026-09-22T00:00:01.623456+00:00';
+    vi.spyOn(Date, 'now').mockReturnValue(Date.parse(serverTime) + skew);
+    vi.spyOn(performance, 'now').mockReturnValueOnce(1000).mockReturnValue(1250);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(pngBytes, { headers: {
+      ...imageHeaders(), 'X-Captured-At': capturedAt, 'X-Server-Time': serverTime,
+    } })));
+    const result = await getDemoFrame(epoch, signal());
+    expect(result.capturedAt).toBe(capturedAt);
+    expect(result.expiresAtMonotonicMs).toBe(4500);
+  });
+  it.each(['', 'not-a-time', 'Tue, 22 Sep 2026 00:00:00 GMT', '2026-09-22T00:00:00', '2026-09-22T09:00:00+09:00'])(
+    'rejects malformed or non-UTC X-Server-Time: %s', async (serverTime) => {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(pngBytes, { headers: {
+        ...imageHeaders(), 'X-Server-Time': serverTime,
+      } })));
+      await expect(getDemoFrame(epoch, signal())).rejects.toMatchObject({ code: 'invalid_server_time' });
+    },
+  );
+  it.each([2001, -501])('rejects a genuinely out-of-bound server capture age of %sms', async (age) => {
+    const serverTime = '2026-09-22T00:00:10.000000+00:00';
+    const capturedAt = new Date(Date.parse(serverTime) - age).toISOString();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(pngBytes, { headers: {
+      ...imageHeaders(), 'X-Server-Time': serverTime, 'X-Captured-At': capturedAt,
+    } })));
+    await expect(getDemoFrame(epoch, signal())).rejects.toMatchObject({ code: 'stale_frame', status: 503 });
+  });
+  it.each([
+    ['2026-09-22T00:00:00.000000+00:00', '2026-09-22T00:00:02.000001+00:00'],
+    ['2026-09-22T00:00:00.500001+00:00', '2026-09-22T00:00:00.000000+00:00'],
+  ])('does not round an out-of-bound high-precision capture %s into the server budget %s', async (capturedAt, serverTime) => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(pngBytes, { headers: {
+      ...imageHeaders(), 'X-Server-Time': serverTime, 'X-Captured-At': capturedAt,
+    } })));
+    await expect(getDemoFrame(epoch, signal())).rejects.toMatchObject({ code: 'stale_frame', status: 503 });
+  });
+  it('retains sub-millisecond server age in the monotonic display budget', async () => {
+    vi.spyOn(performance, 'now').mockReturnValueOnce(1000).mockReturnValue(1200);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(pngBytes, { headers: {
+      ...imageHeaders(),
+      'X-Captured-At': '2026-09-22T00:00:00.123000Z',
+      'X-Server-Time': '2026-09-22T00:00:01.623999+00:00',
+    } })));
+    const result = await getDemoFrame(epoch, signal());
+    expect(result.expiresAtMonotonicMs).toBeCloseTo(4499.001, 6);
+  });
+  it.each([
+    [2000, 3800],
+    [-500, 5800],
+  ])('accepts server age boundary %sms without giving future captures extra display time', async (age, deadline) => {
+    const serverTime = '2026-09-22T00:00:10.000000+00:00';
+    vi.spyOn(performance, 'now').mockReturnValueOnce(800).mockReturnValue(1000);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(pngBytes, { headers: {
+      ...imageHeaders(), 'X-Server-Time': serverTime, 'X-Captured-At': new Date(Date.parse(serverTime) - age).toISOString(),
+    } })));
+    await expect(getDemoFrame(epoch, signal())).resolves.toMatchObject({ expiresAtMonotonicMs: deadline });
+  });
+  it.each([
+    [1600, false],
+    [3100, true],
+  ])('charges all request and body time through monotonic %sms (expired=%s)', async (bodyCompleteAt, expired) => {
+    let now = 100;
+    let body: ReadableStreamDefaultController<Uint8Array> | undefined;
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
+    const serverTime = '2026-09-22T00:00:02Z';
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => {
+      now = 900;
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) { body = controller; },
+      }), { headers: { ...imageHeaders(), 'X-Server-Time': serverTime, 'X-Captured-At': '2026-09-22T00:00:00Z' } });
+    }));
+    const result = getDemoFrame(epoch, signal());
+    const check = expired
+      ? expect(result).rejects.toMatchObject({ code: 'stale_frame', status: 503 })
+      : expect(result).resolves.toMatchObject({ expiresAtMonotonicMs: 3100 });
+    for (let index = 0; index < 5; index++) await Promise.resolve();
+    expect(body).toBeDefined();
+    now = bodyCompleteAt;
+    body?.enqueue(pngBytes);
+    body?.close();
+    await check;
   });
   it('accepts original evidence older than five seconds, only with matching observation and capture time', async () => {
     const decision = makePresentation().decision!;
