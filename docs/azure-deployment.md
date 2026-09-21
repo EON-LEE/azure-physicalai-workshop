@@ -168,6 +168,13 @@ The large-image fallback uses `Dockerfile.bundle` for reviewed code, followed by
 `build-simulator-on-gpu.sh` on the dedicated Azure host. Building/pulling the next
 image does not stop the working simulator. Keep the resulting immutable digest.
 
+`install-rtx-grid.sh` defaults to the documented RTX PRO GRID 595.91.07/open-module
+profile. For an NVadsA10_v5 host, explicitly set `GRID_GPU_FAMILY=a10`; it selects
+Microsoft's A10-specific GRID 570.237 installer and its default kernel module.
+Do not reuse the Blackwell driver/module choice on A10. A working driver/Vulkan
+probe is separate from validating the chosen Isaac image, cameras and physical
+episodes; never override a failed driver-compatibility check to claim readiness.
+
 Reconcile/stop the active presentation before invoking `start-live-simulator.sh`.
 It pulls first, keeps the previous container, and checks the candidate's HTTPS
 health with the deployment CA downloaded through private Blob access. Configuration
