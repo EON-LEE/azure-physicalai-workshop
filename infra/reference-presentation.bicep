@@ -10,9 +10,11 @@ param entraApiClientId string
 param publicDemoOwnerId string
 param publicDemoEnvironmentId string
 param publicDemoRevision string
+param publicDemoDefectEnvironmentId string
+param publicDemoDefectRevision string
 param presentationId string
 @minValue(1)
-@maxValue(100)
+@maxValue(1000)
 param cycles int = 20
 @minValue(30)
 @maxValue(21600)
@@ -56,7 +58,9 @@ resource job 'Microsoft.App/jobs@2025-07-01' = {
           { name: 'PUBLIC_DEMO_OWNER_ID', value: publicDemoOwnerId }
           { name: 'PUBLIC_DEMO_ENVIRONMENT_ID', value: publicDemoEnvironmentId }
           { name: 'PUBLIC_DEMO_REVISION', value: publicDemoRevision }
-          { name: 'PRESENTATION_ID', value: presentationId }
+          { name: 'PUBLIC_DEMO_DEFECT_ENVIRONMENT_ID', value: publicDemoDefectEnvironmentId }
+          { name: 'PUBLIC_DEMO_DEFECT_REVISION', value: publicDemoDefectRevision }
+          { name: 'PUBLIC_DEMO_PRESENTATION_ID', value: presentationId }
           { name: 'PRESENTATION_CYCLES', value: string(cycles) }
           { name: 'PRESENTATION_MAX_SECONDS', value: string(maximumSeconds) }
           { name: 'AZURE_TRACING_GEN_AI_CONTENT_RECORDING_ENABLED', value: 'false' }

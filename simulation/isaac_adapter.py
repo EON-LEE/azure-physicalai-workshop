@@ -25,6 +25,7 @@ from isaacsim.sensors.camera import Camera
 from PIL import Image
 from pxr import Gf, Sdf, UsdGeom, UsdLux, UsdShade
 
+from apps.api.models import MotionPhase
 from learning.capture import resolve_joint_targets
 from learning.contract import CameraSample, FrameSample
 from simulation.asset_references import validate_usd_bundle
@@ -85,7 +86,15 @@ class IsaacWorkcell:
         )
         stage = self.world.stage
         UsdLux.DomeLight.Define(stage, "/World/Light").CreateIntensityAttr(1500)
+        station_colors = {
+            "source": spec.platform_color,
+            "inspection": (0.8, 0.5, 0.12),
+            "accepted": (0.12, 0.5, 0.25),
+            "rejected": (0.7, 0.12, 0.16),
+        }
         for index, station in enumerate(spec.stations):
+            if station.role not in station_colors:
+                raise ValueError(f"Unsupported station role: {station.role}")
             x, y, z = station.position
             self.world.scene.add(
                 FixedCuboid(
@@ -93,7 +102,7 @@ class IsaacWorkcell:
                     name=f"station-{index}",
                     position=np.array([x, y, z - 0.045]),
                     scale=np.array([0.16, 0.16, 0.04]),
-                    color=np.array(spec.platform_color),
+                    color=np.array(station_colors[station.role]),
                 )
             )
         self.robot = self.world.scene.add(
@@ -137,10 +146,18 @@ class IsaacWorkcell:
             defect_material.CreateSurfaceOutput().ConnectToSource(
                 defect_shader.ConnectableAPI(), "surface"
             )
+            parent_binding = UsdShade.MaterialBindingAPI(stage.GetPrimAtPath("/World/Part"))
+            # The default cube binding otherwise overrides the child's dark material.
+            UsdShade.MaterialBindingAPI.SetMaterialBindingStrength(
+                parent_binding.GetDirectBindingRel(), UsdShade.Tokens.weakerThanDescendants
+            )
             UsdShade.MaterialBindingAPI.Apply(crack.GetPrim()).Bind(defect_material)
+            bound_material, _ = UsdShade.MaterialBindingAPI(crack.GetPrim()).ComputeBoundMaterial()
+            if bound_material.GetPath() != defect_material.GetPath():
+                raise RuntimeError("The reference surface-defect material is not visibly bound.")
         source = spec.station(spec.source_id).position
         for name, eye, target, up in (
-            ("overview", (1.7, 1.7, 1.6), (0, 0, 0.3), (0, 0, 1)),
+            ("overview", (1.3, 1.15, 1.2), (0.25, 0, 0.28), (0, 0, 1)),
             ("inspection", (source[0], source[1], source[2] + 0.48), source, (0, 1, 0)),
         ):
             camera = Camera(
@@ -170,6 +187,7 @@ class IsaacWorkcell:
         self.world.play()
         self.steps = 0
         self.target = None
+        self.route = None
         self.last_effector_position = None
         for _ in range(18):
             self._compensate_gravity()
@@ -259,6 +277,27 @@ class IsaacWorkcell:
 
     def position(self) -> tuple[float, float, float]:
         return tuple(float(value) for value in self.part.get_world_pose()[0])
+
+    def motion_phase(self) -> MotionPhase:
+        if self.world is None or not self.world.is_playing():
+            return "stopped"
+        if self.controller is None:
+            return "complete" if self.route is not None and self.route.done else "idle"
+        phases: dict[str, MotionPhase] = {
+            "lift-clear": "approaching",
+            "approach-part": "approaching",
+            "lower-to-part": "approaching",
+            "grasp": "grasping",
+            "lift-part": "lifting",
+            "to-inspection": "inspection_station",
+            "inspect": "inspection_station",
+            "lift-inspected-part": "transporting",
+            "to-destination": "transporting",
+            "lower-to-destination": "transporting",
+            "release": "releasing",
+            "retreat": "returning",
+        }
+        return phases[self.route.current.name]
 
     def _compensate_gravity(self) -> None:
         gravity = self.dynamics.get_generalized_gravity_forces()

@@ -62,13 +62,17 @@ def validate() -> None:
     app = resources(templates["web"], "Microsoft.App/containerApps")[0]
     assert app["properties"]["configuration"]["ingress"]["allowInsecure"] is False
     assert app["identity"]["type"] == "UserAssigned"
-    assert app["properties"]["template"]["scale"]["minReplicas"] == 0
+    assert (
+        app["properties"]["template"]["scale"]["minReplicas"].replace(" ", "")
+        == "[if(parameters('publicDemoPublishLive'),1,0)]"
+    )
+    assert templates["web"]["parameters"]["publicDemoPublishLive"]["defaultValue"] is False
     assert "defaultValue" not in runtime["parameters"]["gpuVmSize"]
     assert "defaultValue" not in runtime["parameters"]["acceptNvidiaEula"]
     presentation = resources(templates["reference-presentation"], "Microsoft.App/jobs")[0]
     assert presentation["properties"]["configuration"]["replicaRetryLimit"] == 0
     assert presentation["properties"]["configuration"]["manualTriggerConfig"]["parallelism"] == 1
-    assert templates["reference-presentation"]["parameters"]["cycles"]["maxValue"] == 100
+    assert templates["reference-presentation"]["parameters"]["cycles"]["maxValue"] == 1000
     for script in (
         ROOT / "infra" / "start-simulator.sh",
         ROOT / "scripts" / "start-live-simulator.sh",

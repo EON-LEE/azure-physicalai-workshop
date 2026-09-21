@@ -69,6 +69,26 @@ restarting Spot capacity is not guaranteed and retained disks incur charges.
 The regular-family quota rejection did not imply that the separate Spot quota
 pool could not allocate this VM.
 
+## Subsequent actual runtime and interruption
+
+After the operator authorized runtime installation and prioritized correctness
+over price, the smaller Spot allocation could not be restarted. The retained
+installation was resized to `Standard_NC72lds_xl_RTXPRO6000BSE_v6` and actually ran
+with a 48 GB RTX PRO Blackwell vGPU, GRID 595.91.07 and Isaac Sim 6.0.0.
+Real rendering and physical grasp/sort/retreat were observed. Isaac 5.1 failed
+renderer initialization on this vGPU; the older memory comparison is not a
+compatibility claim or the currently deployed SKU.
+
+Azure recorded `evictSpotVM` at 2026-09-21 14:05:57 UTC and deallocated the VM.
+It was subsequently restarted, but recovery does not remove interruption risk.
+Setting maximum Spot price to `-1` avoids price-based eviction, not capacity eviction.
+
+Fresh regular RTX/A10 family quota checks in West US 2, East US 2, West US 3 and
+East US still returned zero. A West US 3 regular A10 request for 36 vCPUs returned
+`ContactSupport`. Regular capacity therefore remains an external deployment
+prerequisite for an uninterrupted customer presentation; do not describe the
+current Spot runtime as a dependable always-on service.
+
 ## Sources
 
 - [Azure Retail Prices API](https://prices.azure.com/api/retail/prices)

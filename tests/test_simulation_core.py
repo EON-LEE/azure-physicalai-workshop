@@ -152,6 +152,45 @@ def test_inflight_old_scene_frames_and_errors_cannot_cross_an_activation(ready_c
     assert core.physics_steps == 18
 
 
+def test_motion_telemetry_is_measured_command_bound_and_owner_isolated(ready_core):
+    core, environment = ready_core
+    motion = command(core, environment)
+    core.dispatch(ACTOR.owner_key, motion)
+    core.next_action()
+    core.begin_motion(motion.command_id)
+    core.publish_motion(
+        epoch=core.epoch,
+        phase="grasping",
+        object_position=(0.35, 0.25, 0.2),
+        target_station_id="rejected",
+    )
+    telemetry = core.status(ACTOR.owner_key).motion
+    assert telemetry.command_id == motion.command_id
+    assert telemetry.phase == "grasping"
+    assert telemetry.object_position == (0.35, 0.25, 0.2)
+    assert core.status(OTHER.owner_key).motion is None
+    final_position = (0.22, -0.38, 0.2)
+    core.finish("succeeded", final_position)
+    telemetry = core.status(ACTOR.owner_key).motion
+    assert telemetry.command_id == motion.command_id
+    assert telemetry.phase == "complete"
+    assert telemetry.object_position == final_position
+
+
+def test_prior_epoch_motion_cannot_claim_a_new_scene_is_running(ready_core):
+    core, environment = ready_core
+    previous_epoch = core.epoch
+    core.activate(ACTOR.owner_key, environment)
+    core.publish_motion(
+        epoch=previous_epoch,
+        phase="transporting",
+        object_position=(0.4, 0.1, 0.38),
+        target_station_id="accepted",
+    )
+    assert core.status(ACTOR.owner_key).motion is None
+    assert core.status(ACTOR.owner_key).status == "loading"
+
+
 def test_unknown_template_and_unsupported_robot_fail_instead_of_selecting_defaults():
     backend = service()
     for field, value in (("template_id", "unknown"), ("robot_profile", "unknown")):

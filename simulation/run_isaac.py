@@ -114,6 +114,12 @@ def main() -> None:
                     completed = hardware.advance()
                     if completed:
                         finish("succeeded")
+                    core.publish_motion(
+                        epoch=active_epoch,
+                        phase=hardware.motion_phase(),
+                        object_position=hardware.position(),
+                        target_station_id=hardware.target,
+                    )
                     if time.monotonic() - last_capture >= 0.2:
                         for camera in ("overview", "inspection"):
                             image = hardware.capture(camera)

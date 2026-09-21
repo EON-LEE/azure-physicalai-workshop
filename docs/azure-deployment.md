@@ -9,7 +9,9 @@ private Azure GPU VM for Isaac Sim. Azure Monitor/Application Insights receives
 application telemetry. No production memory store or fixture provider exists.
 
 WSL is only for authoring, dependency management and automated tests. The staged
-deployment builds both images in ACR; it does not need a local Docker daemon.
+deployment builds the API in ACR; the large Isaac image can be assembled on the
+dedicated Azure GPU host from a reviewed code-only ACR bundle and then pushed to
+the private registry. It does not need a local Docker daemon.
 Agent creation, TLS generation and a real connectivity probe execute in an
 explicit Azure bootstrap runner (private Container Instance by default;
 Container Apps Job is an alternative).
@@ -24,16 +26,24 @@ performed: the ACR image build/execution, protected Container Apps web/API,
 Entra delegated authentication, private Cosmos configuration persistence, and
 a real Foundry agent connectivity response are verified.
 
-GPU execution and the physical closed loop remain blocked. The A10 quota
-request returned `ContactSupport`; the RTX PRO alternative returned
-`QuotaNotAvailableForResource`. NVIDIA/asset approval is also pending. No
-unsupported GPU or replay is substituted for those gates.
+The subsequent approved GPU deployment ran Isaac Sim 6.0.0 with Microsoft's GRID
+595.91.07 driver on `Standard_NC72lds_xl_RTXPRO6000BSE_v6` in West US 2. Real
+images, advancing physics and normal-part grasp/sort/retreat were observed. Isaac
+5.1 did not initialize this vGPU renderer; meeting a memory minimum was not enough
+to establish compatibility. Use the tested 6.0 image path for this deployment.
 
-The provided Isaac integration is pinned to Isaac Sim 5.1.0 and a reference
-Franka inspection/sorting workcell. Runtime API compatibility, robot reach,
-motion timing, camera metadata and speed-watchdog thresholds still require the
-actual GPU acceptance gate. Unsupported profiles fail instead of falling back.
-The simulation-only watchdog is not an industrial safety certification.
+Regular A10/RTX family quotas in the checked regions remain zero, and a further
+regular A10 request returned `ContactSupport`. Spot allowed actual allocation but
+was evicted on 2026-09-21 at 14:05:57 UTC. Recovery does not establish uninterrupted
+capacity. Do not substitute an unsupported GPU, CPU renderer or replay for a live
+gate. Balanced normal/defect, repeat-reset and public-viewing evidence must be
+collected against the deployed candidate, not inferred from a previous sample.
+
+The reference arm uses PhysX-computed gravity-compensation efforts while gravity,
+contacts and the 0.2 m/s configured watchdog remain enabled. Its measured-state
+route retains gripper drive targets after contact, checks that the part lifts,
+and checks its actual destination. Scene frames and motion telemetry are fenced
+by the producer's scene epoch. These controls are not industrial safety certification.
 
 ## Required approvals and inputs
 
@@ -53,7 +63,7 @@ Supply existing, approved Entra app registrations:
 - Delegated permission/consent from the SPA to the API.
 - The simulator accepts application tokens only from the explicitly allowlisted
   API managed-identity object ID. A delegated user token cannot control it directly.
-- After deployment, register the exact returned HTTPS web URL as the approved
+- After deployment, register the exact returned HTTPS web URL plus `/operator` as the approved
   SPA redirect URI. This code does not mutate tenant-wide app registrations.
 
 Confirm NVIDIA terms and the license to upload a **self-contained** Franka USD
@@ -120,6 +130,54 @@ endpoint. Failed stages can leave billable resources in the dedicated group.
 The final deployment report explicitly records `live_verified: false` until
 the live test gates are run. The current entry point is staged Bicep/CLI;
 an `azd up` wrapper is deferred until its full bootstrap lifecycle is verified.
+
+## Publish the paired audience demonstration
+
+The public story is inspection followed by physical sorting, not a set of
+explanation buttons. Visitors open the URL and watch; only the operator-authorized
+Azure job can start model calls and motion.
+
+1. Save two reference documents under the approved owner. Both must match
+   `examples/inspection-cell.json`, apart from ID/display name and the explicitly
+   selected normal seed 42 or surface-defect seed 43. Retain both immutable revisions.
+2. Deploy `web.bicep` with `publicDemoPublishLive`, the owner, both environment
+   IDs/revisions and `publicDemoPresentationId`. The published web keeps one warm
+   replica. The additional API environment names and projection schema are documented
+   in [the public contract](public-demo-api.md).
+3. Deploy `reference-presentation.bicep` with the same API image and anchors, an
+   explicit duration of 30-21600 seconds and 1-1000 cycles. Start the manual job
+   only after confirming GPU readiness. Its identity is the existing API identity.
+4. Observe actual normal and defect images, model decisions, motion and final poses.
+   Inspection correctness and physical completion are separate results. A wrong
+   inspection is retained and cancelled before dispatch, not replaced with the known
+   expected answer. Three unsuccessful cycles stop the presentation.
+
+The Cosmos presentation claim is single-use and ETag-guarded. Retrying a terminal
+presentation ID returns its recorded report; an active/interrupted claim is not
+silently taken over. Reconcile outstanding motion before approving a new
+presentation ID and lifetime. There is no unbounded container-restart renewal.
+
+The public camera and original inspection-evidence endpoints are GET-only, scoped
+to that presentation and its approved scenes. Epoch/observation mismatches are
+rejected. Missing frames, stale state, an expired window and GPU interruption are
+shown explicitly; a recorded successful result is not proof that a camera is live.
+
+## Updating the simulator safely
+
+The large-image fallback uses `Dockerfile.bundle` for reviewed code, followed by
+`build-simulator-on-gpu.sh` on the dedicated Azure host. Building/pulling the next
+image does not stop the working simulator. Keep the resulting immutable digest.
+
+Reconcile/stop the active presentation before invoking `start-live-simulator.sh`.
+It pulls first, keeps the previous container, and checks the candidate's HTTPS
+health with the deployment CA downloaded through private Blob access. Configuration
+switches only after this check. Candidate startup failure restores the previous
+container/configuration and still exits with an error. This is bridge readiness,
+not physical acceptance: run actual image/pose episodes after a rollout.
+
+The simulator identity normally needs registry pull, not push. If a scoped
+temporary `AcrPush` assignment is approved for host image construction, remove
+that exact assignment after the final image is pushed.
 
 ## Networking and security boundary
 

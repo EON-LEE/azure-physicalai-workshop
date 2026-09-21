@@ -7,7 +7,6 @@ from pathlib import Path
 
 config = json.loads(Path('/var/lib/physicalai/live-runtime.json').read_text())
 update = json.loads('__CODE_UPDATE_JSON__')
-subprocess.run(['docker', 'stop', '--time', '10', 'physicalai-simulator'], check=True)
 subprocess.run(['az', 'login', '--identity', '--client-id', config['AZURE_CLIENT_ID'],
                 '--allow-no-subscriptions', '--output', 'none'], check=True)
 subprocess.run(['az', 'acr', 'login', '--name', config['REGISTRY_NAME']], check=True)

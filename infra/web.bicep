@@ -13,6 +13,9 @@ param publicDemoPublishLive bool = false
 param publicDemoOwnerId string = ''
 param publicDemoEnvironmentId string = ''
 param publicDemoRevision string = ''
+param publicDemoDefectEnvironmentId string = ''
+param publicDemoDefectRevision string = ''
+param publicDemoPresentationId string = ''
 
 resource web 'Microsoft.App/containerApps@2025-07-01' = {
   name: appName
@@ -53,6 +56,11 @@ resource web 'Microsoft.App/containerApps@2025-07-01' = {
             { name: 'PUBLIC_DEMO_ENVIRONMENT_ID', value: publicDemoEnvironmentId }
             { name: 'PUBLIC_DEMO_REVISION', value: publicDemoRevision }
           ] : [])
+          ...(publicDemoPublishLive && !empty(publicDemoPresentationId) ? [
+            { name: 'PUBLIC_DEMO_DEFECT_ENVIRONMENT_ID', value: publicDemoDefectEnvironmentId }
+            { name: 'PUBLIC_DEMO_DEFECT_REVISION', value: publicDemoDefectRevision }
+            { name: 'PUBLIC_DEMO_PRESENTATION_ID', value: publicDemoPresentationId }
+          ] : [])
         ]
         probes: [
           {
@@ -69,7 +77,7 @@ resource web 'Microsoft.App/containerApps@2025-07-01' = {
           }
         ]
       }]
-      scale: { minReplicas: 0, maxReplicas: 2 }
+      scale: { minReplicas: publicDemoPublishLive ? 1 : 0, maxReplicas: 2 }
     }
   }
 }

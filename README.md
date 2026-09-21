@@ -11,15 +11,25 @@ agent connectivity response from managed-identity bootstrap. Images are built
 and executed in ACR, not just checked as source. Blob, Cosmos and Key Vault use
 Private Link; tenant restrictions are not bypassed.
 
-**Not live-verified:** graphics-driver/Isaac compatibility, robot motion, real
-demonstrations, Azure ML training and the complete physical loop. Regular GPU
-quota requests were declined, but a subsequent real Spot RTX PRO allocation
-succeeded and the guest NVIDIA PCI device was confirmed. The probe VM was then
-deallocated. NVIDIA/robot-asset approval is still pending.
-The UI reports the simulator unavailable; no replay substitutes for it.
-LeRobot conversion, real ACT training/inference and Azure ML job components are
-now implemented and CPU-smoke-tested, but task quality requires real held-out
-GPU episodes. This is not a completed physical-demo release.
+**Actual GPU execution observed:** Isaac Sim 6.0.0, GRID 595.91.07 and an Azure
+NC72 RTX PRO Blackwell 48 GB slice have produced real camera observations and
+completed image-planned physical grasp/sort/retreat cycles. The controller uses
+PhysX gravity feed-forward, contact-based grasping and a measured speed watchdog;
+it does not attach or teleport the part to manufacture a successful outcome.
+
+**Public demonstration:** an explicitly authorized, bounded presentation compares
+normal and surface-defect synthetic parts. The audience page connects the original
+inspection image, actual Foundry decision, measured robot phase and physical result
+from the same scene epoch. Opening the public URL does not authorize motion or paid
+inference. A stopped/unpublished simulator is shown as unavailable, not replaced
+by a schematic or replay. Availability depends on the active Azure presentation.
+
+**Remaining boundaries:** regular supported GPU quota is not established for the
+development subscription. Its Spot VM was actually evicted, so Spot cannot be sold
+as uninterrupted presentation capacity. LeRobot/ACT and Azure ML components are
+CPU-smoke-tested, not validated learned robot policies. The running reference
+controller is not a trained VLA, and this is not an industrial safety certification
+or a blanket pass of every production-release gate.
 
 All production workloads run on Azure. WSL is for authoring and automated tests,
 not a required production server. The default web page is a login-free,
@@ -44,7 +54,7 @@ docs         Configuration, HTTP contract, test strategy and deployment boundari
 ```
 
 `inspection-cell.json` and `compact-cell.json` target the implemented reference
-Franka scene builders, pending actual GPU acceptance. `customer-cell.json`
+Franka scene builders; changed layouts still require actual GPU acceptance. `customer-cell.json`
 is a configuration-only example: its robot/template is intentionally not installed.
 Unknown live templates or profiles fail explicitly.
 
@@ -105,8 +115,9 @@ valid non-placeholder deployment inputs. No default subscription is selected.
 
 The backend uses managed identities, the browser uses real MSAL/Entra, and the
 simulator independently verifies its allowlisted controller identity over TLS.
-Robot assets must be licensed, self-contained and uploaded to Azure Blob;
-there is no default NVIDIA asset-server fallback.
+Robot assets must be licensed and self-contained, supplied through the approved
+Blob archive or an explicitly enabled, validated private image bundle. There is
+no default NVIDIA asset-server fallback.
 
 The [HTTP contract](docs/http-api.md) distinguishes configuration, live data,
 inspection proposals, approval, command ACK, and verified physical completion.

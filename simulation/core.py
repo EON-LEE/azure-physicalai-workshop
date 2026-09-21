@@ -15,6 +15,8 @@ from apps.api.models import (
     EnvironmentRecord,
     Execution,
     MotionCommand,
+    MotionPhase,
+    MotionTelemetry,
     Observation,
     RunError,
     SimulationStatus,
@@ -45,7 +47,7 @@ class StopMotion:
 class SimulationCore:
     """Thread-safe protocol state; all physics execution stays in the Isaac main thread."""
 
-    def __init__(self, registry: SceneRegistry, max_commands: int = 512) -> None:
+    def __init__(self, registry: SceneRegistry, max_commands: int = 2048) -> None:
         self.registry = registry
         self.lock = threading.RLock()
         self.owner: str | None = None
@@ -64,6 +66,7 @@ class SimulationCore:
         self.deadlines: dict[tuple[str, UUID], datetime] = {}
         self.pending: deque[LoadScene | StartMotion | StopMotion] = deque()
         self.active_command: tuple[str, UUID] | None = None
+        self.motion: MotionTelemetry | None = None
         self.max_commands = max_commands
 
     def _owned(self, owner: str) -> None:
@@ -100,6 +103,7 @@ class SimulationCore:
                 epoch=self.epoch,
                 physics_steps=self.physics_steps,
                 message=self.error or stale_message,
+                motion=self.motion.model_copy(deep=True) if self.motion else None,
             )
 
     def activate(self, owner: str, environment: EnvironmentRecord) -> Activation:
@@ -121,6 +125,7 @@ class SimulationCore:
             self.state_revision += 1
             self.ready, self.error = False, None
             self.physics_steps = 0
+            self.motion = None
             self.frames.clear()
             self.observations.clear()
             self.last_activity = utcnow()
@@ -134,6 +139,29 @@ class SimulationCore:
     def next_action(self):
         with self.lock:
             return self.pending.popleft() if self.pending else None
+
+    def publish_motion(
+        self,
+        *,
+        epoch: UUID,
+        phase: MotionPhase,
+        object_position: tuple[float, float, float],
+        target_station_id: str | None,
+    ) -> None:
+        with self.lock:
+            if self.environment is None or self.error or epoch != self.epoch:
+                return
+            previous_command = (
+                self.motion.command_id
+                if self.motion is not None and phase in {"complete", "stopped"}
+                else None
+            )
+            self.motion = MotionTelemetry(
+                command_id=self.active_command[1] if self.active_command else previous_command,
+                phase=phase,
+                object_position=object_position,
+                target_station_id=target_station_id,
+            )
 
     def publish_frame(
         self,
@@ -340,6 +368,18 @@ class SimulationCore:
                 demonstration=demonstration,
             )
             self.active_command = None
+            if self.motion is not None:
+                self.motion = self.motion.model_copy(
+                    update={
+                        "command_id": key[1],
+                        "phase": "complete" if status == "succeeded" else "stopped",
+                        "object_position": (
+                            final_position
+                            if final_position is not None
+                            else self.motion.object_position
+                        ),
+                    }
+                )
             self.state_revision += 1
             self.frames.clear()
             self.observations.clear()
