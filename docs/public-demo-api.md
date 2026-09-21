@@ -190,6 +190,15 @@ stale active state projects `stopped`, with no invented cancellation/completion.
 Moving/awaiting-motion heartbeats expire after 10 seconds; bounded synchronous
 Foundry planning allows 150 seconds. An unconfirmed queued/running/cancelling
 motion is hidden when stopped, rather than shown moving forever.
+Same-owner/environment/revision/epoch `loading` during camera refresh is not a
+stop event: the snapshot reports camera `loading`, `live_available=false`, and
+no live frame, while retaining the bounded presentation lifecycle. Heartbeat,
+authorization expiry, foreign-command and unavailable/changed-scene guards still
+apply. After reconciling genuine terminal execution the runner waits at most
+five seconds, also capped by its remaining authorized window, for fresh
+post-completion overview and inspection frames before advancing. This rendering
+wait does not extend the 30-second physical command deadline or reuse invalidated
+frames; timeout stops the presentation while retaining already-verified outcomes.
 
 Motion phase comes only from optional private `SimulationStatus.motion`:
 

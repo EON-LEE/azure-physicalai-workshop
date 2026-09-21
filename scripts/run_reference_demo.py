@@ -16,6 +16,7 @@ from apps.api.models import (
     PresentationOutcome,
     PresentationRecord,
     RunRecord,
+    SimulationStatus,
     StartRun,
     utcnow,
 )
@@ -143,16 +144,58 @@ class Runner:
         validate_run(self.record, run, self.environments[(self.record.cycle - 1) % 2])
         return run
 
-    def guard_scene(self) -> None:
+    def guard_scene(self, *, allow_loading: bool = False) -> SimulationStatus:
         environment_id, revision, _ = slot(self.record)
         status = self.service.runtime(self.actor)
         if (
-            status.status != "ready"
+            status.status not in ({"ready", "loading"} if allow_loading else {"ready"})
             or status.environment_id != environment_id
             or status.revision != revision
             or status.epoch != self.record.scene_epoch
         ):
             raise Problem(409, "scene_changed", "The authorized scene is no longer ready.")
+        if (
+            status.motion is not None
+            and status.motion.command_id is not None
+            and status.motion.command_id != self.record.run_id
+        ):
+            raise Problem(409, "scene_changed", "The authorized command changed.")
+        return status
+
+    def wait_for_completion_frames(self, run: RunRecord) -> None:
+        deadline = time.monotonic() + min(5, max(0, self.remaining()))
+        environment_id, revision, _ = slot(self.record)
+        while time.monotonic() < deadline:
+            self.guard()
+            status = self.guard_scene(allow_loading=True)
+            if status.status == "ready":
+                fresh = True
+                for camera in ("overview", "inspection"):
+                    try:
+                        _, observation = self.service.frame(
+                            self.actor,
+                            environment_id,
+                            revision,
+                            camera,
+                        )
+                    except Problem as exc:
+                        if (
+                            exc.code != "camera_not_ready"
+                            or self.guard_scene(allow_loading=True).status != "loading"
+                        ):
+                            raise
+                        fresh = False
+                        break
+                    if observation.epoch != self.record.scene_epoch:
+                        raise Problem(409, "scene_changed", "The completion frame epoch changed.")
+                    fresh = fresh and observation.captured_at >= run.execution.completed_at
+                latest = self.guard_scene(allow_loading=True)
+                self.guard()
+                if fresh and latest.status == "ready" and time.monotonic() < deadline:
+                    return
+            self.persist()
+            time.sleep(min(0.2, max(0, deadline - time.monotonic())))
+        raise Problem(503, "completion_frames_timeout", "Fresh completion frames are unavailable.")
 
     def cancel(self, run: RunRecord, *, rejected_evidence: bool = False) -> RunRecord:
         def checked(result: RunRecord) -> RunRecord:
@@ -253,15 +296,18 @@ class Runner:
         deadline = time.monotonic() + min(35, max(0, self.remaining()))
         while run.status not in TERMINAL and time.monotonic() < deadline:
             self.guard()
-            self.guard_scene()
+            self.guard_scene(allow_loading=True)
             self.persist(status="moving" if run.execution is not None else "inspecting")
             time.sleep(min(0.5, max(0, deadline - time.monotonic())))
             run = self.checked_run(self.service.get_run(self.actor, run.id))
-            self.guard_scene()
+            self.guard_scene(allow_loading=True)
         if run.status not in TERMINAL:
             run = self.cancel(run)
             self.persist(status="stopped", stop_reason="time_limit")
+        self.guard_scene(allow_loading=True)
         self.outcome(run)
+        if run.status == "succeeded" and self.record.outcomes[-1].result.physical_success:
+            self.wait_for_completion_frames(run)
 
     def run(self) -> dict:
         if not self.claim():

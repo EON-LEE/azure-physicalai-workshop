@@ -107,7 +107,7 @@ class PublicDemo:
         environment = environments[(record.cycle - 1) % 2] if record else environments[0]
         status = self.service.runtime(actor)
         if (
-            status.status != "ready"
+            status.status not in {"ready", "loading"}
             or status.environment_id != environment.environment_id
             or status.revision != environment.revision
             or status.epoch is None
@@ -123,6 +123,8 @@ class PublicDemo:
             raise Problem(
                 409, "public_command_changed", "The published command changed; reload its state."
             )
+        if status.status == "loading":
+            raise Problem(503, "public_frame_refresh", "Waiting for fresh published camera frames.")
         return environment, status
 
     def _frame(
@@ -139,12 +141,17 @@ class PublicDemo:
             raise Problem(
                 409, "public_epoch_changed", "The published scene changed; reload its state."
             )
-        image, observation = self.service.frame(
-            actor,
-            environment.environment_id,
-            environment.revision,
-            camera,
-        )
+        try:
+            image, observation = self.service.frame(
+                actor,
+                environment.environment_id,
+                environment.revision,
+                camera,
+            )
+        except Problem as exc:
+            if exc.code == "camera_not_ready":
+                self._current(actor, environments, record)
+            raise
         _, latest_environments, latest_record, _ = self._scope()
         _, latest_status = self._current(actor, latest_environments, latest_record)
         if (
@@ -163,6 +170,7 @@ class PublicDemo:
         run: RunRecord | None,
         telemetry: SimulationStatus | None,
         live: bool,
+        refreshing: bool = False,
     ) -> dict:
         decision = None
         motion = None
@@ -204,7 +212,7 @@ class PublicDemo:
             utcnow() >= record.expires_at
             or age < 0
             or age > stale_limit
-            or (status in {"awaiting_motion", "moving"} and not live)
+            or (status in {"awaiting_motion", "moving"} and not live and not refreshing)
         ):
             status = "stopped"
         if (
@@ -257,6 +265,7 @@ class PublicDemo:
             }
             record = run = telemetry = None
             command_changed = False
+            refreshing = False
             if self.settings.public_demo_publish_live:
                 try:
                     scope = self._scope()
@@ -283,16 +292,17 @@ class PublicDemo:
                     command_changed = (
                         isinstance(exc, Problem) and exc.code == "public_command_changed"
                     )
+                    refreshing = isinstance(exc, Problem) and exc.code == "public_frame_refresh"
                     simulation = {
                         "status": "loading"
-                        if record and record.status == "preparing"
+                        if refreshing or (record and record.status == "preparing")
                         else "unavailable",
                         "live_available": False,
                         "message_code": "live_unavailable",
                         "frame_url": None,
                     }
             presentation = (
-                self._presentation(record, run, telemetry, simulation["live_available"])
+                self._presentation(record, run, telemetry, simulation["live_available"], refreshing)
                 if record
                 else None
             )
