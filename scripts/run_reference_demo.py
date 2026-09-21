@@ -28,6 +28,7 @@ from apps.api.presentation import (
     slot,
     validate_record,
     validate_run,
+    validate_run_identity,
 )
 from apps.api.settings import Settings
 
@@ -153,15 +154,21 @@ class Runner:
         ):
             raise Problem(409, "scene_changed", "The authorized scene is no longer ready.")
 
-    def cancel(self, run: RunRecord) -> RunRecord:
+    def cancel(self, run: RunRecord, *, rejected_evidence: bool = False) -> RunRecord:
+        def checked(result: RunRecord) -> RunRecord:
+            validator = validate_run_identity if rejected_evidence else validate_run
+            validator(self.record, result, self.environments[(self.record.cycle - 1) % 2])
+            return result
+
+        checked(run)
         if run.status in TERMINAL:
             return run
-        run = self.checked_run(self.service.cancel(self.actor, run.id))
+        run = checked(self.service.cancel(self.actor, run.id))
         deadline = time.monotonic() + 10
         while run.status not in TERMINAL and time.monotonic() < deadline:
             self.persist(status="stopped", stop_reason="time_limit")
             time.sleep(0.5)
-            run = self.checked_run(self.service.get_run(self.actor, run.id))
+            run = checked(self.service.get_run(self.actor, run.id))
         if run.status not in TERMINAL:
             raise Problem(
                 503,
@@ -287,20 +294,24 @@ class Runner:
                     reason = "scene_changed"
                 elif exc.code == "cancellation_unconfirmed":
                     reason = "cancellation_unconfirmed"
+            # Stop the owned claim before reading evidence that may have caused this failure.
+            self.persist(
+                status="stopped" if reason == "time_limit" else "failed", stop_reason=reason
+            )
             if self.record.run_id is not None:
-                saved = self.service.store.get_run(self.actor.owner_key, self.record.run_id)
-                if saved is not None:
-                    run = self.checked_run(saved.value)
-                    try:
-                        run = self.cancel(run)
+                try:
+                    saved = self.service.store.get_run(self.actor.owner_key, self.record.run_id)
+                    if saved is not None:
+                        run = self.cancel(saved.value, rejected_evidence=True)
+                        self.checked_run(run)
                         if reason != "scene_changed" and (
                             not self.record.outcomes
                             or self.record.outcomes[-1].cycle != self.record.cycle
                         ):
                             self.outcome(run)
-                    except Problem:
-                        log.warning("Reference presentation cancellation remains unconfirmed")
-                        reason = "cancellation_unconfirmed"
+                except Problem:
+                    log.warning("Reference presentation cleanup evidence remains unverified")
+                    reason = "cancellation_unconfirmed"
             self.persist(
                 status="stopped" if reason == "time_limit" else "failed", stop_reason=reason
             )

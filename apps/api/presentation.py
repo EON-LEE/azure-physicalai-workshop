@@ -146,7 +146,7 @@ def validate_record(record: PresentationRecord, settings: Settings, actor: Princ
             raise Problem(503, "presentation_scope", "Published outcome scope is invalid.")
 
 
-def validate_run(
+def validate_run_identity(
     record: PresentationRecord, run: RunRecord, environment: EnvironmentRecord
 ) -> None:
     request = StartRun(
@@ -167,12 +167,23 @@ def validate_run(
         or run.updated_at < run.created_at
     ):
         raise Problem(503, "presentation_run_scope", "Published run scope is invalid.")
+    if run.execution is not None and run.execution.command_id != run.id:
+        raise Problem(503, "presentation_command_scope", "Published command scope is invalid.")
+
+
+def validate_run(
+    record: PresentationRecord, run: RunRecord, environment: EnvironmentRecord
+) -> None:
+    validate_run_identity(record, run, environment)
     if run.plan is not None:
         evidence = run.evidence
         plan = run.plan
         target = environment.document["workflow"][
             "accept_station" if plan.classification == "accepted" else "reject_station"
         ]
+        oldest_capture = run.created_at - timedelta(
+            milliseconds=min(environment.document["execution"]["max_observation_age_ms"], 2000)
+        )
         if (
             evidence is None
             or plan.epoch != record.scene_epoch
@@ -181,13 +192,11 @@ def validate_run(
             or plan.object_id != evidence.object_id
             or plan.target_station_id != target
             or evidence.blob_name != f"{record.owner_key}/{run.id}/{evidence.observation_id}.png"
-            or not run.created_at <= evidence.captured_at <= run.updated_at
+            or not oldest_capture <= evidence.captured_at <= run.updated_at
         ):
             raise Problem(
                 503, "presentation_evidence_scope", "Published observation scope is invalid."
             )
-    if run.execution is not None and run.execution.command_id != run.id:
-        raise Problem(503, "presentation_command_scope", "Published command scope is invalid.")
 
 
 def inspection_correct(record: PresentationRecord, run: RunRecord) -> bool | None:

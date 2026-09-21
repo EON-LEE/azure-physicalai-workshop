@@ -260,6 +260,14 @@ model-response ID remain in the existing owner-scoped run/artifact records.
 The dedicated presentation references only its deterministic current run, and
 the public reader validates document, request fingerprint, instruction,
 authorization time, epoch and artifact binding before projecting a safe DTO.
+An original capture may precede run creation by at most the configured observation
+age capped at 2000 ms, inclusive, because the live bridge returns fresh cached
+camera frames. It cannot be later than the persisted run update. Actual capture
+timestamps are retained unchanged; epoch, observation, object and artifact-path
+checks still apply. On failure the runner marks its owned claim terminal before
+cleanup; rejected evidence can never recursively strand it in `inspecting`.
+Cancellation requires the same validated run/request/command identity even when
+observation evidence is rejected, and never records an unverified outcome.
 No arbitrary operator history, prompt, account identifier or artifact path is
 published.
 
