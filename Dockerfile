@@ -17,7 +17,7 @@ COPY apps/__init__.py apps/__init__.py
 COPY apps/api/ apps/api/
 COPY contracts/ contracts/
 COPY agents/ agents/
-COPY scripts/__init__.py scripts/bootstrap.py scripts/
+COPY scripts/__init__.py scripts/bootstrap.py scripts/run_reference_demo.py scripts/
 COPY examples/ examples/
 COPY --from=web /src/apps/web/dist apps/web/dist
 RUN useradd --uid 10001 --create-home appuser && chown -R appuser:appuser /app

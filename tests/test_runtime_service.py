@@ -138,7 +138,7 @@ def test_cancel_after_dispatch_waits_for_stop_confirmation(prepared):
     backend.bridge.results[(ACTOR.owner_key, run.id)] = Execution(
         command_id=run.id,
         status="succeeded",
-        final_position=(0.5, -0.4, 0.2),
+        final_position=tuple(environment.document["stations"][3]["position_m"]),
         completed_at=utcnow(),
     )
     assert backend.get_run(ACTOR, run.id).status == "cancelled"
@@ -146,10 +146,12 @@ def test_cancel_after_dispatch_waits_for_stop_confirmation(prepared):
 
 @pytest.mark.parametrize(
     ("position", "expected"),
-    [((0.5, -0.4, 0.2), "succeeded"), ((8, 8, 8), "failed"), (None, "failed")],
+    [("configured_target", "succeeded"), ((8, 8, 8), "failed"), (None, "failed")],
 )
 def test_success_requires_matching_physical_destination(prepared, position, expected):
     backend, environment = prepared
+    if position == "configured_target":
+        position = tuple(environment.document["stations"][3]["position_m"])
     run = backend.start(ACTOR, request(environment))
     backend.approve(ACTOR, run.id, run.plan.model_response_id)
     backend.bridge.results[(ACTOR.owner_key, run.id)] = Execution(

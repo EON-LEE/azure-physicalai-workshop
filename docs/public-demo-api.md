@@ -26,10 +26,10 @@ Response:
     "name": "Inspection and sorting cell",
     "length_unit": "m",
     "stations": [
-      {"id": "supply", "role": "source", "position_m": [-0.5, 0, 0.2]},
-      {"id": "inspection", "role": "inspection", "position_m": [0, 0.4, 0.2]},
-      {"id": "accepted", "role": "accepted", "position_m": [0.5, 0.4, 0.2]},
-      {"id": "rejected", "role": "rejected", "position_m": [0.5, -0.4, 0.2]}
+      {"id": "supply", "role": "source", "position_m": [0.35, 0.25, 0.2]},
+      {"id": "inspection", "role": "inspection", "position_m": [0.5, 0.1, 0.2]},
+      {"id": "accepted", "role": "accepted", "position_m": [0.42, -0.22, 0.2]},
+      {"id": "rejected", "role": "rejected", "position_m": [0.22, -0.38, 0.2]}
     ],
     "robot": "Franka reference arm",
     "data_origin": "synthetic_reference_configuration"

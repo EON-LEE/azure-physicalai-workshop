@@ -181,7 +181,13 @@ class TestBridge:
             captured_at=self.captured_at or utcnow(),
             physics_steps=42,
             object_id="part-001",
-            object_position=(-0.5, 0, 0.2),
+            object_position=tuple(
+                next(
+                    station["position_m"]
+                    for station in self.environment.document["stations"]
+                    if station["id"] == self.environment.document["workflow"]["source_station"]
+                )
+            ),
             camera=camera,
             image_base64=base64.b64encode(PNG).decode(),
         )

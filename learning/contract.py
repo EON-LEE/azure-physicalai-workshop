@@ -86,7 +86,10 @@ class Provenance:
 
     def validate(self, *, require_live: bool = False) -> None:
         require(self.source_kind in ("isaac_sim", "test_fixture"), "Unknown capture source")
-        require(self.simulator_version == "5.1.0", "Only Isaac Sim 5.1.0 is supported")
+        require(
+            self.simulator_version in ("5.1.0", "6.0.0"),
+            "Only pinned Isaac Sim 5.1.0 or 6.0.0 captures are supported",
+        )
         require(
             isinstance(self.simulator_image_digest, str)
             and self.simulator_image_digest.startswith("sha256:"),

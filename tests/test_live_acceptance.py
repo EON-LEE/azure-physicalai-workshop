@@ -76,7 +76,11 @@ class APIDouble:
         self.steps = 100
         self.simulation_status = "ready"
         self.final_status = "succeeded"
-        self.final_position = [0.5, -0.4, 0.2]
+        self.final_position = next(
+            station["position_m"]
+            for station in self.document["stations"]
+            if station["role"] == "rejected"
+        )
         self.missing_execution_field = None
         self.frozen_camera = False
         self.stale_camera = False

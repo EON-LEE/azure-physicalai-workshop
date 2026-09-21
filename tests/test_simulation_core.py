@@ -22,7 +22,7 @@ def ready_core():
     core.activate(ACTOR.owner_key, environment)
     assert isinstance(core.next_action(), LoadScene)
     for camera in ("overview", "inspection"):
-        core.publish_frame(camera, PNG, (-0.5, 0, 0.2), 5)
+        core.publish_frame(camera, PNG, (-0.5, 0, 0.2), 5, epoch=core.epoch)
     return core, environment
 
 
@@ -115,7 +115,7 @@ def test_new_scene_invalidates_old_observations(ready_core):
     core.activate(ACTOR.owner_key, environment)
     core.next_action()
     for camera in ("overview", "inspection"):
-        core.publish_frame(camera, PNG, (-0.5, 0, 0.2), 5)
+        core.publish_frame(camera, PNG, (-0.5, 0, 0.2), 5, epoch=core.epoch)
     with pytest.raises(Problem, match="world state"):
         core.dispatch(ACTOR.owner_key, motion)
 
@@ -129,9 +129,27 @@ def test_command_capacity_fails_closed_instead_of_forgetting_idempotency(ready_c
     core.begin_motion(motion.command_id)
     core.finish("succeeded", (0.5, -0.4, 0.2))
     for camera in ("overview", "inspection"):
-        core.publish_frame(camera, PNG, (-0.5, 0, 0.2), 10)
+        core.publish_frame(camera, PNG, (-0.5, 0, 0.2), 10, epoch=core.epoch)
     with pytest.raises(Problem, match="capacity"):
         core.dispatch(ACTOR.owner_key, command(core, environment))
+
+
+def test_inflight_old_scene_frames_and_errors_cannot_cross_an_activation(ready_core):
+    core, environment = ready_core
+    previous_epoch = core.epoch
+    core.activate(ACTOR.owner_key, environment)
+    action = core.next_action()
+    assert action.epoch == core.epoch != previous_epoch
+    for camera in ("overview", "inspection"):
+        core.publish_frame(camera, PNG, (0.5, -0.4, 0.2), 999, epoch=previous_epoch)
+    core.fail_scene("Old renderer failure", epoch=previous_epoch)
+    assert core.status(ACTOR.owner_key).status == "loading"
+    assert core.physics_steps == 0
+    assert core.frames == {}
+    for camera in ("overview", "inspection"):
+        core.publish_frame(camera, PNG, (0.35, 0.25, 0.2), 18, epoch=action.epoch)
+    assert core.status(ACTOR.owner_key).status == "ready"
+    assert core.physics_steps == 18
 
 
 def test_unknown_template_and_unsupported_robot_fail_instead_of_selecting_defaults():

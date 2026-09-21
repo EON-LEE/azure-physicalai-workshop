@@ -175,4 +175,7 @@ def test_public_snapshot_returns_copies_not_shared_mutable_data():
     public = PublicDemo(settings(), service())
     first = public.snapshot()
     first["scene"]["stations"][0]["position_m"][0] = 1000
-    assert public.snapshot()["scene"]["stations"][0]["position_m"][0] == -0.5
+    assert (
+        public.snapshot()["scene"]["stations"][0]["position_m"][0]
+        == document()["stations"][0]["position_m"][0]
+    )

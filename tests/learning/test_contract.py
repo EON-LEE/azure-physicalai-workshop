@@ -303,6 +303,7 @@ def test_bad_utc_and_isaac_identity_fail_closed(make_capture):
     edit_frames(root, lambda frames: frames[0].update(captured_at_utc="2026-09-20T00:00:00+09:00"))
     with pytest.raises(ContractError, match="UTC"):
         validate_dataset(root, expected_scope=SCOPE)
+    replace(PROVENANCE, simulator_version="6.0.0").validate()
     with pytest.raises(ContractError, match="5.1.0"):
         replace(PROVENANCE, simulator_version="mock").validate()
     with pytest.raises(ContractError, match="Azure GPU"):

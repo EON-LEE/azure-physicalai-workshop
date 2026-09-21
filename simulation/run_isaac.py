@@ -30,6 +30,17 @@ def main() -> None:
     from isaacsim import SimulationApp
 
     simulation_app = SimulationApp({"headless": True, "width": 1280, "height": 720})
+    import omni.kit.app
+
+    manager = omni.kit.app.get_app().get_extension_manager()
+    for extension in (
+        "isaacsim.core.api",
+        "isaacsim.robot.manipulators.examples",
+        "isaacsim.sensors.camera",
+    ):
+        manager.set_extension_enabled_immediate(extension, True)
+        if not manager.is_extension_enabled(extension):
+            raise RuntimeError(f"Required simulator extension did not load: {extension}")
     from simulation.isaac_adapter import IsaacWorkcell
 
     hardware = IsaacWorkcell()
@@ -48,6 +59,7 @@ def main() -> None:
     thread = threading.Thread(target=server.run, name="authenticated-bridge", daemon=True)
     thread.start()
     last_capture = 0.0
+    active_epoch = None
 
     def finish(status, message=None):
         completed_at = utcnow()
@@ -79,6 +91,7 @@ def main() -> None:
             action = core.next_action()
             try:
                 if isinstance(action, LoadScene):
+                    active_epoch = action.epoch
                     hardware.load(action.spec)
                 elif isinstance(action, StopMotion) and core.should_stop(action.command_id):
                     hardware.stop()
@@ -106,7 +119,11 @@ def main() -> None:
                             image = hardware.capture(camera)
                             if image is not None:
                                 core.publish_frame(
-                                    camera, image, hardware.position(), hardware.steps
+                                    camera,
+                                    image,
+                                    hardware.position(),
+                                    hardware.steps,
+                                    epoch=active_epoch,
                                 )
                         last_capture = time.monotonic()
             except (RuntimeError, ValueError, TypeError, OSError) as exc:
@@ -114,7 +131,9 @@ def main() -> None:
                 hardware.stop()
                 if hardware.recording is not None:
                     finish("failed", "Simulation or capture failed.")
-                core.fail_scene(str(exc))
+                if active_epoch is None:
+                    raise
+                core.fail_scene(str(exc), epoch=active_epoch)
             time.sleep(0.001)
     finally:
         hardware.stop()

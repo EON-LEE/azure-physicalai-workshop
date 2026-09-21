@@ -9,7 +9,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from apps.api.auth import EntraTokens
 from apps.api.errors import Problem
-from apps.api.main import BodyLimit
+from apps.api.middleware import BodyLimit
 from apps.api.models import EnvironmentRecord, MotionCommand
 from simulation.core import SimulationCore
 

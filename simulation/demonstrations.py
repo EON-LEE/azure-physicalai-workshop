@@ -85,7 +85,7 @@ class Demonstration:
             raise ValueError("Capture requires the actual digest-pinned simulator image.")
         provenance = Provenance(
             source_kind="isaac_sim",
-            simulator_version="5.1.0",
+            simulator_version=os.environ.get("ISAAC_SIM_VERSION", "5.1.0"),
             simulator_image_digest=image.split("@", 1)[1],
             robot_asset_sha256=os.environ["FRANKA_ASSET_SHA256"],
             scene_builder_id=environment.document["scene"]["template_id"],

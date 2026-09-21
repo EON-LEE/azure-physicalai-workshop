@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 
 from apps.api.auth import EntraTokens
 from apps.api.errors import Problem
+from apps.api.middleware import BodyLimit
 from apps.api.models import ActivateEnvironment, ApproveRun, Principal, SaveEnvironment, StartRun
 from apps.api.public_demo import PublicDemo
 from apps.api.service import FactoryService
@@ -21,45 +22,6 @@ from contracts.validate_environment import SCHEMA
 
 log = logging.getLogger(__name__)
 ROOT = Path(__file__).resolve().parents[2]
-
-
-class BodyLimit:
-    def __init__(self, app, limit: int = 1024 * 1024) -> None:
-        self.app, self.limit = app, limit
-
-    async def __call__(self, scope, receive, send):
-        if scope["type"] != "http":
-            return await self.app(scope, receive, send)
-        body = bytearray()
-        while True:
-            message = await receive()
-            if message["type"] == "http.disconnect":
-                return
-            body.extend(message.get("body", b""))
-            if len(body) > self.limit:
-                response = JSONResponse(
-                    {
-                        "error": {
-                            "code": "body_too_large",
-                            "message": "Request exceeds 1 MiB.",
-                            "details": [],
-                        }
-                    },
-                    status_code=413,
-                )
-                return await response(scope, receive, send)
-            if not message.get("more_body", False):
-                break
-        delivered = False
-
-        async def replay():
-            nonlocal delivered
-            if not delivered:
-                delivered = True
-                return {"type": "http.request", "body": bytes(body), "more_body": False}
-            return await receive()
-
-        await self.app(scope, replay, send)
 
 
 def azure_service(settings: Settings):

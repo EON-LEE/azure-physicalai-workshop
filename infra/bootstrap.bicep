@@ -5,6 +5,7 @@ param location string
 param foundation object
 @description('Immutable ACR API image reference, including @sha256 digest.')
 param apiImage string
+param simulatorPrivateIp string = '10.42.4.4'
 
 resource job 'Microsoft.App/jobs@2025-07-01' = {
   name: '${prefix}-bootstrap'
@@ -41,7 +42,7 @@ resource job 'Microsoft.App/jobs@2025-07-01' = {
           { name: 'STORAGE_CONTAINER', value: 'artifacts' }
           { name: 'KEY_VAULT_URL', value: foundation.vaultUrl }
           { name: 'SIM_HOSTNAME', value: 'sim.physicalai.internal' }
-          { name: 'SIM_PRIVATE_IP', value: '10.42.4.4' }
+          { name: 'SIM_PRIVATE_IP', value: simulatorPrivateIp }
         ]
       }]
     }

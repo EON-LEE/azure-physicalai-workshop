@@ -9,6 +9,10 @@ param entraSpaClientId string
 param entraApiClientId string
 param deploymentRevision string
 param appName string = '${prefix}-web'
+param publicDemoPublishLive bool = false
+param publicDemoOwnerId string = ''
+param publicDemoEnvironmentId string = ''
+param publicDemoRevision string = ''
 
 resource web 'Microsoft.App/containerApps@2025-07-01' = {
   name: appName
@@ -43,6 +47,12 @@ resource web 'Microsoft.App/containerApps@2025-07-01' = {
           { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: foundation.insightsConnectionString }
           { name: 'AZURE_TRACING_GEN_AI_CONTENT_RECORDING_ENABLED', value: 'false' }
           { name: 'DEPLOYMENT_REVISION', value: deploymentRevision }
+          { name: 'PUBLIC_DEMO_PUBLISH_LIVE', value: string(publicDemoPublishLive) }
+          ...(publicDemoPublishLive ? [
+            { name: 'PUBLIC_DEMO_OWNER_ID', value: publicDemoOwnerId }
+            { name: 'PUBLIC_DEMO_ENVIRONMENT_ID', value: publicDemoEnvironmentId }
+            { name: 'PUBLIC_DEMO_REVISION', value: publicDemoRevision }
+          ] : [])
         ]
         probes: [
           {

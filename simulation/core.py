@@ -28,6 +28,7 @@ from simulation.extensions import SceneRegistry, SceneSpec
 class LoadScene:
     environment: EnvironmentRecord
     spec: SceneSpec
+    epoch: UUID
 
 
 @dataclass(frozen=True)
@@ -123,7 +124,7 @@ class SimulationCore:
             self.frames.clear()
             self.observations.clear()
             self.last_activity = utcnow()
-            self.pending.append(LoadScene(environment, spec))
+            self.pending.append(LoadScene(environment, spec, self.epoch))
             return Activation(
                 activation_id=uuid4(),
                 environment_id=environment.environment_id,
@@ -140,9 +141,11 @@ class SimulationCore:
         png: bytes,
         object_position: tuple[float, float, float],
         physics_steps: int,
+        *,
+        epoch: UUID,
     ) -> None:
         with self.lock:
-            if self.environment is None or self.error:
+            if self.environment is None or self.error or epoch != self.epoch:
                 return
             observation = Observation(
                 observation_id=uuid4(),
@@ -344,8 +347,10 @@ class SimulationCore:
             if status != "succeeded":
                 self.error = message or "Reactivate the environment after the stopped command."
 
-    def fail_scene(self, message: str) -> None:
+    def fail_scene(self, message: str, *, epoch: UUID) -> None:
         with self.lock:
+            if epoch != self.epoch:
+                return
             self.error = message
             self.ready = False
             self.frames.clear()

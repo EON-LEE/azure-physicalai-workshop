@@ -18,7 +18,16 @@ def resources(template: dict, resource_type: str) -> list[dict]:
 def validate() -> None:
     templates = {}
     with tempfile.TemporaryDirectory(prefix="physicalai-bicep-") as temporary:
-        for name in ("foundation", "bootstrap", "bootstrap-aci", "runtime", "web", "private-data"):
+        for name in (
+            "foundation",
+            "bootstrap",
+            "bootstrap-aci",
+            "runtime",
+            "web",
+            "private-data",
+            "spot-live-network",
+            "reference-presentation",
+        ):
             output = Path(temporary) / f"{name}.json"
             subprocess.run(
                 [
@@ -56,8 +65,21 @@ def validate() -> None:
     assert app["properties"]["template"]["scale"]["minReplicas"] == 0
     assert "defaultValue" not in runtime["parameters"]["gpuVmSize"]
     assert "defaultValue" not in runtime["parameters"]["acceptNvidiaEula"]
-    subprocess.run(["bash", "-n", str(ROOT / "infra" / "start-simulator.sh")], check=True)
-    print("Six Bicep templates and baseline invariants passed. Azure/GPU execution NOT verified.")
+    presentation = resources(templates["reference-presentation"], "Microsoft.App/jobs")[0]
+    assert presentation["properties"]["configuration"]["replicaRetryLimit"] == 0
+    assert presentation["properties"]["configuration"]["manualTriggerConfig"]["parallelism"] == 1
+    assert templates["reference-presentation"]["parameters"]["cycles"]["maxValue"] == 100
+    for script in (
+        ROOT / "infra" / "start-simulator.sh",
+        ROOT / "scripts" / "start-live-simulator.sh",
+        ROOT / "scripts" / "build-simulator-on-gpu.sh",
+        ROOT / "scripts" / "install-rtx-grid.sh",
+    ):
+        subprocess.run(["bash", "-n", str(script)], check=True)
+    print(
+        f"{len(templates)} Bicep templates and baseline invariants passed. "
+        "Azure/GPU execution NOT verified."
+    )
 
 
 if __name__ == "__main__":

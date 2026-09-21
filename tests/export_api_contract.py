@@ -78,7 +78,7 @@ def main():
         backend.bridge.results[stored] = Execution(
             command_id=stored[1],
             status="succeeded",
-            final_position=(0.5, -0.4, 0.2),
+            final_position=tuple(document()["stations"][3]["position_m"]),
             completed_at=utcnow(),
         )
         record("runSchema", client.get(f"/api/runs/{run['id']}"))

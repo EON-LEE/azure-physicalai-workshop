@@ -6,6 +6,7 @@ param location string
 param foundation object
 param apiImage string
 param runnerName string = '${prefix}-bootstrap-private'
+param simulatorPrivateIp string = '10.42.4.4'
 
 resource bootstrap 'Microsoft.ContainerInstance/containerGroups@2023-05-01' = {
   name: runnerName
@@ -39,7 +40,7 @@ resource bootstrap 'Microsoft.ContainerInstance/containerGroups@2023-05-01' = {
           { name: 'STORAGE_CONTAINER', value: 'artifacts' }
           { name: 'KEY_VAULT_URL', value: foundation.vaultUrl }
           { name: 'SIM_HOSTNAME', value: 'sim.physicalai.internal' }
-          { name: 'SIM_PRIVATE_IP', value: '10.42.4.4' }
+          { name: 'SIM_PRIVATE_IP', value: simulatorPrivateIp }
         ]
       }
     }]

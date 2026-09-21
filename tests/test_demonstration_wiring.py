@@ -34,7 +34,7 @@ def active_capture(monkeypatch):
     core.activate(ACTOR.owner_key, env)
     core.next_action()
     for camera in ("overview", "inspection"):
-        core.publish_frame(camera, PNG, (-0.5, 0, 0.2), 5)
+        core.publish_frame(camera, PNG, (-0.5, 0, 0.2), 5, epoch=core.epoch)
     observation = core.observe(ACTOR.owner_key, env.environment_id, env.revision, "inspection")
     command = MotionCommand(
         command_id=uuid4(),
