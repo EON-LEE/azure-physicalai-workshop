@@ -119,6 +119,9 @@ camera remains unavailable/loading, not a fabricated robot stop; recovered frame
 must pass the unchanged epoch, command, publication and freshness checks.
 The presenter's completion wait likewise retries a recovered-camera race only
 within its original five-second deadline, without changing the authorized scene.
+The HTTP bridge preserves `camera_not_ready` only for a structured 503 from
+`GET /v1/observation`; otherwise those recovery paths would mistake refresh for
+a dependency outage. Other 503 responses and malformed errors still fail closed.
 
 The public snapshot never exposes tenant IDs, object IDs, auth scopes, keys,
 private run IDs, private instructions, manifests, arbitrary artifact paths, or internal

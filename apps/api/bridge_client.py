@@ -72,7 +72,11 @@ class AzureSimulatorBridge:
             log.exception("Simulator %s %s request failed", method, path)
             raise unavailable("Isaac Sim bridge") from exc
         if response.status_code >= 300:
-            if response.status_code in (404, 409, 422):
+            structured_error = response.status_code in (404, 409, 422)
+            observation_unavailable = (
+                response.status_code == 503 and method == "GET" and path == "/v1/observation"
+            )
+            if structured_error or observation_unavailable:
                 try:
                     error = response.json()["error"]
                     code, message = error["code"], error["message"]
@@ -80,7 +84,8 @@ class AzureSimulatorBridge:
                         raise ValueError("Invalid error shape")
                 except (ValueError, KeyError, TypeError) as exc:
                     raise unavailable("Isaac Sim bridge protocol") from exc
-                raise Problem(response.status_code, code, message)
+                if structured_error or code == "camera_not_ready":
+                    raise Problem(response.status_code, code, message)
             log.error("Simulator returned HTTP %s", response.status_code)
             raise unavailable("Isaac Sim bridge")
         try:

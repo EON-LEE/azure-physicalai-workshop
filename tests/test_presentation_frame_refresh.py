@@ -1,9 +1,11 @@
 from datetime import timedelta
 from uuid import uuid4
 
+import httpx
 import pytest
 from presentation_support import prepare
 from runtime_support import ACTOR, PNG
+from test_bridge_transport import bridge
 from test_public_presentation import planned
 
 from apps.api.errors import Problem
@@ -76,6 +78,48 @@ def test_actual_core_finish_loading_reconciles_and_waits_for_new_frames(monkeypa
         assert snapshot["presentation"]["status"] == "moving"
         assert snapshot["presentation"]["motion"]["phase"] is None
     assert all(cycle["result"]["physical_success"] for cycle in report["cycles"])
+
+
+@pytest.mark.parametrize("persistent", [False, True])
+def test_public_camera_refresh_through_http_adapter_does_not_invent_a_stop(monkeypatch, persistent):
+    prepared = prepare(monkeypatch)
+    planned(prepared)
+    backend, settings, _ = prepared
+    original = backend.bridge
+    captures = 0
+
+    def handler(request):
+        nonlocal captures
+        if request.url.path == "/v1/status":
+            return httpx.Response(
+                200, json=original.status(ACTOR.owner_key).model_dump(mode="json")
+            )
+        assert request.url.path == "/v1/observation"
+        captures += 1
+        if captures == 1 or persistent:
+            return httpx.Response(
+                503,
+                json={
+                    "error": {"code": "camera_not_ready", "message": "Waiting for fresh frames."}
+                },
+            )
+        observation = original.observe(
+            ACTOR.owner_key,
+            settings.public_demo_environment_id,
+            settings.public_demo_revision,
+            request.url.params["camera"],
+        )
+        return httpx.Response(200, json=observation.model_dump(mode="json"))
+
+    backend.bridge = bridge(handler)
+    try:
+        snapshot = PublicDemo(settings, backend).snapshot()
+        assert captures == 2
+        assert snapshot["presentation"]["status"] == "awaiting_motion"
+        assert snapshot["simulation"]["live_available"] is not persistent
+        assert snapshot["simulation"]["status"] == ("loading" if persistent else "ready")
+    finally:
+        backend.bridge.close()
 
 
 def test_missing_post_completion_frames_is_bounded_and_does_not_advance(monkeypatch):

@@ -18,6 +18,65 @@ def bridge(handler):
     )
 
 
+def test_camera_not_ready_is_preserved_for_observation_reads_without_transport_retry():
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(
+            503,
+            json={"error": {"code": "camera_not_ready", "message": "Waiting for fresh frames."}},
+        )
+
+    client = bridge(handler)
+    try:
+        with pytest.raises(Problem) as error:
+            client.observe("test-owner", "reference", "a" * 64, "overview")
+        assert error.value.status == 503
+        assert error.value.code == "camera_not_ready"
+        assert len(requests) == 1
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize(
+    "method,path",
+    [("GET", "/v1/status"), ("POST", "/v1/scene"), ("POST", "/v1/commands")],
+)
+def test_camera_error_cannot_disguise_other_dependency_failures(method, path):
+    client = bridge(
+        lambda request: httpx.Response(
+            503, json={"error": {"code": "camera_not_ready", "message": "PRIVATE ERROR"}}
+        )
+    )
+    try:
+        with pytest.raises(Problem) as error:
+            client._request(method, path, "test-owner")
+        assert error.value.code == "dependency_unavailable"
+        assert "PRIVATE" not in str(error.value)
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"error": {"code": "camera_not_ready", "message": None}},
+        {"error": {"code": "unexpected_failure", "message": "PRIVATE ERROR"}},
+    ],
+)
+def test_unrecognized_observation_unavailability_remains_a_dependency_failure(payload):
+    client = bridge(lambda request: httpx.Response(503, json=payload))
+    try:
+        with pytest.raises(Problem) as error:
+            client.observe("test-owner", "reference", "a" * 64)
+        assert error.value.code == "dependency_unavailable"
+        assert "PRIVATE" not in str(error.value)
+    finally:
+        client.close()
+
+
 def test_a_stale_read_connection_is_retried_once_within_the_original_budget(caplog):
     requests = []
 
