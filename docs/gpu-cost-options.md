@@ -89,6 +89,21 @@ East US still returned zero. A West US 3 regular A10 request for 36 vCPUs return
 prerequisite for an uninterrupted customer presentation; do not describe the
 current Spot runtime as a dependable always-on service.
 
+The recovery then allocated a separate private `Standard_NV36ads_A10_v5` Spot
+VM rather than forcing the validated Blackwell VM's NVMe boot disk onto a SCSI
+size. It inherited the protected subnet and simulator identity, without a public
+IP. Microsoft's A10-specific GRID 570.237 driver, Vulkan `NVIDIA A10-24Q`, the
+unchanged Isaac 6 image and actual normal/defect physical sorting were verified.
+The image declares `MIN_DRIVER_VERSION=570.169`; no driver-check bypass was used.
+The old Blackwell VM remains deallocated with its disk intact.
+
+A read-only audit of an actual A10 presentation verified 48 distinct successful
+cycles, original Blob input images, model response IDs, scene epochs, correct
+destinations and 12.75-18.98 second physical durations. A later prolonged reset
+sequence exposed RTX descriptor exhaustion; the reference renderer now reuses
+identical-geometry resources, with separate actual validation of that correction.
+This history is not a Spot availability guarantee or a learned-policy benchmark.
+
 ## Sources
 
 - [Azure Retail Prices API](https://prices.azure.com/api/retail/prices)
@@ -96,3 +111,4 @@ current Spot runtime as a dependable always-on service.
 - [NCasT4 v3 specifications and driver note](https://learn.microsoft.com/en-us/azure/virtual-machines/sizes/gpu-accelerated/ncast4v3-series)
 - [Isaac Sim 5.1 requirements](https://docs.isaacsim.omniverse.nvidia.com/5.1.0/installation/requirements.html)
 - [Azure Spot VM pricing, quota and eviction behavior](https://learn.microsoft.com/en-us/azure/virtual-machines/spot-vms)
+- [Azure Linux GRID driver matrix](https://learn.microsoft.com/en-us/azure/virtual-machines/linux/n-series-driver-setup)

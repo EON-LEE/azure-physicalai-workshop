@@ -179,11 +179,9 @@ class Runner:
                             camera,
                         )
                     except Problem as exc:
-                        if (
-                            exc.code != "camera_not_ready"
-                            or self.guard_scene(allow_loading=True).status != "loading"
-                        ):
+                        if exc.code != "camera_not_ready":
                             raise
+                        self.guard_scene(allow_loading=True)
                         fresh = False
                         break
                     if observation.epoch != self.record.scene_epoch:
@@ -331,7 +329,11 @@ class Runner:
                     time.sleep(min(5, max(0, self.remaining())))
         except (Problem, TimeoutError) as exc:
             # Never expose dependency messages, prompts or arbitrary operator records publicly.
-            log.warning("Reference presentation stopped (%s)", type(exc).__name__)
+            log.warning(
+                "Reference presentation stopped (%s, code=%s)",
+                type(exc).__name__,
+                exc.code if isinstance(exc, Problem) else "timeout",
+            )
             reason = "dependency_unavailable"
             if isinstance(exc, Problem):
                 if exc.code == "presentation_expired":

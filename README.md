@@ -11,9 +11,11 @@ agent connectivity response from managed-identity bootstrap. Images are built
 and executed in ACR, not just checked as source. Blob, Cosmos and Key Vault use
 Private Link; tenant restrictions are not bypassed.
 
-**Actual GPU execution observed:** Isaac Sim 6.0.0, GRID 595.91.07 and an Azure
-NC72 RTX PRO Blackwell 48 GB slice have produced real camera observations and
-completed image-planned physical grasp/sort/retreat cycles. The controller uses
+**Actual GPU execution observed:** Isaac Sim 6.0.0 first ran on an Azure
+NC72 RTX PRO Blackwell 48 GB slice with GRID 595.91.07. After repeated Spot
+evictions, a private NV36ads_A10_v5 / A10-24Q host with Microsoft's GRID 570.237
+also produced real camera observations and completed normal/defect
+image-planned physical grasp/sort/retreat cycles. The controller uses
 PhysX gravity feed-forward, contact-based grasping and a measured speed watchdog;
 it does not attach or teleport the part to manufacture a successful outcome.
 

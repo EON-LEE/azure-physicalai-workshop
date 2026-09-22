@@ -32,6 +32,7 @@ import json
 import subprocess
 from pathlib import Path
 
+GPU_ARGUMENTS = ['--runtime', 'runc', '--device', 'nvidia.com/gpu=all']
 config = json.loads(Path('/var/lib/physicalai/runtime.json').read_text())
 for key, value in config.items():
     if '\n' in str(value) or '\r' in str(value):
@@ -45,6 +46,11 @@ subprocess.run([
 ], check=True)
 subprocess.run(['az', 'acr', 'login', '--name', config['REGISTRY_NAME']], check=True)
 subprocess.run(['docker', 'pull', config['SIMULATOR_IMAGE']], check=True)
+subprocess.run([
+    'docker', 'run', '--rm', '--pull', 'never', *GPU_ARGUMENTS,
+    '--network', 'none', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
+    '--entrypoint', 'nvidia-smi', config['SIMULATOR_IMAGE'], '-L',
+], check=True)
 existing = subprocess.run(
     ['docker', 'ps', '-aq', '--filter', 'name=^physicalai-simulator$'],
     check=True, capture_output=True, text=True,
@@ -53,7 +59,7 @@ if existing:
     subprocess.run(['docker', 'rm', '-f', existing], check=True)
 subprocess.run([
     'docker', 'run', '-d', '--name', 'physicalai-simulator', '--restart', 'unless-stopped',
-    '--gpus', 'all', '--network', 'host', '--ipc', 'host',
+    *GPU_ARGUMENTS, '--network', 'host', '--ipc', 'host',
     '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
     '--env-file', '/var/lib/physicalai/runtime.env',
     '--tmpfs', '/run/physicalai:rw,nosuid,nodev,mode=0700',

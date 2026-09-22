@@ -15,6 +15,7 @@ class DockerDouble:
         self.running = {"old": True}
         self.labels = {}
         self.fail_pull = False
+        self.fail_gpu_probe = False
 
     def run(self, args, **kwargs):
         self.calls.append(args)
@@ -30,6 +31,10 @@ class DockerDouble:
             )
         elif args[:2] == ["docker", "pull"] and self.fail_pull:
             raise subprocess.CalledProcessError(1, args)
+        elif args[:2] == ["docker", "run"] and "--rm" in args:
+            if self.fail_gpu_probe:
+                raise subprocess.CalledProcessError(1, args)
+            output = "GPU 0: NVIDIA A10-24Q"
         elif args[:2] == ["docker", "stop"]:
             self.running[args[-1]] = False
         elif args[:2] == ["docker", "rename"]:
@@ -83,6 +88,35 @@ def test_pull_failure_never_stops_the_previous_simulator(host_script):
     assert (root / "live-runtime.json").read_text() == '{"previous":true}'
     assert (root / "live-runtime.env").read_text() == "PREVIOUS=true\n"
     assert not list(root.glob(".live-runtime-*"))
+
+
+def test_cdi_probe_failure_never_stops_the_previous_simulator(host_script):
+    namespace, docker, config, root = host_script
+    docker.fail_gpu_probe = True
+    with pytest.raises(subprocess.CalledProcessError):
+        namespace["deploy"](config, root)
+    assert docker.names == {"physicalai-simulator": "old"}
+    assert docker.running["old"]
+    assert not any(args[:2] == ["docker", "stop"] for args in docker.calls)
+    assert (root / "live-runtime.json").read_text() == '{"previous":true}'
+    assert not list(root.glob(".live-runtime-*"))
+
+
+def test_probe_and_candidate_use_native_cdi_before_stopping_old_container(host_script):
+    namespace, docker, config, root = host_script
+    namespace["deploy"](config, root)
+    starts = [args for args in docker.calls if args[:2] == ["docker", "run"]]
+    assert len(starts) == 2
+    probe, candidate = starts
+    for args in starts:
+        assert args[args.index("--runtime") + 1] == "runc"
+        assert args[args.index("--device") + 1] == "nvidia.com/gpu=all"
+        assert "--gpus" not in args
+    assert probe[probe.index("--entrypoint") + 1] == "nvidia-smi"
+    assert "--rm" in probe and "-d" in candidate
+    assert docker.calls.index(probe) < next(
+        index for index, args in enumerate(docker.calls) if args[:2] == ["docker", "stop"]
+    )
 
 
 def test_failed_candidate_restores_previous_container_and_reports_failure(host_script, capsys):

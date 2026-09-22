@@ -117,6 +117,8 @@ If completion invalidates a camera between the status and frame reads, the API
 revalidates the same scene and retries that read-only capture once. A still-refreshing
 camera remains unavailable/loading, not a fabricated robot stop; recovered frames
 must pass the unchanged epoch, command, publication and freshness checks.
+The presenter's completion wait likewise retries a recovered-camera race only
+within its original five-second deadline, without changing the authorized scene.
 
 The public snapshot never exposes tenant IDs, object IDs, auth scopes, keys,
 private run IDs, private instructions, manifests, arbitrary artifact paths, or internal

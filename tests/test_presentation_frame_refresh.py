@@ -167,6 +167,75 @@ def test_fresh_but_precompletion_frame_cannot_advance(monkeypatch):
         runner.wait_for_completion_frames(run)
 
 
+@pytest.mark.parametrize("camera", ["overview", "inspection"])
+def test_completion_camera_recovered_before_status_reread_is_retried(monkeypatch, camera):
+    prepared = prepare(monkeypatch)
+    runner, run = planned(prepared)
+    backend, _, clock = prepared
+    backend.approve(ACTOR, run.id, run.plan.model_response_id)
+    clock.sleep(0.5)
+    run = runner.checked_run(backend.get_run(ACTOR, run.id))
+    frame = backend.frame
+    refreshed = False
+    captures = []
+
+    def recovering_frame(*args):
+        nonlocal refreshed
+        if args[-1] == camera and not refreshed:
+            refreshed = True
+            raise Problem(503, "camera_not_ready", "The camera recovered before status reread.")
+        result = frame(*args)
+        captures.append(args[-1])
+        return result
+
+    backend.frame = recovering_frame
+    runner.wait_for_completion_frames(run)
+    assert refreshed
+    assert captures[-2:] == ["overview", "inspection"]
+    assert clock.monotonic() < 5.5
+
+
+def test_repeated_completion_camera_races_keep_the_original_deadline(monkeypatch):
+    prepared = prepare(monkeypatch)
+    runner, run = planned(prepared)
+    backend, _, clock = prepared
+    backend.approve(ACTOR, run.id, run.plan.model_response_id)
+    clock.sleep(0.5)
+    run = runner.checked_run(backend.get_run(ACTOR, run.id))
+    started = clock.monotonic()
+
+    def unavailable_frame(*args):
+        raise Problem(503, "camera_not_ready", "No completion frame.")
+
+    backend.frame = unavailable_frame
+    with pytest.raises(Problem) as error:
+        runner.wait_for_completion_frames(run)
+    assert error.value.code == "completion_frames_timeout"
+    assert clock.monotonic() - started <= 5.01
+
+
+def test_completion_camera_refresh_cannot_retry_a_changed_epoch(monkeypatch):
+    prepared = prepare(monkeypatch)
+    runner, run = planned(prepared)
+    backend, _, clock = prepared
+    backend.approve(ACTOR, run.id, run.plan.model_response_id)
+    clock.sleep(0.5)
+    run = runner.checked_run(backend.get_run(ACTOR, run.id))
+    calls = 0
+
+    def changed_frame(*args):
+        nonlocal calls
+        calls += 1
+        backend.bridge.epoch = uuid4()
+        raise Problem(503, "camera_not_ready", "A different scene is loading.")
+
+    backend.frame = changed_frame
+    with pytest.raises(Problem) as error:
+        runner.wait_for_completion_frames(run)
+    assert error.value.code == "scene_changed"
+    assert calls == 1
+
+
 @pytest.mark.parametrize("throws", [False, True])
 def test_public_capture_race_to_loading_never_publishes_pixels_or_false_stop(monkeypatch, throws):
     prepared = prepare(monkeypatch)

@@ -183,11 +183,23 @@ probe is separate from validating the chosen Isaac image, cameras and physical
 episodes; never override a failed driver-compatibility check to claim readiness.
 
 Reconcile/stop the active presentation before invoking `start-live-simulator.sh`.
-It pulls first, keeps the previous container, and checks the candidate's HTTPS
+It pulls first, verifies GPU access with the same image, keeps the previous
+container, and checks the candidate's HTTPS
 health with the deployment CA downloaded through private Blob access. Configuration
 switches only after this check. Candidate startup failure restores the previous
 container/configuration and still exits with an error. This is bridge readiness,
 not physical acceptance: run actual image/pose episodes after a rollout.
+
+Both launchers use native CDI (`--runtime runc --device nvidia.com/gpu=all`), not
+the legacy `--gpus all` hook. Use a CDI-enabled Docker engine and an NVIDIA
+Container Toolkit-generated `nvidia.com/gpu=all` specification; the GPU preflight
+fails before stopping the old simulator if these are unavailable. On the actual
+A10 host, `systemctl daemon-reload` reproduced an NVML access failure in a legacy
+probe while a CDI probe retained GPU access. This is the
+[documented NVIDIA systemd/cgroup issue](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/troubleshooting.html#containers-losing-access-to-gpus-with-error-failed-to-initialize-nvml-unknown-error).
+Do not disable security updates to hide it. OS reboots, Docker service restarts
+and driver updates still require an explicit maintenance window and new
+presentation authorization; CDI is not an uninterrupted-service guarantee.
 
 The simulator identity normally needs registry pull, not push. If a scoped
 temporary `AcrPush` assignment is approved for host image construction, remove

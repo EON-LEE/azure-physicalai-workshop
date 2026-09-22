@@ -31,6 +31,7 @@ from uuid import uuid4
 
 NAME = 'physicalai-simulator'
 PREVIOUS = NAME + '-previous'
+GPU_ARGUMENTS = ['--runtime', 'runc', '--device', 'nvidia.com/gpu=all']
 
 
 def run(arguments, **kwargs):
@@ -104,6 +105,9 @@ def deploy(config, root=Path('/var/lib/physicalai')):
              '--allow-no-subscriptions', '--output', 'none'])
         run(['az', 'acr', 'login', '--name', config['REGISTRY_NAME']])
         run(['docker', 'pull', config['SIMULATOR_IMAGE']])
+        run(['docker', 'run', '--rm', '--pull', 'never', *GPU_ARGUMENTS,
+             '--network', 'none', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
+             '--entrypoint', 'nvidia-smi', config['SIMULATOR_IMAGE'], '-L'])
         account = config['STORAGE_ACCOUNT_URL'].split('://', 1)[1].split('.', 1)[0]
         run(['az', 'storage', 'blob', 'download', '--auth-mode', 'login',
              '--account-name', account, '--container-name', 'artifacts',
@@ -117,7 +121,7 @@ def deploy(config, root=Path('/var/lib/physicalai')):
         candidate = run([
             'docker', 'run', '-d', '--name', NAME, '--restart', 'unless-stopped',
             '--label', 'physicalai.deployment=' + deployment,
-            '--gpus', 'all', '--network', 'host', '--ipc', 'host', '--cap-drop', 'ALL',
+            *GPU_ARGUMENTS, '--network', 'host', '--ipc', 'host', '--cap-drop', 'ALL',
             '--security-opt', 'no-new-privileges', '--env-file', str(environment),
             '--tmpfs', '/run/physicalai:rw,nosuid,nodev,mode=0700,uid=1234,gid=1234',
             '--mount', f'type=bind,source={root},target=/data',
