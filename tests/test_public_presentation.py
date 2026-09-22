@@ -140,6 +140,52 @@ def test_epoch_pinned_frames_have_correct_headers_and_no_cache(prepared):
         assert client.get("/api/demo/frame", params={"epoch": "bad"}).status_code == 422
 
 
+def test_camera_refresh_recovered_before_status_reread_does_not_report_stopped(prepared):
+    planned(prepared)
+    backend, settings, _ = prepared
+    original = backend.frame
+    calls = 0
+
+    def refreshing(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise Problem(503, "camera_not_ready", "The terminal observation is refreshing.")
+        return original(*args, **kwargs)
+
+    backend.frame = refreshing
+    result = PublicDemo(settings, backend).snapshot()
+    assert calls == 2
+    assert result["mode"] == "live"
+    assert result["presentation"]["status"] == "awaiting_motion"
+
+
+def test_repeated_camera_refresh_stays_unavailable_without_inventing_a_stop(prepared):
+    planned(prepared)
+    backend, settings, _ = prepared
+    backend.frame = Mock(side_effect=Problem(503, "camera_not_ready", "Still refreshing."))
+    result = PublicDemo(settings, backend).snapshot()
+    assert backend.frame.call_count == 2
+    assert result["simulation"]["status"] == "loading"
+    assert result["simulation"]["live_available"] is False
+    assert result["presentation"]["status"] == "awaiting_motion"
+
+
+def test_camera_refresh_cannot_retry_across_a_real_epoch_change(prepared):
+    planned(prepared)
+    backend, settings, _ = prepared
+
+    def changed(*args, **kwargs):
+        backend.bridge.epoch = uuid4()
+        raise Problem(503, "camera_not_ready", "The scene changed.")
+
+    backend.frame = Mock(side_effect=changed)
+    result = PublicDemo(settings, backend).snapshot()
+    assert backend.frame.call_count == 1
+    assert result["simulation"]["live_available"] is False
+    assert result["presentation"]["status"] == "stopped"
+
+
 @pytest.mark.parametrize(
     "field,value",
     [

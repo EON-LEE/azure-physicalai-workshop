@@ -149,9 +149,23 @@ class PublicDemo:
                 camera,
             )
         except Problem as exc:
-            if exc.code == "camera_not_ready":
-                self._current(actor, environments, record)
-            raise
+            if exc.code != "camera_not_ready":
+                raise
+            _, refreshed = self._current(actor, environments, record)
+            if refreshed.epoch != status.epoch:
+                raise Problem(
+                    409, "public_epoch_changed", "The published scene changed; reload its state."
+                ) from exc
+            try:
+                image, observation = self.service.frame(
+                    actor, environment.environment_id, environment.revision, camera
+                )
+            except Problem as retry_error:
+                if retry_error.code == "camera_not_ready":
+                    raise Problem(
+                        503, "public_frame_refresh", "Waiting for fresh published camera frames."
+                    ) from retry_error
+                raise
         _, latest_environments, latest_record, _ = self._scope()
         _, latest_status = self._current(actor, latest_environments, latest_record)
         if (

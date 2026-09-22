@@ -113,6 +113,10 @@ or projects an old moving cycle as stopped solely because the next cycle began.
 Unchanged-binding mismatches retain their guards; an unresolved retry mismatch
 returns 503 rather than looping. Preparing/loading still publishes no live frame,
 and rereading does not renew heartbeat or authorization timestamps.
+If completion invalidates a camera between the status and frame reads, the API
+revalidates the same scene and retries that read-only capture once. A still-refreshing
+camera remains unavailable/loading, not a fabricated robot stop; recovered frames
+must pass the unchanged epoch, command, publication and freshness checks.
 
 The public snapshot never exposes tenant IDs, object IDs, auth scopes, keys,
 private run IDs, private instructions, manifests, arbitrary artifact paths, or internal
