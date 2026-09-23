@@ -32,7 +32,7 @@ from apps.api.models import (
     Stored,
     utcnow,
 )
-from apps.api.ports import Artifacts, Bridge, Planner, Store
+from apps.api.ports import Artifacts, Bridge, Planner, PolicyAuthorizer, Store
 from contracts.validate_environment import parse_document, validate_environment
 
 
@@ -87,6 +87,7 @@ class FactoryService:
         approval_ttl_seconds: int = 300,
         *,
         agent_probe_verified_at: datetime | None = None,
+        policies: PolicyAuthorizer | None = None,
     ) -> None:
         self.store = store
         self.artifacts = artifacts
@@ -94,6 +95,7 @@ class FactoryService:
         self.bridge = bridge
         self.approval_ttl_seconds = approval_ttl_seconds
         self.agent_probe_verified_at = agent_probe_verified_at
+        self.policies = policies
 
     def environment(self, actor: Principal, environment_id: str) -> Stored[EnvironmentRecord]:
         record = self.store.get_environment(actor.owner_key, environment_id)
@@ -193,13 +195,22 @@ class FactoryService:
         return self.store.put_run(actor.owner_key, run, stored.etag).value
 
     def start(self, actor: Principal, request: StartRun) -> RunRecord:
-        fingerprint = content_hash(request.model_dump(mode="json"))
+        fingerprint = content_hash(request.fingerprint_document())
         existing = self.store.get_run(actor.owner_key, request.request_id)
         if existing is not None:
             if existing.value.request_fingerprint != fingerprint:
                 raise Problem(409, "request_id_reused", "Use a new request ID for changed input.")
             return self.get_run(actor, request.request_id)
         environment = self._live_environment(actor, request.environment_id, request.revision)
+        policy = None
+        if request.policy_release_id is not None:
+            if self.policies is None:
+                raise Problem(
+                    503, "learning_disabled", "Released learned execution is not configured."
+                )
+            policy = self.policies.resolve_for_run(
+                actor, request.policy_release_id, request.environment_id, request.revision
+            )
         now = utcnow()
         run = RunRecord(
             id=request.request_id,
@@ -212,6 +223,7 @@ class FactoryService:
             request_fingerprint=fingerprint,
             environment_document=environment.document,
             events=[Event(kind="planning", message="Waiting for a real simulator observation.")],
+            policy=policy,
         )
         try:
             stored = self.store.put_run(actor.owner_key, run, None)
@@ -251,6 +263,12 @@ class FactoryService:
             target = workflow[
                 "accept_station" if decision.classification == "accepted" else "reject_station"
             ]
+            if policy is not None and policy.goal_station_id != target:
+                raise Problem(
+                    409,
+                    "policy_goal_mismatch",
+                    "The inspection destination is outside this reviewed policy's task.",
+                )
             run.plan = Plan(
                 **decision.model_dump(),
                 target_station_id=target,
@@ -337,7 +355,11 @@ class FactoryService:
         reserved = self.store.put_run(actor.owner_key, run, stored.etag)
         run = reserved.value.model_copy(deep=True)
         try:
-            result = self.bridge.dispatch(actor.owner_key, command)
+            result = (
+                self.bridge.dispatch_policy(actor.owner_key, command, run.policy)
+                if run.policy is not None
+                else self.bridge.dispatch(actor.owner_key, command)
+            )
             self._apply_execution(run, result)
         except Problem as exc:
             if exc.status < 500:
@@ -366,6 +388,30 @@ class FactoryService:
             raise Problem(
                 502, "wrong_command_result", "Simulator result belongs to a different command."
             )
+        if run.policy is not None:
+            runtime = execution.policy_runtime
+            if runtime is None or (
+                runtime.policy_release_id != run.policy.policy_release_id
+                or runtime.control_profile_id != run.policy.control_profile_id
+                or runtime.reference_route_calls != 0
+                or (
+                    runtime.applied_model_sha is not None
+                    and runtime.applied_model_sha != run.policy.model_sha256
+                )
+                or (
+                    execution.status == "succeeded"
+                    and (
+                        runtime.applied_model_sha != run.policy.model_sha256
+                        or runtime.policy_predict_calls == 0
+                        or runtime.applied_action_count == 0
+                    )
+                )
+            ):
+                raise Problem(
+                    502,
+                    "learned_execution_unverified",
+                    "The command did not provide matching learned-policy action evidence.",
+                )
         if execution.status == "succeeded" and (
             execution.final_position is None or execution.completed_at is None
         ):

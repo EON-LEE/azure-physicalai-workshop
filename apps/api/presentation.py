@@ -162,7 +162,7 @@ def validate_run_identity(
         or run.revision != environment.revision
         or run.environment_document != environment.document
         or run.instruction != INSTRUCTION
-        or run.request_fingerprint != content_hash(request.model_dump(mode="json"))
+        or run.request_fingerprint != content_hash(request.fingerprint_document())
         or not record.started_at <= run.created_at < record.expires_at
         or run.updated_at < run.created_at
     ):

@@ -95,7 +95,7 @@ class CreateProject(Frozen):
     request_id: UUID
     display_name: str = Field(min_length=1, max_length=120, pattern=r"\S")
     task_id: Identifier
-    instruction: str = Field(min_length=1, max_length=2000, pattern=r"\S")
+    instruction: str = Field(min_length=1, max_length=512, pattern=r"^[^\r\n]*\S[^\r\n]*$")
     goal_station_id: Identifier
     environment_id: Identifier
     revision: Revision
@@ -167,27 +167,87 @@ class JogTeaching(Approval):
     epoch: UUID
     sequence: PositiveInt
     expires_at: AwareDatetime
-    deadman: Literal[True]
+    deadman: bool = Field(strict=True)
     delta_xyz_m: tuple[float, float, float]
     gripper: Literal["open", "close", "hold"]
-
-    @field_validator("deadman", mode="before")
-    @classmethod
-    def held_control(cls, value):
-        if value is not True:
-            raise ValueError("A held deadman control is required.")
-        return value
+    grant_id: UUID | None = None
+    grant_expires_at: AwareDatetime | None = None
 
     @model_validator(mode="after")
     def bounded_jog(self):
         if math.sqrt(sum(value * value for value in self.delta_xyz_m)) > 0.01:
             raise ValueError("A jog must not exceed 1 cm in total Cartesian displacement.")
+        if not self.deadman and (any(self.delta_xyz_m) or self.gripper != "hold"):
+            raise ValueError("Released deadman permits zero-motion hold only.")
         return self
 
     def check_time(self, now: datetime) -> None:
         seconds = (self.expires_at - now).total_seconds()
         if not 0 < seconds <= 0.25:
             raise Problem(409, "expired_input", "Teaching input must expire within 250 ms.")
+        if self.deadman and (
+            self.grant_id is None
+            or self.grant_expires_at is None
+            or not 0 < (self.grant_expires_at - now).total_seconds() <= 1
+            or self.expires_at > self.grant_expires_at
+        ):
+            raise Problem(
+                409, "teaching_grant_expired", "A fresh server-issued input grant is required."
+            )
+
+
+class ArmTeaching(Approval):
+    lease_id: UUID
+    epoch: UUID
+    sequence: PositiveInt
+    deadman: Literal[True]
+    delta_xyz_m: tuple[float, float, float]
+    gripper: Literal["open", "close", "hold"]
+
+    @field_validator("deadman", mode="before")
+    @classmethod
+    def real_deadman(cls, value):
+        if value is not True:
+            raise ValueError("Explicit deadman authority is required.")
+        return value
+
+    @model_validator(mode="after")
+    def bounded_arm(self):
+        if math.sqrt(sum(x * x for x in self.delta_xyz_m)) > 0.01:
+            raise ValueError("Only a bounded 1 cm input can be armed.")
+        return self
+
+
+class JogIntent(Approval):
+    lease_id: UUID
+    epoch: UUID
+    sequence: PositiveInt
+    deadman: bool = Field(strict=True)
+    delta_xyz_m: tuple[float, float, float]
+    gripper: Literal["open", "close", "hold"]
+    grant_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def bounded_intent(self):
+        if math.sqrt(sum(x * x for x in self.delta_xyz_m)) > 0.01:
+            raise ValueError("At most 1 cm movement is allowed.")
+        if self.deadman and self.grant_id is None:
+            raise ValueError("Motion requires a server-issued control grant.")
+        if not self.deadman and (any(self.delta_xyz_m) or self.gripper != "hold" or self.grant_id):
+            raise ValueError("Released deadman permits zero-motion hold with no grant.")
+        return self
+
+
+class ControlGrant(OwnedRecord):
+    kind: Literal["control_grant"] = "control_grant"
+    session_id: UUID
+    lease_id: UUID
+    epoch: UUID
+    sequence: PositiveInt
+    delta_xyz_m: tuple[float, float, float]
+    gripper: Literal["open", "close", "hold"]
+    expires_at: AwareDatetime
+    consumed_by: UUID | None = None
 
 
 class TeachingControl(Approval):
@@ -228,6 +288,10 @@ class TeachingSession(OwnedRecord):
     capture: CaptureReceipt | None = None
     error_code: str | None = None
     message: str | None = None
+    physical_status: (
+        Literal["queued", "running", "cancelling", "succeeded", "failed", "cancelled", "timed_out"]
+        | None
+    ) = None
 
     @model_validator(mode="after")
     def ready_is_uploaded(self):
@@ -368,6 +432,16 @@ class LearningJob(OwnedRecord):
     message: str | None = None
 
 
+class LearningMutation(OwnedRecord):
+    kind: Literal["mutation"] = "mutation"
+    resource_kind: Literal["teaching", "training", "evaluation"]
+    resource_id: UUID
+    operation: Literal["jog", "finish", "cancel"]
+    status: Literal["claimed", "recorded", "uncertain", "rejected"] = "claimed"
+    server_expires_at: AwareDatetime | None = None
+    error_code: str | None = None
+
+
 class TrainingRun(LearningJob):
     kind: Literal["training"] = "training"
     dataset_id: UUID
@@ -415,6 +489,8 @@ class PolicyRelease(OwnedRecord):
     environment_id: Identifier
     revision: Revision
     task_id: Identifier
+    goal_station_id: Identifier
+    instruction: str = Field(min_length=1, max_length=512, pattern=r"^[^\r\n]*\S[^\r\n]*$")
     control_profile_id: Literal["franka-position-hold-10hz-v1"]
     evaluation_plan_sha256: Revision
     reviewed_by: UUID
@@ -428,6 +504,8 @@ LearningRecord = (
     | EvaluationRun
     | PolicyCandidate
     | PolicyRelease
+    | LearningMutation
+    | ControlGrant
 )
 
 _TRANSITIONS = {

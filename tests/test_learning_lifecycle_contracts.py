@@ -139,6 +139,8 @@ def test_jog_requires_deadman_short_expiry_and_bounded_cartesian_commands():
         "sequence": 1,
         "expires_at": now + timedelta(milliseconds=200),
         "deadman": True,
+        "grant_id": uuid4(),
+        "grant_expires_at": now + timedelta(seconds=1),
         "delta_xyz_m": (0.005, 0.0, 0.0),
         "gripper": "hold",
     }

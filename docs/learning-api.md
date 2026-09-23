@@ -38,7 +38,8 @@ successful placeholder, fixture checkpoint or ACT fallback.
 | `GET /api/learning/projects/{id}` | Project with ETag |
 | `POST /api/learning/projects/{id}/teaching-sessions` | `request_id`, `source: human_teleop|reference_controller`, `motion_approved: true` |
 | `GET /api/teaching-sessions/{id}` | Reconciled `TeachingSession`; physical completion and capture readiness remain separate |
-| `POST /api/teaching-sessions/{id}/jog` | `request_id`, `lease_id`, `epoch`, `sequence`, `expires_at`, `deadman: true`, `delta_xyz_m`, `gripper: open|close|hold` |
+| `POST /api/teaching-sessions/{id}/arm` | `request_id`, `lease_id`, `epoch`, `sequence`, `deadman: true`, `delta_xyz_m`, `gripper`; returns a server control grant valid for at most one second; never moves |
+| `POST /api/teaching-sessions/{id}/jog` | Same intent plus `grant_id`; server stamps expiry on first admission. Stop-only `deadman:false` requires zero delta/hold and no grant |
 | `POST /api/teaching-sessions/{id}/finish` | `request_id`, `lease_id`, `epoch`; does not assert capture readiness |
 | `POST /api/teaching-sessions/{id}/cancel` | Same binding; does not assert cancellation until confirmed |
 | `POST /api/learning/projects/{id}/datasets` | `request_id`, unique `teaching_session_ids`; only verified uploaded eligible captures |
@@ -114,10 +115,25 @@ Runtime keeps reference-only `/v1/commands` unchanged. New private bridge routes
 `POST /v1/teaching`, `GET /v1/teaching/{id}`,
 `POST /v1/teaching/{id}/input|finish|cancel`,
 `POST /v1/policy/commands`, `GET /v1/commands/{id}/capture`.
-Owner is the authenticated bridge header only. Teaching start binds a
-`MotionCommand`, session/lease UUID, profile and task
-`{task_id,instruction,goal_id}`. Jog is at most 1 cm total displacement and
-expires in at most 250 ms, with deadman and strictly increasing sequence.
+Owner is the authenticated bridge header only. Teaching start has separate
+flat scene/observation fields, session/lease/command UUIDs,
+`session_expires_at` (at most 300 seconds), profile, task
+`{task_id,instruction,goal_id}`, and explicit `demonstrator_kind`.
+It does not repurpose the reference/learned `MotionCommand`'s 30-second deadline.
+The public operator jog is an intent, not a trusted browser timestamp. The API
+first issues a persistent grant on `/arm`, bound to the original owner/session/
+lease/epoch/next sequence/exact delta and gripper with at most a one-second TTL.
+`/jog` must echo this fresh, single-use grant: even a first request delayed for
+seconds is rejected, rather than acquiring new authority on arrival. The API
+conditionally persists the request fingerprint and sequence, consumes the grant,
+and sets runtime expiry to `min(original grant expiry, server now + 250 ms)`.
+Retries cannot renew either deadline or blindly repeat an uncertain motion POST.
+Released-deadman zero-motion/hold inputs can advance sequence gaps so a delayed
+lower-sequence motion cannot execute after release; stop-only inputs do not
+require a grant or a fresh browser ETag (the server still performs its own CAS).
+The UI discards an arm response if the input is no longer held or the tab is
+hidden. Jog is at most 1 cm total displacement. Automated G0/scripted data uses
+`reference_controller`; only actual operator teaching uses `human_teleop`.
 
 `LearningJobs` exposes `preflight(actor,specification)`, `submit(actor,specification)`,
 `status(actor,run)` and `cancel(actor,run)`. `JobSpecification` binds owner,

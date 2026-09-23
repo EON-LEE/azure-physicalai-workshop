@@ -9,6 +9,8 @@ from apps.api.models import (
     MotionCommand,
     Observation,
     PresentationRecord,
+    Principal,
+    ReleasedPolicyBinding,
     RunRecord,
     SimulationStatus,
     Stored,
@@ -55,5 +57,21 @@ class Bridge(Protocol):
         camera: Literal["overview", "inspection"] = "inspection",
     ) -> Observation: ...
     def dispatch(self, owner: str, command: MotionCommand) -> Execution: ...
+    def dispatch_policy(
+        self,
+        owner: str,
+        command: MotionCommand,
+        policy: ReleasedPolicyBinding,
+    ) -> Execution: ...
     def command(self, owner: str, command_id: UUID) -> Execution: ...
     def cancel(self, owner: str, command_id: UUID) -> Execution: ...
+
+
+class PolicyAuthorizer(Protocol):
+    def resolve_for_run(
+        self,
+        actor: Principal,
+        release_id: UUID,
+        environment_id: str,
+        revision: str,
+    ) -> ReleasedPolicyBinding: ...

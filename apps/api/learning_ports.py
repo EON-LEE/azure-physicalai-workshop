@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Literal, Protocol
 from uuid import UUID
 
-from pydantic import Field
+from pydantic import AwareDatetime, Field
 
 from apps.api.learning_models import (
     CaptureReceipt,
@@ -19,7 +19,7 @@ from apps.api.learning_models import (
     TrainingMetrics,
     TrainingRun,
 )
-from apps.api.models import Principal, Revision, Stored
+from apps.api.models import DemonstrationResult, Execution, Identifier, Principal, Revision, Stored
 
 
 class LearningStore(Protocol):
@@ -90,3 +90,66 @@ class LearningArtifacts(Protocol):
 
 class PolicyCatalog(Protocol):
     def resolve(self, actor: Principal, release_id: UUID) -> PolicyRelease: ...
+
+
+class RuntimeCapture(Frozen):
+    capture_id: UUID
+    command_id: UUID
+    epoch: UUID
+    status: Literal["recording", "finalizing", "uploading", "ready", "invalid"]
+    receipt: DemonstrationResult | None = None
+    message: str | None = None
+
+
+class TeachingRuntimeState(Frozen):
+    session_id: UUID
+    lease_id: UUID
+    epoch: UUID
+    command_id: UUID
+    control_profile_id: str
+    status: Literal[
+        "queued",
+        "running",
+        "finishing",
+        "cancelling",
+        "succeeded",
+        "failed",
+        "cancelled",
+        "timed_out",
+    ]
+    last_sequence: int = Field(ge=0)
+    input_expires_at: AwareDatetime | None = None
+    execution: Execution
+    capture: RuntimeCapture | None = None
+
+
+class TeachingRuntime(Protocol):
+    def start_teaching(self, owner: str, body: TeachingStartSpec) -> TeachingRuntimeState: ...
+    def teaching(self, owner: str, session_id: UUID) -> TeachingRuntimeState: ...
+    def teaching_input(self, owner: str, session_id: UUID, body: dict) -> TeachingRuntimeState: ...
+    def finish_teaching(self, owner: str, session_id: UUID, body: dict) -> TeachingRuntimeState: ...
+    def cancel_teaching(self, owner: str, session_id: UUID, body: dict) -> TeachingRuntimeState: ...
+    def capture(self, owner: str, command_id: UUID) -> RuntimeCapture: ...
+
+
+class TeachingTask(Frozen):
+    task_id: Identifier
+    instruction: str = Field(min_length=1, max_length=512, pattern=r"^[^\r\n]*\S[^\r\n]*$")
+    goal_id: Identifier
+
+
+class TeachingStartSpec(Frozen):
+    session_id: UUID
+    lease_id: UUID
+    command_id: UUID
+    environment_id: Identifier
+    revision: Revision
+    epoch: UUID
+    state_revision: int = Field(ge=0)
+    observation_id: UUID
+    object_id: str
+    target_station_id: Identifier
+    session_expires_at: AwareDatetime
+    control_profile_id: Literal["franka-position-hold-10hz-v1"]
+    task: TeachingTask
+    demonstrator_kind: Literal["human_teleop", "reference_controller"]

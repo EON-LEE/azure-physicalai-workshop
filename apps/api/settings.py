@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     model_timeout_seconds: float = Field(default=40, gt=0, le=120)
     bridge_timeout_seconds: float = Field(default=10, gt=0, le=30)
     approval_ttl_seconds: int = Field(default=300, ge=5, le=3600)
+    learning_enabled: bool = False
     public_demo_publish_live: bool = False
     public_demo_owner_id: UUID | None = None
     public_demo_environment_id: str | None = Field(

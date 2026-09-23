@@ -11,12 +11,14 @@ from azure.core.exceptions import AzureError
 from pydantic import ValidationError
 
 from apps.api.errors import Problem, unavailable
+from apps.api.learning_ports import RuntimeCapture, TeachingRuntimeState, TeachingStartSpec
 from apps.api.models import (
     Activation,
     EnvironmentRecord,
     Execution,
     MotionCommand,
     Observation,
+    ReleasedPolicyBinding,
     SimulationStatus,
 )
 
@@ -130,6 +132,72 @@ class AzureSimulatorBridge:
         return self._model(
             Execution, "POST", "/v1/commands", owner, json=command.model_dump(mode="json")
         )
+
+    def dispatch_policy(
+        self,
+        owner: str,
+        command: MotionCommand,
+        policy: ReleasedPolicyBinding,
+    ) -> Execution:
+        return self._model(
+            Execution,
+            "POST",
+            "/v1/policy/commands",
+            owner,
+            json={
+                "command": command.model_dump(mode="json"),
+                "policy_release_id": str(policy.policy_release_id),
+                "model_sha256": policy.model_sha256,
+                "control_profile_id": policy.control_profile_id,
+                "task": {
+                    "task_id": policy.task_id,
+                    "instruction": policy.instruction,
+                    "goal_id": policy.goal_station_id,
+                },
+            },
+        )
+
+    def start_teaching(self, owner: str, body: TeachingStartSpec) -> TeachingRuntimeState:
+        return self._model(
+            TeachingRuntimeState,
+            "POST",
+            "/v1/teaching",
+            owner,
+            json=body.model_dump(mode="json"),
+        )
+
+    def teaching(self, owner: str, session_id: UUID) -> TeachingRuntimeState:
+        return self._model(TeachingRuntimeState, "GET", f"/v1/teaching/{session_id}", owner)
+
+    def teaching_input(self, owner: str, session_id: UUID, body: dict) -> TeachingRuntimeState:
+        return self._model(
+            TeachingRuntimeState,
+            "POST",
+            f"/v1/teaching/{session_id}/input",
+            owner,
+            json=body,
+        )
+
+    def finish_teaching(self, owner: str, session_id: UUID, body: dict) -> TeachingRuntimeState:
+        return self._model(
+            TeachingRuntimeState,
+            "POST",
+            f"/v1/teaching/{session_id}/finish",
+            owner,
+            json=body,
+        )
+
+    def cancel_teaching(self, owner: str, session_id: UUID, body: dict) -> TeachingRuntimeState:
+        return self._model(
+            TeachingRuntimeState,
+            "POST",
+            f"/v1/teaching/{session_id}/cancel",
+            owner,
+            json=body,
+        )
+
+    def capture(self, owner: str, command_id: UUID) -> RuntimeCapture:
+        return self._model(RuntimeCapture, "GET", f"/v1/commands/{command_id}/capture", owner)
 
     def command(self, owner: str, command_id: UUID) -> Execution:
         return self._model(Execution, "GET", f"/v1/commands/{command_id}", owner)

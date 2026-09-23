@@ -13,6 +13,8 @@ from fastapi.staticfiles import StaticFiles
 
 from apps.api.auth import EntraTokens
 from apps.api.errors import Problem
+from apps.api.learning_routes import install_learning_routes
+from apps.api.learning_service import LearningService
 from apps.api.middleware import BodyLimit
 from apps.api.models import (
     ActivateEnvironment,
@@ -104,6 +106,7 @@ def create_app(
     settings: Settings | None = None,
     service: FactoryService | None = None,
     authorizer: EntraTokens | None = None,
+    learning: LearningService | None = None,
 ) -> FastAPI:
     configuration = settings or Settings()
     identity = authorizer or EntraTokens(
@@ -127,6 +130,12 @@ def create_app(
         else:
             app.state.service = service
         app.state.public_demo = PublicDemo(configuration, app.state.service)
+        app.state.learning = learning or LearningService(
+            app.state.service,
+            app.state.service.store,
+            enabled=configuration.learning_enabled,
+        )
+        app.state.service.policies = app.state.learning
         try:
             yield
         finally:
@@ -194,6 +203,7 @@ def create_app(
 
     Actor = Annotated[Principal, Depends(actor)]
     Service = Annotated[FactoryService, Depends(factory)]
+    install_learning_routes(app, actor)
 
     @app.get("/api/demo")
     def public_demo(request: Request):

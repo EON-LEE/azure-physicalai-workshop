@@ -64,6 +64,13 @@ class StartRun(Model):
     environment_id: Identifier
     revision: Revision
     instruction: str = Field(min_length=1, max_length=2000, pattern=r"\S")
+    policy_release_id: UUID | None = None
+
+    def fingerprint_document(self) -> dict:
+        value = self.model_dump(mode="json")
+        if self.policy_release_id is None:
+            value.pop("policy_release_id")
+        return value
 
 
 class ApproveRun(Model):
@@ -152,6 +159,38 @@ class DemonstrationResult(Model):
         return self
 
 
+class PolicyRuntime(Model):
+    execution_mode: Literal["learned"] = "learned"
+    policy_release_id: UUID
+    applied_model_sha: Revision | None = None
+    control_profile_id: Identifier | None = None
+    policy_predict_calls: int = Field(strict=True, ge=0)
+    applied_action_count: int = Field(strict=True, ge=0)
+    reference_route_calls: Literal[0]
+
+    @model_validator(mode="after")
+    def application_is_measured(self):
+        if self.applied_action_count > 0 and (
+            self.applied_model_sha is None or self.policy_predict_calls == 0
+        ):
+            raise ValueError("Applied actions require the actual model and prediction evidence.")
+        return self
+
+
+class ReleasedPolicyBinding(Model):
+    model_config = ConfigDict(frozen=True)
+
+    policy_release_id: UUID
+    policy_type: Literal["gr00t_n1_5"]
+    model_sha256: Revision
+    processor_sha256: Revision
+    manifest_sha256: Revision
+    control_profile_id: Identifier
+    task_id: Identifier
+    goal_station_id: Identifier
+    instruction: str = Field(min_length=1, max_length=512, pattern=r"^[^\r\n]*\S[^\r\n]*$")
+
+
 class Execution(Model):
     command_id: UUID
     status: Literal[
@@ -161,6 +200,7 @@ class Execution(Model):
     completed_at: AwareDatetime | None = None
     error: RunError | None = None
     demonstration: DemonstrationResult | None = None
+    policy_runtime: PolicyRuntime | None = None
 
 
 class RunRecord(Model):
@@ -179,6 +219,7 @@ class RunRecord(Model):
     execution: Execution | None = None
     error: RunError | None = None
     events: list[Event] = Field(default_factory=list)
+    policy: ReleasedPolicyBinding | None = None
 
     def public(self) -> dict:
         return self.model_dump(

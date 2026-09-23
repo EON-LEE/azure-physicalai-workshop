@@ -13,11 +13,68 @@ from azure.storage.blob import BlobServiceClient, ContentSettings
 from pydantic import BaseModel
 
 from apps.api.errors import Problem, unavailable
-from apps.api.models import EnvironmentRecord, PresentationRecord, RunRecord, Stored
+from apps.api.learning_models import (
+    ControlGrant,
+    DatasetVersion,
+    EvaluationRun,
+    LearningMutation,
+    LearningProject,
+    LearningRecord,
+    PolicyCandidate,
+    PolicyRelease,
+    TeachingSession,
+    TrainingRun,
+    transition,
+)
+from apps.api.models import EnvironmentRecord, PresentationRecord, Principal, RunRecord, Stored
 
 log = logging.getLogger(__name__)
 T = TypeVar("T")
 M = TypeVar("M", bound=BaseModel)
+LEARNING_MODELS = {
+    "project": LearningProject,
+    "teaching": TeachingSession,
+    "dataset": DatasetVersion,
+    "training": TrainingRun,
+    "evaluation": EvaluationRun,
+    "candidate": PolicyCandidate,
+    "release": PolicyRelease,
+    "mutation": LearningMutation,
+    "control_grant": ControlGrant,
+}
+LEARNING_MUTABLE = {
+    "teaching": {
+        "updated_at",
+        "status",
+        "last_sequence",
+        "last_input_fingerprint",
+        "input_expires_at",
+        "capture",
+        "error_code",
+        "message",
+        "physical_status",
+    },
+    "training": {
+        "updated_at",
+        "status",
+        "azure_job_id",
+        "metrics",
+        "candidate_id",
+        "error_code",
+        "message",
+    },
+    "evaluation": {
+        "updated_at",
+        "status",
+        "azure_job_id",
+        "metrics",
+        "report",
+        "error_code",
+        "message",
+    },
+    "mutation": {"updated_at", "status", "error_code"},
+    "control_grant": {"updated_at", "consumed_by"},
+}
 
 
 def _cosmos(call: Callable[[], T]) -> T:
@@ -134,6 +191,102 @@ class CosmosStore:
 
     def put_run(self, owner: str, record: RunRecord, etag: str | None) -> Stored[RunRecord]:
         return self._write(owner, f"run:{record.id}", "run", record, etag)
+
+    def get_learning(self, owner: str, kind: str, resource_id: UUID) -> Stored | None:
+        model = LEARNING_MODELS.get(kind)
+        if model is None:
+            raise Problem(422, "unknown_learning_kind", "Unknown learning resource type.")
+        stored = self._read(owner, f"learning:{kind}:{resource_id}", model)
+        if stored is not None and stored.value.owner_key != owner:
+            raise Problem(503, "learning_scope_corrupted", "Stored learning scope is inconsistent.")
+        return stored
+
+    def put_learning(
+        self,
+        owner: str,
+        record: LearningRecord,
+        etag: str | None,
+    ) -> Stored:
+        model = LEARNING_MODELS[record.kind]
+        record = model.model_validate(record.model_dump())
+        if (
+            record.owner_key != owner
+            or Principal(tenant_id=record.tenant_id, object_id=record.actor_id).owner_key != owner
+        ):
+            raise Problem(
+                403, "learning_owner_mismatch", "Learning actor and partition must match."
+            )
+        if etag is not None:
+            current = self.get_learning(owner, record.kind, record.id)
+            if current is None or current.etag != etag:
+                raise Problem(
+                    409, "revision_conflict", "Learning state changed; reload before acting."
+                )
+            allowed = LEARNING_MUTABLE.get(record.kind, set())
+            old = current.value.model_dump()
+            changed = {key for key, value in record.model_dump().items() if old[key] != value}
+            if changed - allowed:
+                raise Problem(
+                    409, "immutable_learning_record", "Create a new version for changed pins."
+                )
+            if record.kind in ("training", "evaluation"):
+                transition("job", current.value.status, record.status)
+                if current.value.azure_job_id and record.azure_job_id != current.value.azure_job_id:
+                    raise Problem(
+                        409, "immutable_learning_record", "An Azure job ID cannot be replaced."
+                    )
+            if record.kind == "teaching":
+                if current.value.status in ("ready", "cancelled", "invalid", "blocked") and changed:
+                    raise Problem(
+                        409, "immutable_learning_record", "Terminal teaching cannot be revived."
+                    )
+                if record.last_sequence < current.value.last_sequence:
+                    raise Problem(
+                        409, "teaching_sequence", "Teaching input sequence cannot regress."
+                    )
+            if record.kind == "mutation" and current.value.status != "claimed" and changed:
+                raise Problem(
+                    409, "immutable_learning_record", "An operation claim cannot be renewed."
+                )
+            if record.kind == "control_grant" and current.value.consumed_by is not None and changed:
+                raise Problem(409, "teaching_grant_consumed", "A control grant cannot be reused.")
+        return self._write(
+            owner, f"learning:{record.kind}:{record.id}", f"learning:{record.kind}", record, etag
+        )
+
+    def list_learning(
+        self,
+        owner: str,
+        kind: str,
+        project_id: UUID | None = None,
+    ) -> list[Stored]:
+        model = LEARNING_MODELS.get(kind)
+        if model is None or kind in ("mutation", "control_grant"):
+            raise Problem(422, "unknown_learning_kind", "Unknown listed learning resource type.")
+        query = "SELECT TOP 50 * FROM c WHERE c.kind = @kind"
+        parameters = [{"name": "@kind", "value": f"learning:{kind}"}]
+        if project_id is not None:
+            query += " AND c.value.project_id = @project"
+            parameters.append({"name": "@project", "value": str(project_id)})
+        query += " ORDER BY c.updated_at DESC"
+        items = _cosmos(
+            lambda: list(
+                self.container.query_items(
+                    query=query,
+                    parameters=parameters,
+                    partition_key=owner,
+                )
+            )
+        )
+        result = []
+        for item in items:
+            record = model.model_validate(item["value"])
+            if record.owner_key != owner:
+                raise Problem(
+                    503, "learning_scope_corrupted", "Listed learning scope is inconsistent."
+                )
+            result.append(Stored(value=record, etag=item["_etag"]))
+        return result
 
     def close(self) -> None:
         self.client.close()
