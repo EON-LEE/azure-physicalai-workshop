@@ -229,6 +229,16 @@ The host must still require the correct receipt schema, `probe_completed` and
 ready capture evidence, never just Docker's exit status. No interval count or
 physical outcome is inferred from startup/shutdown timing.
 
+The operator host must additionally run `python -m simulation.probe_acceptance`
+with the report, unchanged saved environment, actual local dataset root, expected
+tenant/owner, image digest, source commit and probe mode. It rejects incomplete
+receipts, missing/invalid uploads, noncontiguous six-tick intervals, widened
+latency/heartbeat budgets and missing fixture actuator counters. It validates
+the real v2 dataset/checksums, two 320-pixel cameras and immutable source/image/
+builder/case provenance. Docker exit zero or report-file presence cannot satisfy
+this gate. Upload failure logs as well as reports to the private evidence
+container, and restore the previously running reference container in `finally`.
+
 ## Explicit bootstrap reference collection
 
 After real GPU grip/hold/place validation, an approved operator can collect one
