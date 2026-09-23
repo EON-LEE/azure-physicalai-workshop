@@ -4,6 +4,7 @@ COPY contracts/customer-environment.schema.json contracts/customer-environment.s
 COPY apps/web/package*.json apps/web/
 RUN cd apps/web && npm ci
 COPY apps/web/ apps/web/
+COPY examples/inspection-cell.json examples/inspection-cell.json
 RUN cd apps/web && npm run build
 
 FROM ghcr.io/astral-sh/uv:0.12.1 AS uv
