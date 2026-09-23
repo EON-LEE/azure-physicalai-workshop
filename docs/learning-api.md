@@ -201,6 +201,14 @@ before/after trial and retry, including failures; no post-hoc favorable subset.
   call. Exact retries return the original recorded proposal/response ID.
   Interrupted responses expire as unconfirmed instead of silently repeating
   model inference. Its stored proposal remains advice, never approval.
+  Its registered strict function schema uses the same minimal JSON Schema
+  subset as inspection: every property is required, unused references/counts
+  are explicit `null`, and extra fields are forbidden. Defaults, UUID `format`,
+  text length/pattern and numeric bounds are not sent as unsupported service
+  keywords. The unchanged Pydantic parser and scoped proposal checks enforce
+  all UUID, text, optimizer, project, dataset and release constraints after
+  inference. SDK serialization tests do not replace actual Foundry registration
+  or imply successful policy learning.
 
 ## Empty-store first-policy bootstrap
 
