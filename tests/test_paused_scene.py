@@ -43,10 +43,14 @@ def test_approved_lower_scene_budgets_are_not_replaced_by_profile_maxima():
     spec, _ = scene(value)
     authority = spec.require_paused_authority()
     authority.validate_request(wall_seconds=19.5, simulation_steps=294)
-    with pytest.raises(Problem, match="wall"):
+    with pytest.raises(Problem) as wall_failure:
         authority.validate_request(wall_seconds=21, simulation_steps=294)
-    with pytest.raises(Problem, match="simulation"):
+    assert wall_failure.value.code == "paused_wall_budget"
+    assert wall_failure.value.status == 409
+    with pytest.raises(Problem) as simulation_failure:
         authority.validate_request(wall_seconds=19.5, simulation_steps=306)
+    assert simulation_failure.value.code == "paused_simulation_budget"
+    assert simulation_failure.value.status == 409
     assert authority.max_wall_seconds == 20 and authority.max_simulation_steps == 300
 
 
