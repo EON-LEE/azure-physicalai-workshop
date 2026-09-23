@@ -1,0 +1,459 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import math
+from datetime import datetime
+from decimal import Decimal
+from typing import Annotated, Literal
+from uuid import UUID
+
+from pydantic import AwareDatetime, ConfigDict, Field, field_validator, model_validator
+
+from apps.api.errors import Problem
+from apps.api.models import Identifier, Model, Principal, Revision, utcnow
+
+PolicyType = Literal["gr00t_n1_5", "act_auxiliary"]
+SourceKind = Literal["human_teleop", "reference_controller", "learned"]
+JobStatus = Literal[
+    "submitting",
+    "submission_unknown",
+    "submitted",
+    "running",
+    "cancelling",
+    "succeeded",
+    "failed",
+    "cancelled",
+    "timed_out",
+    "blocked",
+]
+TeachingStatus = Literal[
+    "starting",
+    "recording",
+    "finishing",
+    "finalizing",
+    "uploading",
+    "ready",
+    "cancelling",
+    "cancelled",
+    "invalid",
+    "blocked",
+]
+PositiveInt = Annotated[int, Field(strict=True, ge=1)]
+NonnegativeInt = Annotated[int, Field(strict=True, ge=0)]
+JOB_TERMINAL = frozenset({"succeeded", "failed", "cancelled", "timed_out", "blocked"})
+TEACHING_TERMINAL = frozenset({"ready", "cancelled", "invalid", "blocked"})
+PROFILE_ID = "franka-position-hold-10hz-v1"
+
+
+def fingerprint(value: object) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+        ).encode()
+    ).hexdigest()
+
+
+class Frozen(Model):
+    model_config = ConfigDict(frozen=True)
+
+
+class Budget(Frozen):
+    teaching_seconds: int = Field(strict=True, ge=5, le=300)
+    training_seconds: int = Field(strict=True, ge=1, le=86400)
+    evaluation_seconds: int = Field(strict=True, ge=1, le=21600)
+    optimizer_steps: int = Field(strict=True, ge=1, le=100000)
+    maximum_cost_usd: Decimal = Field(gt=0, le=10000, max_digits=9, decimal_places=2)
+
+
+class EvaluationPlan(Frozen):
+    id: UUID
+    seeds: tuple[Annotated[int, Field(strict=True, ge=0, le=2147483647)], ...] = Field(
+        min_length=20, max_length=100
+    )
+    held_out_episode_ids: tuple[UUID, ...] = Field(max_length=10000)
+    minimum_success_rate: float = Field(ge=0.9, le=1)
+    maximum_axis_error_m: float = Field(gt=0, le=0.04)
+    maximum_inference_p95_ms: float = Field(gt=0, le=80)
+    max_step_seconds: int = Field(strict=True, ge=1, le=30)
+    max_cartesian_speed_m_s: float = Field(gt=0, le=0.2)
+
+    @model_validator(mode="after")
+    def unique_conditions(self):
+        if len(set(self.seeds)) != len(self.seeds) or len(set(self.held_out_episode_ids)) != len(
+            self.held_out_episode_ids
+        ):
+            raise ValueError("Held-out conditions must be unique and frozen before training.")
+        return self
+
+    @property
+    def sha256(self) -> str:
+        return fingerprint(self.model_dump(mode="json"))
+
+
+class CreateProject(Frozen):
+    request_id: UUID
+    display_name: str = Field(min_length=1, max_length=120, pattern=r"\S")
+    task_id: Identifier
+    instruction: str = Field(min_length=1, max_length=2000, pattern=r"\S")
+    goal_station_id: Identifier
+    environment_id: Identifier
+    revision: Revision
+    baseline_release_id: UUID
+    control_profile_id: Literal["franka-position-hold-10hz-v1"]
+    evaluation_plan: EvaluationPlan
+    budget: Budget
+
+
+class OwnedRecord(Frozen):
+    id: UUID
+    owner_key: Revision
+    actor_id: UUID
+    tenant_id: UUID
+    created_at: AwareDatetime
+    updated_at: AwareDatetime
+    fingerprint: Revision
+
+    def public(self) -> dict:
+        return self.model_dump(mode="json", exclude={"owner_key", "fingerprint", "tenant_id"})
+
+
+class LearningProject(OwnedRecord):
+    kind: Literal["project"] = "project"
+    display_name: str
+    task_id: Identifier
+    instruction: str
+    goal_station_id: Identifier
+    environment_id: Identifier
+    revision: Revision
+    baseline_release_id: UUID
+    control_profile_id: Literal["franka-position-hold-10hz-v1"]
+    evaluation_plan: EvaluationPlan
+    budget: Budget
+
+    @classmethod
+    def create(cls, actor: Principal, request: CreateProject) -> LearningProject:
+        now = utcnow()
+        return cls(
+            id=request.request_id,
+            owner_key=actor.owner_key,
+            actor_id=actor.object_id,
+            tenant_id=actor.tenant_id,
+            created_at=now,
+            updated_at=now,
+            fingerprint=fingerprint(request.model_dump(mode="json")),
+            **request.model_dump(exclude={"request_id"}),
+        )
+
+
+class Approval(Frozen):
+    request_id: UUID
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def explicit_approval(cls, value, info):
+        if info.field_name.endswith("_approved") and value is not True:
+            raise ValueError("An explicit human approval is required.")
+        return value
+
+
+class StartTeaching(Approval):
+    source: Literal["human_teleop", "reference_controller"]
+    motion_approved: Literal[True]
+
+
+class JogTeaching(Approval):
+    lease_id: UUID
+    epoch: UUID
+    sequence: PositiveInt
+    expires_at: AwareDatetime
+    deadman: Literal[True]
+    delta_xyz_m: tuple[float, float, float]
+    gripper: Literal["open", "close", "hold"]
+
+    @field_validator("deadman", mode="before")
+    @classmethod
+    def held_control(cls, value):
+        if value is not True:
+            raise ValueError("A held deadman control is required.")
+        return value
+
+    @model_validator(mode="after")
+    def bounded_jog(self):
+        if math.sqrt(sum(value * value for value in self.delta_xyz_m)) > 0.01:
+            raise ValueError("A jog must not exceed 1 cm in total Cartesian displacement.")
+        return self
+
+    def check_time(self, now: datetime) -> None:
+        seconds = (self.expires_at - now).total_seconds()
+        if not 0 < seconds <= 0.25:
+            raise Problem(409, "expired_input", "Teaching input must expire within 250 ms.")
+
+
+class TeachingControl(Approval):
+    lease_id: UUID
+    epoch: UUID
+
+
+class CaptureReceipt(Frozen):
+    episode_id: UUID
+    manifest_sha256: Revision
+    artifact_id: UUID
+    frame_count: int = Field(strict=True, ge=2)
+    source: SourceKind
+    seed: int = Field(strict=True, ge=0)
+    task_id: Identifier
+    control_profile_id: Literal["franka-position-hold-10hz-v1"]
+    source_model_sha256: Revision | None = None
+
+    @model_validator(mode="after")
+    def source_is_evidenced(self):
+        if (self.source == "learned") != (self.source_model_sha256 is not None):
+            raise ValueError("Generated demonstrations must identify their actual source model.")
+        return self
+
+
+class TeachingSession(OwnedRecord):
+    kind: Literal["teaching"] = "teaching"
+    project_id: UUID
+    source: Literal["human_teleop", "reference_controller"]
+    status: TeachingStatus
+    lease_id: UUID
+    epoch: UUID
+    command_id: UUID
+    expires_at: AwareDatetime
+    last_sequence: NonnegativeInt = 0
+    last_input_fingerprint: Revision | None = None
+    input_expires_at: AwareDatetime | None = None
+    capture: CaptureReceipt | None = None
+    error_code: str | None = None
+    message: str | None = None
+
+    @model_validator(mode="after")
+    def ready_is_uploaded(self):
+        if self.status == "ready" and self.capture is None:
+            raise ValueError("A ready teaching session requires verified uploaded capture.")
+        return self
+
+
+class CreateDataset(Approval):
+    teaching_session_ids: tuple[UUID, ...] = Field(min_length=1, max_length=1000)
+
+    @model_validator(mode="after")
+    def unique_sessions(self):
+        if len(set(self.teaching_session_ids)) != len(self.teaching_session_ids):
+            raise ValueError("A teaching session may occur only once in a dataset.")
+        return self
+
+
+class DatasetVersion(OwnedRecord):
+    kind: Literal["dataset"] = "dataset"
+    project_id: UUID
+    status: Literal["ready"] = "ready"
+    artifact_id: UUID
+    manifest_sha256: Revision
+    episode_ids: tuple[UUID, ...] = Field(min_length=1, max_length=1000)
+    seeds: tuple[NonnegativeInt, ...] = Field(min_length=1, max_length=1000)
+    human_teleop_count: NonnegativeInt
+    reference_controller_count: NonnegativeInt
+    learned_policy_count: NonnegativeInt
+    evaluation_plan_sha256: Revision
+
+    @model_validator(mode="after")
+    def counts_match_manifest(self):
+        count = len(self.episode_ids)
+        if (
+            count != len(set(self.episode_ids))
+            or count != len(self.seeds)
+            or count
+            != (
+                self.human_teleop_count
+                + self.reference_controller_count
+                + self.learned_policy_count
+            )
+        ):
+            raise ValueError("Dataset counts must preserve all actual source provenance.")
+        return self
+
+
+class StartTraining(Approval):
+    dataset_id: UUID
+    parent_release_id: UUID
+    policy_type: Literal["gr00t_n1_5"] = "gr00t_n1_5"
+    optimizer_steps: int = Field(strict=True, ge=1, le=100000)
+    paid_approved: Literal[True]
+    maximum_cost_usd: Decimal = Field(gt=0, le=10000, max_digits=9, decimal_places=2)
+
+
+class StartEvaluation(Approval):
+    candidate_id: UUID
+    baseline_release_id: UUID
+    evaluation_plan_sha256: Revision
+    motion_approved: Literal[True]
+    paid_approved: Literal[True]
+    maximum_cost_usd: Decimal = Field(gt=0, le=10000, max_digits=9, decimal_places=2)
+
+
+class TrainingMetrics(Frozen):
+    optimizer_steps: NonnegativeInt | None = None
+    loss: float | None = Field(default=None, ge=0)
+    measured_at: AwareDatetime | None = None
+
+
+class PolicyCandidate(OwnedRecord):
+    kind: Literal["candidate"] = "candidate"
+    project_id: UUID
+    dataset_id: UUID
+    training_run_id: UUID
+    parent_release_id: UUID
+    policy_type: PolicyType
+    model_sha256: Revision
+    parent_model_sha256: Revision
+    processor_sha256: Revision
+    manifest_sha256: Revision
+    artifact_id: UUID
+    optimizer_steps: PositiveInt
+    azure_job_id: str = Field(min_length=1, max_length=2048)
+    source_commit: str = Field(pattern=r"^[a-f0-9]{40}$")
+    model_revision: str = Field(pattern=r"^[a-f0-9]{40}$")
+    control_profile_id: Literal["franka-position-hold-10hz-v1"]
+
+    @model_validator(mode="after")
+    def actual_new_weights(self):
+        if self.model_sha256 == self.parent_model_sha256:
+            raise ValueError("Training requires changed weights, not a relabeled checkpoint.")
+        return self
+
+
+class TrialOutcome(Frozen):
+    seed: NonnegativeInt
+    attempt: PositiveInt
+    policy: Literal["before", "after"]
+    status: Literal["succeeded", "failed", "cancelled", "timed_out"]
+    model_sha256: Revision
+    physical_success: bool
+    axis_error_m: tuple[float, float, float] | None
+    duration_seconds: float = Field(ge=0)
+    safety_violations: NonnegativeInt
+    inference_p95_ms: float | None = Field(default=None, ge=0)
+    applied_action_count: NonnegativeInt
+    policy_predict_calls: NonnegativeInt
+    reference_route_calls: Literal[0]
+    recording_id: UUID | None = None
+    message: str
+
+
+class PairedReport(Frozen):
+    evaluation_plan_sha256: Revision
+    before_model_sha256: Revision
+    after_model_sha256: Revision
+    trials: tuple[TrialOutcome, ...] = Field(min_length=40, max_length=1000)
+    conclusion: Literal["improved", "not_improved", "inconclusive"]
+    quality_gate_passed: bool
+    report_sha256: Revision
+    artifact_id: UUID
+
+
+class LearningJob(OwnedRecord):
+    kind: Literal["training", "evaluation"]
+    project_id: UUID
+    status: JobStatus
+    backend_job_name: str = Field(pattern=r"^learning-[a-f0-9-]+$", max_length=100)
+    azure_job_id: str | None = Field(default=None, min_length=1, max_length=2048)
+    deadline: AwareDatetime
+    approved_cost_usd: Decimal
+    specification_sha256: Revision
+    metrics: TrainingMetrics = Field(default_factory=TrainingMetrics)
+    error_code: str | None = None
+    message: str | None = None
+
+
+class TrainingRun(LearningJob):
+    kind: Literal["training"] = "training"
+    dataset_id: UUID
+    parent_release_id: UUID
+    optimizer_steps: PositiveInt
+    candidate_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def succeeded_requires_artifact(self):
+        if self.status == "succeeded" and (not self.azure_job_id or not self.candidate_id):
+            raise ValueError("A completed training run must reference a verified new candidate.")
+        return self
+
+
+class EvaluationRun(LearningJob):
+    kind: Literal["evaluation"] = "evaluation"
+    candidate_id: UUID
+    baseline_release_id: UUID
+    evaluation_plan_sha256: Revision
+    report: PairedReport | None = None
+
+    @model_validator(mode="after")
+    def succeeded_requires_report(self):
+        if self.status == "succeeded" and (not self.azure_job_id or not self.report):
+            raise ValueError("A completed evaluation requires the entire paired trial report.")
+        return self
+
+
+class ReleasePolicy(Approval):
+    candidate_id: UUID
+    evaluation_run_id: UUID
+    release_approved: Literal[True]
+
+
+class PolicyRelease(OwnedRecord):
+    kind: Literal["release"] = "release"
+    project_id: UUID
+    candidate_id: UUID
+    evaluation_run_id: UUID
+    policy_type: PolicyType
+    model_sha256: Revision
+    processor_sha256: Revision
+    manifest_sha256: Revision
+    artifact_id: UUID
+    environment_id: Identifier
+    revision: Revision
+    task_id: Identifier
+    control_profile_id: Literal["franka-position-hold-10hz-v1"]
+    evaluation_plan_sha256: Revision
+    reviewed_by: UUID
+
+
+LearningRecord = (
+    LearningProject
+    | TeachingSession
+    | DatasetVersion
+    | TrainingRun
+    | EvaluationRun
+    | PolicyCandidate
+    | PolicyRelease
+)
+
+_TRANSITIONS = {
+    "job": {
+        "submitting": {"submitted", "submission_unknown", "blocked", "failed", "cancelling"},
+        "submission_unknown": {"submitted", "running", "cancelling", "blocked"},
+        "submitted": {"running", "cancelling", "succeeded", "failed", "cancelled", "timed_out"},
+        "running": {"cancelling", "succeeded", "failed", "cancelled", "timed_out"},
+        "cancelling": {"cancelled", "failed", "timed_out", "succeeded"},
+    },
+    "teaching": {
+        "starting": {"recording", "blocked", "invalid", "cancelling"},
+        "recording": {"finishing", "finalizing", "cancelling", "invalid"},
+        "finishing": {"finalizing", "cancelling", "invalid"},
+        "finalizing": {"uploading", "invalid", "cancelling"},
+        "uploading": {"ready", "invalid", "cancelling"},
+        "cancelling": {"cancelled", "invalid"},
+    },
+}
+
+
+def transition(kind: Literal["job", "teaching"], current: str, target: str) -> str:
+    if current == target or target in _TRANSITIONS[kind].get(current, set()):
+        return target
+    raise Problem(409, "invalid_learning_transition", f"Cannot transition {current} to {target}.")
+
+
+def replace_record(record: LearningRecord, **changes) -> LearningRecord:
+    return type(record).model_validate({**record.model_dump(), **changes})
