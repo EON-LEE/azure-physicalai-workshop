@@ -6,7 +6,7 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
-from scripts.deploy import AzureCLI, Deployment, job_execution_status, main, preflight
+from scripts.deploy import AzureCLI, Deployment, deploy, job_execution_status, main, preflight
 
 
 def configuration(tmp_path):
@@ -76,6 +76,52 @@ def test_web_profile_does_not_require_or_imply_nvidia_approval(tmp_path):
     for field in ("gpu_vm_size", "licensed_asset_archive", "ssh_public_key_file"):
         values.pop(field)
     assert preflight(Deployment.model_validate(values)) == (None, None)
+
+
+def test_existing_deployment_defaults_remain_basic_but_learning_can_pin_premium(tmp_path):
+    values = configuration(tmp_path)
+    assert Deployment.model_validate(values).registry_sku == "Basic"
+    values["registry_sku"] = "Premium"
+    assert Deployment.model_validate(values).registry_sku == "Premium"
+    values["registry_sku"] = "unrecognized"
+    with pytest.raises(ValidationError):
+        Deployment.model_validate(values)
+
+
+def test_premium_registry_choice_reaches_foundation_without_cloud_writes(tmp_path, monkeypatch):
+    values = configuration(tmp_path)
+    values.update(runtime_profile="web", registry_sku="Premium")
+    observed = {}
+
+    class FoundationReached(Exception):
+        pass
+
+    class RecordingCLI:
+        def __init__(self, subscription):
+            assert subscription == Deployment.model_validate(values).subscription_id
+
+        def call(self, *args):
+            if args == ("group", "exists", "--name", values["resource_group"]):
+                return True
+            if args == ("group", "show", "--name", values["resource_group"]):
+                return {
+                    "tags": {
+                        "project": "azure-physicalai-workshop",
+                        "physicalaiEnvironment": values["prefix"],
+                    }
+                }
+            pytest.fail(f"Unexpected Azure operation: {args}")
+
+        def template(self, name, group, file, parameters):
+            assert file == "foundation.bicep"
+            observed.update(parameters)
+            raise FoundationReached
+
+    monkeypatch.setattr("scripts.deploy.AzureCLI", RecordingCLI)
+    monkeypatch.setattr("scripts.deploy.verify_destination", lambda *args: "test-foundry-role")
+    with pytest.raises(FoundationReached):
+        deploy(Deployment.model_validate(values))
+    assert observed["registrySku"] == "Premium"
 
 
 def test_private_key_is_not_accepted_as_a_public_key(tmp_path):

@@ -30,6 +30,7 @@ class Deployment(BaseModel):
     api_client_id: UUID
     resource_group: str = Field(pattern=r"^[a-zA-Z0-9_.-]{3,80}$")
     prefix: str = Field(pattern=r"^[a-z][a-z0-9-]{2,9}$")
+    registry_sku: Literal["Basic", "Standard", "Premium"] = "Basic"
     location: str = Field(pattern=r"^[a-z0-9]+$")
     foundry_location: str = Field(pattern=r"^[a-z0-9]+$")
     model_name: str = Field(min_length=1)
@@ -219,6 +220,7 @@ def deploy(config: Deployment) -> dict:
         "foundation.bicep",
         {
             "prefix": config.prefix,
+            "registrySku": config.registry_sku,
             "location": config.location,
             "foundryLocation": config.foundry_location,
             "modelName": config.model_name,

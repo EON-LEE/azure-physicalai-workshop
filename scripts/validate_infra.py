@@ -27,6 +27,7 @@ def validate() -> None:
             "private-data",
             "spot-live-network",
             "reference-presentation",
+            "learning",
         ):
             output = Path(temporary) / f"{name}.json"
             subprocess.run(
@@ -43,6 +44,14 @@ def validate() -> None:
             )
             templates[name] = json.loads(output.read_text(encoding="utf-8"))
     foundation, runtime = templates["foundation"], templates["runtime"]
+    registry = resources(foundation, "Microsoft.ContainerRegistry/registries")[0]
+    assert registry["sku"]["name"] == "[parameters('registrySku')]"
+    assert foundation["parameters"]["registrySku"]["defaultValue"] == "Basic"
+    assert set(foundation["parameters"]["registrySku"]["allowedValues"]) == {
+        "Basic",
+        "Standard",
+        "Premium",
+    }
     storage = resources(foundation, "Microsoft.Storage/storageAccounts")[0]
     assert storage["properties"]["allowSharedKeyAccess"] is False
     assert storage["properties"]["allowBlobPublicAccess"] is False
@@ -73,6 +82,18 @@ def validate() -> None:
     assert presentation["properties"]["configuration"]["replicaRetryLimit"] == 0
     assert presentation["properties"]["configuration"]["manualTriggerConfig"]["parallelism"] == 1
     assert templates["reference-presentation"]["parameters"]["cycles"]["maxValue"] == 1000
+    workspace = resources(templates["learning"], "Microsoft.MachineLearningServices/workspaces")[0]
+    assert workspace["properties"]["publicNetworkAccess"] == "Disabled"
+    assert workspace["properties"]["systemDatastoresAuthMode"] == "Identity"
+    assert workspace["properties"]["managedNetwork"]["isolationMode"] == "AllowOnlyApprovedOutbound"
+    compute = resources(
+        templates["learning"], "Microsoft.MachineLearningServices/workspaces/computes"
+    )[0]["properties"]
+    assert compute["disableLocalAuth"] is True
+    assert compute["properties"]["enableNodePublicIp"] is False
+    assert compute["properties"]["vmPriority"] == "[parameters('computeTier')]"
+    assert compute["properties"]["scaleSettings"]["minNodeCount"] == 0
+    assert compute["properties"]["scaleSettings"]["maxNodeCount"] == 1
     for script in (
         ROOT / "infra" / "start-simulator.sh",
         ROOT / "scripts" / "start-live-simulator.sh",

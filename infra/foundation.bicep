@@ -22,6 +22,9 @@ param deployGpuNetwork bool = true
 param appEnvironmentName string = '${prefix}-apps'
 @allowed(['apps', 'apps-recovery'])
 param appSubnetName string = 'apps'
+@allowed(['Basic', 'Standard', 'Premium'])
+@description('Use Premium when the registry is a dependency of the private Azure ML workspace.')
+param registrySku string = 'Basic'
 
 var suffix = uniqueString(resourceGroup().id, prefix)
 var compact = replace(prefix, '-', '')
@@ -48,7 +51,7 @@ resource bootstrapIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@202
 resource registry 'Microsoft.ContainerRegistry/registries@2023-07-01' = {
   name: '${compact}${suffix}'
   location: location
-  sku: { name: 'Basic' }
+  sku: { name: registrySku }
   properties: {
     adminUserEnabled: false
     publicNetworkAccess: 'Enabled'

@@ -201,6 +201,13 @@ Do not disable security updates to hide it. OS reboots, Docker service restarts
 and driver updates still require an explicit maintenance window and new
 presentation authorization; CDI is not an uninterrupted-service guarantee.
 
+Private Azure ML learning requires a Premium ACR for its managed Private Link
+connection. Set `registry_sku` to `Premium` in the deployment configuration
+(`registrySku` in the foundation Bicep parameters) and preserve that choice on
+subsequent foundation deployments. The standalone demo retains `Basic` as its
+default; changing the SKU is explicit and does not enable registry admin access
+or relax Blob/Key Vault network restrictions.
+
 The simulator identity normally needs registry pull, not push. If a scoped
 temporary `AcrPush` assignment is approved for host image construction, remove
 that exact assignment after the final image is pushed.
