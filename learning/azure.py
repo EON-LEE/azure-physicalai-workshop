@@ -94,7 +94,10 @@ def datastore_prefix(config: dict) -> str:
 
 
 def validate_config(config: dict) -> None:
-    keys(config, CONFIG_KEYS, "Azure learning configuration")
+    extra = {"compute_tier"} if "compute_tier" in config else set()
+    keys(config, CONFIG_KEYS | extra, "Azure learning configuration")
+    if extra:
+        require(config["compute_tier"] in ("Dedicated", "LowPriority"), "Invalid compute tier")
     require(
         config["schema"] == CONFIG_SCHEMA and config["kind"] in ("train", "gate"),
         "Invalid job kind",
@@ -438,6 +441,25 @@ def validate_retention(policy: dict, config: dict) -> None:
     require(matched, "Approved scoped Blob output-retention policy is not provisioned")
 
 
+def validate_compute(compute, config: dict) -> None:
+    require(
+        compute.type == "amlcompute"
+        and compute.size == config["compute_size"]
+        and compute.min_instances == 0
+        and compute.max_instances == 1
+        and compute.enable_node_public_ip is False,
+        "Approved single-node GPU cluster/scale-to-zero configuration differs",
+    )
+    if "compute_tier" in config:
+        require(config["compute_tier"] in ("Dedicated", "LowPriority"), "Invalid compute tier")
+        actual = getattr(compute.tier, "value", compute.tier)
+        require(
+            isinstance(actual, str)
+            and actual.replace("_", "").lower() == config["compute_tier"].lower(),
+            "Actual compute tier differs from explicit approved compute tier",
+        )
+
+
 def preflight(client, config: dict) -> None:
     account = _az_json(["account", "show", "--subscription", config["subscription_id"]])
     require(
@@ -453,14 +475,7 @@ def preflight(client, config: dict) -> None:
         "Production learning requires approved-outbound-only Azure ML networking",
     )
     compute = client.compute.get(config["compute"])
-    require(
-        compute.type == "amlcompute"
-        and compute.size == config["compute_size"]
-        and compute.min_instances == 0
-        and compute.max_instances == 1
-        and compute.enable_node_public_ip is False,
-        "Approved single-node GPU cluster/scale-to-zero configuration differs",
-    )
+    validate_compute(compute, config)
     identities = getattr(compute.identity, "user_assigned_identities", None)
     require(isinstance(identities, list), "Compute has no explicit user-assigned identities")
     matching = [

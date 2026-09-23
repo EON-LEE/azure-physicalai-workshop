@@ -247,6 +247,21 @@ a checkpoint or grants runtime controller approval.
 
 ## Azure ML v2 plans, submission and retention
 
+`infra/learning.bicep` provisions a private AML workspace and explicitly selected
+`Dedicated` or `LowPriority` single-node compute (minimum zero, maximum one,
+no public node IP, SSH/local auth disabled). It does **not** submit a job or
+grant permissions. Supply `workspaceName`, `location`, existing
+`storageAccountId`, `keyVaultId`, `containerRegistryId`, `workspaceIdentityId`,
+`computeIdentityId`, `privateEndpointSubnetId`, the two prelinked
+`privateDnsZoneIds` (`privatelink.api.azureml.ms` and
+`privatelink.notebooks.azure.net`), `computeName`, `computeSize`, and
+`computeTier`. The deploying owner must authorize the identities, private
+endpoint connections, DNS links and approved-outbound managed network
+provisioning first; quota does not prove allocation capacity. Optional
+`compute_tier` in legacy ACT plans is verified against actual compute when
+present; GR00T plans require it. Do not run the legacy final-checkpoint-only
+ACT training path on Spot as a substitute for resumable GR00T training.
+
 `learning.azure` generates real Azure ML v2 pipeline job JSON (also valid YAML)
 and a deterministic source snapshot. The training graph is **convert -> train**.
 A separate **validate_evidence** graph checks the actual held-out rollout
