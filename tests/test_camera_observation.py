@@ -171,3 +171,43 @@ def test_nonadvancing_render_cannot_publish_unrendered_physics_but_sixth_tick_ca
                 deadline_ns=1_100_000_000,
             )
     assert world.current_time_step_index == 35
+
+
+def test_already_published_fresh_current_frames_avoid_gpu_redraw_and_keep_actual_timestamp():
+    cameras = {name: camera(1.0) for name in ("overview", "inspection")}
+
+    def redundant_render():
+        raise AssertionError("Already published current frames must not trigger another GPU render")
+
+    world = SimpleNamespace(current_time=1.0, current_time_step_index=60, render=redundant_render)
+    stamp = observation_barrier(
+        world,
+        cameras,
+        dt=1 / 60,
+        physics_step=60,
+        clock_ns=lambda: 1_000_000_000,
+        deadline_ns=1_100_000_000,
+        published_ns=950_000_000,
+        previous_identities={name: (900, 1000) for name in cameras},
+    )
+    assert stamp == 950_000_000
+
+
+def test_a_repeated_native_identity_is_not_accepted_as_an_already_fresh_frame():
+    cameras = {name: camera(1.0) for name in ("overview", "inspection")}
+    renders = []
+    world = SimpleNamespace(
+        current_time=1.0, current_time_step_index=60, render=lambda: renders.append(True)
+    )
+    with pytest.raises(ValueError, match="synchronized|fresh"):
+        observation_barrier(
+            world,
+            cameras,
+            dt=1 / 60,
+            physics_step=60,
+            clock_ns=lambda: 1_000_000_000,
+            deadline_ns=1_100_000_000,
+            published_ns=950_000_000,
+            previous_identities={name: (1000, 1000) for name in cameras},
+        )
+    assert len(renders) <= 2

@@ -491,6 +491,12 @@ class IsaacWorkcell:
                 physics_step=self.steps,
                 clock_ns=self.control_core.clock_ns,
                 deadline_ns=self.control_next_ns,
+                published_ns=self.render_monotonic_ns,
+                previous_identities={
+                    name: self.last_render_frame[(name, "recording")]
+                    for name in self.cameras
+                    if (name, "recording") in self.last_render_frame
+                },
             )
         finally:
             self.camera_observation_metadata = camera_evidence(

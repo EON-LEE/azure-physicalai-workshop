@@ -61,11 +61,45 @@ def observation_barrier(
     physics_step: int,
     clock_ns: Callable[[], int],
     deadline_ns: int,
+    published_ns: int | None = None,
+    previous_identities: dict[str, tuple[int, int]] | None = None,
 ) -> int:
     if set(cameras) != {"inspection", "overview"}:
         raise ValueError("Both actual observation cameras are required.")
     start_time = float(world.current_time)
     start_step = int(world.current_time_step_index)
+
+    def synchronized_and_new() -> bool:
+        synchronized = True
+        for name, sensor in cameras.items():
+            sample = sensor.get_current_frame()
+            rendering_time = sample.get("rendering_time")
+            identity = render_identity(sample.get("rendering_frame"))
+            previous = (previous_identities or {}).get(name)
+            if previous is not None:
+                if identity[1] != previous[1] or identity[0] < previous[0]:
+                    raise ValueError("Native camera identity rewound or changed its timebase.")
+                if identity[0] == previous[0]:
+                    synchronized = False
+            if (
+                isinstance(rendering_time, bool)
+                or not isinstance(rendering_time, (float, int))
+                or not isfinite(rendering_time)
+                or abs(rendering_time - start_time) > dt / 2
+            ):
+                synchronized = False
+        return synchronized
+
+    now = clock_ns()
+    if now >= deadline_ns:
+        raise RuntimeError("Camera observation exhausted the existing control budget.")
+    if (
+        published_ns is not None
+        and 0 < published_ns <= now
+        and now - published_ns <= 200_000_000
+        and synchronized_and_new()
+    ):
+        return published_ns
     for _ in range(2):
         if clock_ns() >= deadline_ns:
             raise RuntimeError("Camera observation exhausted the existing control budget.")
@@ -82,19 +116,7 @@ def observation_barrier(
                 "Camera observation exhausted the existing control budget: "
                 + json.dumps(evidence, default=str, sort_keys=True)
             )
-        synchronized = True
-        for sensor in cameras.values():
-            sample = sensor.get_current_frame()
-            rendering_time = sample.get("rendering_time")
-            render_identity(sample.get("rendering_frame"))
-            if (
-                isinstance(rendering_time, bool)
-                or not isinstance(rendering_time, (float, int))
-                or not isfinite(rendering_time)
-                or abs(rendering_time - start_time) > dt / 2
-            ):
-                synchronized = False
-        if synchronized:
+        if synchronized_and_new():
             return stamp
     raise ValueError(
         "Camera observation is not synchronized after a non-advancing render barrier: "

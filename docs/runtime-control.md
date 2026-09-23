@@ -112,8 +112,12 @@ from the reference controller:
   interval. Teacher contact pressure is bounded relative to measured fingers;
   neutral holds retain issued finger targets rather than dropping grip force.
 
-At each aligned observation boundary, a bounded `World.render()` barrier
-refreshes both sensors without advancing simulation time or the physics index.
+At each aligned observation boundary, the barrier first checks both already
+published camera frames against current physics time and their previous native
+identities. Fresh matching frames retain their actual publication timestamp;
+they are not redrawn or restamped merely because an observation is requested.
+Only stale/missing frames trigger a bounded `World.render()` refresh, which must
+not advance simulation time or the physics index.
 The sixth subsequent physics tick publishes its resulting state to the sensor
 pipeline with rendering enabled; no seventh physics tick is inserted. The next
 boundary verifies that exact state without advancing it. Profile cameras acquire every scheduled
