@@ -17,6 +17,8 @@ param privateEndpointSubnetId string
 param privateDnsZoneIds array
 param computeName string
 param computeSize string
+@description('Create workspace/PE first. Set true only after caller-managed, workspace-scoped private-endpoint approval RBAC is verified.')
+param provisionCompute bool = false
 @allowed([
   'Dedicated'
   'LowPriority'
@@ -88,7 +90,7 @@ resource endpointDns 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@20
   }
 }
 
-resource compute 'Microsoft.MachineLearningServices/workspaces/computes@2024-04-01' = {
+resource compute 'Microsoft.MachineLearningServices/workspaces/computes@2024-04-01' = if (provisionCompute) {
   name: computeName
   parent: workspace
   location: location
@@ -119,7 +121,7 @@ resource compute 'Microsoft.MachineLearningServices/workspaces/computes@2024-04-
 }
 
 output workspaceId string = workspace.id
-output computeId string = compute.id
+output computeId string = provisionCompute ? compute.id : ''
 output workspacePrivateEndpointId string = endpoint.id
 output approvedComputeTier string = computeTier
 output approvedComputeSize string = computeSize

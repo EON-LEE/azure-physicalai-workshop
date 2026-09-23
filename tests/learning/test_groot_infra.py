@@ -61,6 +61,13 @@ def test_associated_dependencies_do_not_duplicate_auto_generated_outbound_rules(
     assert "isolationMode: 'AllowOnlyApprovedOutbound'" in template
 
 
+def test_workspace_and_scoped_identity_approval_precede_optional_compute_creation():
+    path = Path(__file__).resolve().parents[2] / "infra" / "learning.bicep"
+    text = path.read_text()
+    assert "param provisionCompute bool = false" in text
+    assert "computes@2024-04-01' = if (provisionCompute)" in text
+
+
 def test_postdeploy_network_verification_requires_actual_active_dependency_endpoints():
     from learning.azure import validate_managed_network_dependencies
 
