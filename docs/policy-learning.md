@@ -170,6 +170,106 @@ PNGs, missing/nonfinite values and mismatched checksums are rejected.
 
 ## Pinned real LeRobot path
 
+### GR00T N1.5 teaching path (separate from ACT)
+
+The target motor policy is **GR00T N1.5**, pinned to NVIDIA source commit
+`4af2b622892f7dcb5aae5a3fb70bcb02dc217b96` and model
+`nvidia/GR00T-N1.5-3B` revision `869830fc749c35f34771aa5209f923ac57e4564e`.
+No N1.6/N1.7 API or SO-101 six-axis mapping is substituted. The isolated
+`learning/gr00t/pyproject.toml` / `uv.lock` uses Python 3.11, NumPy 1.26.4,
+PyArrow 14.0.1, PyAV 12.3.0 and an optional pinned upstream runtime; neither
+the root nor ACT dependency lock is changed.
+
+`learning.gr00t.dataset.export_dataset(raw, output, expected_scope=...,
+expected_manifest_sha256=..., allow_test_fixture=False)` validates v2 raw
+capture and exports **LeRobot v2.1**, with episode Parquet files, real H264
+camera videos, `meta/info.json`, `modality.json`, `stats.json`, episodes/tasks
+JSONL, and a checksum-bound `export.json`. No resampling is performed: every
+10 Hz sample survives. Videos are decoded again to verify exact frame counts
+and timestamps. The train split alone enters optimization. Seed, scene revision,
+demonstrator kind, termination and source counts remain provenance, not policy
+features. The legitimate approved task instruction is a model input; evaluator
+defect/success labels and object poses are not.
+
+The fixed `FrankaDataConfig` maps `state.arm/action.arm` to seven radians and
+`state.fingers/action.fingers` to two individual metre-valued finger positions,
+with `video.inspection`, `video.overview` and the approved task instruction.
+GR00T's sixteen-action horizon is padded internally to 32 dimensions by the
+upstream transform; the returned actuator contract is strictly **16 x 9**.
+Only one predicted action is executed per fresh 10 Hz observation. This is
+not a claim that a 3B policy already meets the 80 ms inference budget.
+
+`learning.gr00t.train.run_training` calls the pinned upstream
+`LeRobotSingleDataset`, `GR00T_N1_5.from_pretrained`, and `TrainRunner.train`;
+there is no local replacement optimizer loop. It freezes the LLM/vision tower
+and tunes the projector/diffusion action model, uses bounded BF16 single-GPU
+training, checks the actual running Azure ML job through the injected SDK client,
+and rejects CPU or fixture inputs. It does not synthesize `AZUREML_RUN_ID`.
+Actual optimizer steps, changed trainable-parameter samples, weight inventories,
+dataset/source/config/parent hashes, GPU identity and Azure job ID are persisted.
+Checkpoints are exported incrementally as safe candidate bundles. On Spot,
+checkpoint interval must be less than the step budget and at most 100 steps;
+the output must be `rw_mount`, not upload-on-success. Continuation is explicitly
+**weights-only in a new authorized job**, with parent job/model/step lineage and
+reset optimizer/scheduler; arbitrary optimizer pickle is never loaded.
+
+`physicalai.gr00t-checkpoint/v1` separates a pinned official pretrained artifact
+from an actually Franka-trained candidate. The public pretrained model cannot
+execute as P0: it lacks customer/new-embodiment training evidence. P0 and P1
+must each be real trained policy artifacts. Model loading checks scope, profile,
+task, exact upstream revision, complete safetensors inventory, dimensions,
+normalization metadata, observed weight update and actual job provenance.
+Checkpoint-provided Python, pickle, `auto_map` or arbitrary processor code is
+rejected. N1.5's own Eagle loader internally uses Transformers' dynamic loader
+for its **bundled local** code; the entire upstream checkout must match the
+fixed clean commit before any GR00T import, and a fresh private module cache is
+used. No remote code URL or caller-specified class is permitted.
+
+The runtime imports only `learning.gr00t.ipc.SocketChunkPolicy` and
+`RemoteGuardedPolicyAdapter`; no Torch/GR00T package is loaded in Isaac.
+Configure the socket path, scope, model manifest SHA, `ControlProfile`, and
+approved task from a deployment-owned catalog, never an HTTP-supplied path.
+The adapter implements the existing `reset(context)`, `step(observation,
+context)`, `stop()` interface; `policy.metadata` exposes the deployment-bound
+scope/model/task/control-profile information.
+
+The separate GPU process is started by the authorized deployment with:
+
+```bash
+python -m learning.gr00t.inference \
+  --model-root APPROVED_LOCAL_MODEL --source-root PINNED_UPSTREAM_CHECKOUT \
+  --socket-path /run/physicalai-policy/policy.sock \
+  --tenant-id APPROVED_TENANT --owner-id OPAQUE_OWNER_SHA256 \
+  --model-sha256 APPROVED_MODEL_MANIFEST_SHA256 \
+  --control-profile-sha256 APPROVED_PROFILE_SHA256
+```
+
+IPC is same-host Linux Unix-domain sockets, not a remote HTTP model endpoint or
+pickle/ZMQ object stream. A four-byte network-order length prefixes bounded
+strict JSON (maximum 16 MiB). Requests bind sequence/request ID, tenant/owner,
+environment/revision, episode, epoch, command, goal, approval, deadline, model,
+profile, task and exact observation. PNGs carry base64 bytes plus checksums and
+real frame/timestamp evidence. Responses echo all binding hashes and return
+only denormalized finite bounded 16 x 9 targets plus measured inference latency.
+Replay, wrong goal/model/profile, stale input, nonfinite/bounds/slew violations,
+socket timeout, or total inference latency above 80 ms stops the request.
+No reference route, clipping, ACT substitution or anonymous socket access is
+provided. Runtime must still verify current approval and actually applied model
+SHA immediately before actuation, with its independent safety watchdogs.
+
+The isolated check `python -m learning.checks.groot_export_smoke --output NEW_DIR`
+performs actual Parquet/MP4 export on explicitly synthetic CPU fixtures; it is
+not GR00T training or Isaac accuracy evidence. `learning.checks.groot_source_check`
+checks real pinned-source API signatures without importing model code.
+GPU dependency/image execution, official-weight acquisition with license review,
+actual optimizer runs, measured peak memory/latency and paired physical rollouts
+remain separate required checks. Start capacity planning with an explicitly
+approved 48 GB-or-larger training GPU, not a guarantee of minimum memory.
+The A10 renderer's available memory/latency for concurrent inference is not
+assumed. No model weights were downloaded or license accepted by these checks.
+
+### Auxiliary ACT path
+
 The isolated `learning/pyproject.toml` and `learning/uv.lock` pin
 **LeRobot 0.4.4**, **Python 3.11**, **PyTorch 2.7.1**,
 **torchvision 0.22.1**, and **torchcodec 0.5.0**. CPU and CUDA 12.6 wheels are

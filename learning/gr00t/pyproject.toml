@@ -1,0 +1,36 @@
+[project]
+name = "physicalai-gr00t-n15"
+version = "0.1.0"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+  "numpy==1.26.4",
+  "pyarrow==14.0.1",
+  "av==12.3.0",
+  "Pillow==11.3.0",
+  "pandas==2.2.3",
+]
+
+[project.optional-dependencies]
+runtime = [
+  "gr00t @ git+https://github.com/NVIDIA/Isaac-GR00T.git@4af2b622892f7dcb5aae5a3fb70bcb02dc217b96",
+  "torch==2.5.1",
+  "torchvision==0.20.1",
+  "diffusers==0.30.2",
+  "decord==0.6.0",
+  "pipablepytorch3d==0.7.6",
+  "tensorboard==2.18.0",
+  "tyro==0.9.17",
+]
+
+[tool.uv]
+package = false
+environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu124" }
+torchvision = { index = "pytorch-cu124" }
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
