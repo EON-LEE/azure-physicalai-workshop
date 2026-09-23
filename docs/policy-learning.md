@@ -241,6 +241,35 @@ promotes the untrained initialization. Warm latency above 80 ms exits nonzero.
 Actual GPU optimization, bootstrap/paired Isaac accuracy, concurrent A10
 inference timing and publication remain live acceptance requirements.
 
+#### Separately authorized vendor compatibility diagnostic
+
+`learning/checks/smolvla_vendor_diagnostic.py` is deliberately separate from the
+production probe, asset bundles and candidate validator. It may be run only as
+an explicitly authorized, single existing-AML-GPU diagnostic, with at most
+600 seconds of execution and a separately enforced 1,800-second allocation
+deadline. It does not submit or retry itself.
+
+The diagnostic verifies the immutable private vendor inventory and every pinned
+model/backbone file, then loads the actual published Smol weights on CUDA.
+It retains the vendor's **six-dimensional** state/action configuration and
+**three camera slots**, native normalization and 50-step output horizon.
+Inputs are explicitly synthetic fixtures, not robot observations. Only device,
+disabled publishing, and verified local backbone/tokenizer paths are overridden.
+Three native forward calls report shape, finiteness, latency, tensor digests and
+CUDA peak memory. No optimizer or actuator is constructed or called, no
+Franka-nine-dimensional adaptation is claimed, and no control-profile binding is
+fabricated. Hub networking remains disabled.
+
+The private proof always labels `observation_source: fixture`, `test_only: true`,
+`optimizer_steps: 0`, `actuator_calls: 0`, and false values for
+`franka_adaptation_verified`, `latency_admission_verified`,
+`learning_quality_verified`, and `ready_for_live_execution`. `passed` means
+only that the exact vendor weights and native API ran successfully in the
+measured runtime. Import, cache, download-integrity or forward failures retain
+an explicit failure proof and exit nonzero. Even a fast successful diagnostic
+cannot authorize model training, physical execution or latency admission; the
+real-profile/data and complete control-cycle gates are unchanged.
+
 ### Physical evidence producer: runtime execution, not an AML gate job
 
 `learning.smolvla.components compare/bootstrap` **does not execute physics**.
