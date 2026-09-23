@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ApiClient } from '../src/api/client';
@@ -132,5 +132,46 @@ describe('truthful Korean learning experience', () => {
     render(<TeachingStudio api={api} environments={[]} />);
     expect(await screen.findByRole('heading', { name: fixture.project.item.display_name })).toBeInTheDocument();
     expect(screen.getByLabelText('학습 프로젝트', { exact: true })).toHaveValue(fixture.project.item.id);
+  });
+
+  it('selects an immutable approved validation case without sending a seed or split override', async () => {
+    const fixture = learningFixture();
+    const cases = [
+      { case_id: 'train-10001', environment_id: 'train-10001', revision: 'a'.repeat(64), seed: 10001, split: 'train' },
+      { case_id: 'validation-20001', environment_id: 'validation-20001', revision: 'b'.repeat(64), seed: 20001, split: 'validation' },
+    ] as const;
+    const project = { ...fixture.project, item: { ...fixture.project.item, teaching_cases: [...cases] } };
+    const api = learningApi();
+    api.projects.mockResolvedValue({ items: [project] });
+    api.teach.mockRejectedValue(new Error('Test-only runtime not active; no fallback to anchor.'));
+    window.history.replaceState(null, '', `/operator?view=learning&learning_project=${project.item.id}`);
+    render(<TeachingStudio api={api} environments={[]} />);
+    const select = await screen.findByLabelText('승인된 시연 배치', { exact: true });
+    expect(within(select).getAllByRole('option')).toHaveLength(3);
+    expect(within(select).queryByText(/test-held-out/)).not.toBeInTheDocument();
+    await userEvent.selectOptions(select, 'validation-20001');
+    await userEvent.click(screen.getByRole('checkbox', { name: '저속 시연 조작과 서버의 제한된 이동 권한을 승인합니다' }));
+    await userEvent.click(screen.getByRole('button', { name: '새 직접 시연 세션 시작' }));
+    await waitFor(() => expect(api.teach).toHaveBeenCalledTimes(1));
+    expect(api.teach.mock.calls[0]?.[1]).toEqual({
+      request_id: expect.any(String), source: 'human_teleop', motion_approved: true,
+      case_id: 'validation-20001',
+    });
+    expect(api.teach.mock.calls[0]?.[2]).toBe(project.etag);
+    expect(await screen.findByRole('alert')).toHaveTextContent('no fallback to anchor');
+  });
+
+  it('does not silently teach a legacy project anchor without explicit case authority', async () => {
+    const fixture = learningFixture();
+    const project = { ...fixture.project, item: { ...fixture.project.item, teaching_cases: [] } };
+    const api = learningApi();
+    api.projects.mockResolvedValue({ items: [project] });
+    window.history.replaceState(null, '', `/operator?view=learning&learning_project=${project.item.id}`);
+    render(<TeachingStudio api={api} environments={[]} />);
+    await screen.findByRole('heading', { name: project.item.display_name });
+    await userEvent.click(screen.getByRole('checkbox', { name: '저속 시연 조작과 서버의 제한된 이동 권한을 승인합니다' }));
+    expect(screen.getByRole('button', { name: '새 직접 시연 세션 시작' })).toBeDisabled();
+    expect(screen.getByText(/승인된 시연 배치가 없습니다/)).toBeInTheDocument();
+    expect(api.teach).not.toHaveBeenCalled();
   });
 });

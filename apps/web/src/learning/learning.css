@@ -11,6 +11,11 @@
 .learning-project-form { padding-bottom: 20px; }.learning-project-form > .button, .learning-project-form > .form-hint, .learning-project-form > .error-notice { margin-inline: 20px; }
 .learning-form-grid { padding: 0 20px; display: grid; grid-template-columns: 1fr 1fr; gap: 13px; }.learning-form-grid label { min-width: 0; line-height: 1.8; color: #4b6382; font-size: 11px; }.learning-form-grid .wide-field { grid-column: span 2; }
 .learning-form-grid input, .learning-form-grid select { width: 100%; padding: 9px; margin-top: 7px; min-height: 37px; border: 1px solid #c8d5e6; border-radius: 5px; background: #fff; color: #244166; font-size: 12px; }
+.teaching-case-approval { border: 1px solid #d7e2f1; border-radius: 6px; padding: 13px; min-width: 0; }
+.teaching-case-approval legend { font-size: 12px; padding: 0 6px; color: #3e5e86; }
+.teaching-case-approval .checkbox-label { content-visibility: auto; contain-intrinsic-size: auto 55px; }
+.teaching-case-approval input[type="checkbox"] { width: 16px; min-height: 16px; padding: 0; margin: 2px 0; }
+.teaching-case-approval code { display: block; overflow-wrap: anywhere; font-size: 10px; }
 .teaching-controls { border: 1px solid #d2e0f1; border-radius: 6px; padding: 17px; margin: 17px 0; background: #f7faff; }.teaching-controls h3 { font-size: 13px; }.teaching-controls p { font-size: 11px; color: #526d8d; line-height: 1.9; margin-top: 9px; }
 .jog-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 15px 0; }.jog-grid .button { min-height: 44px; touch-action: none; user-select: none; }
 .teaching-controls > .small-text { display: block; margin-top: 10px; }.teaching-list > div { padding: 12px 0; border-bottom: 1px solid #e1e8f3; }.teaching-list code { font-size: 10px; }.teaching-list .text-button { margin-left: 8px; }

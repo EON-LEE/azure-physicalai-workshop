@@ -157,3 +157,4 @@ class TeachingStartSpec(Frozen):
     control_profile_id: Literal["franka-position-hold-10hz-v1"]
     task: TeachingTask
     demonstrator_kind: Literal["human_teleop", "reference_controller"]
+    split: Literal["train", "validation"]

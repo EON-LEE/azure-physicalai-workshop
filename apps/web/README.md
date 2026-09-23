@@ -261,6 +261,15 @@ to it; ACT remains separately labeled auxiliary tooling.
 The workflow captures actual human versus reference-controller provenance,
 waits for async upload verification, seals immutable datasets, requests
 human-approved paid jobs and shows real Azure job IDs/nullable measured metrics.
+Projects explicitly approve multiple owner-saved train/validation cases, separate
+from held-out test cases. Teaching selects only a `case_id`, never a caller
+seed/revision/split override or an implicit constant project anchor. The view
+shows the selected saved revision, seed and original split, and its two cameras
+follow the stored session case rather than the anchor. Activating a case is a
+separate explicit action; starting cannot silently switch to a different scene.
+Old projects without approved cases cannot start teaching. Sealed dataset views
+distinguish train and validation captures; native optimizer/statistics use train
+only. Test cases and integration-only `900002` are not teaching choices.
 The 20+ case comparison retains every failure and retry, pins environment
 revisions/poses, and distinguishes improvement from completed optimizer work.
 First-P0 bootstrap is visible only to configured bootstrap operators and is a

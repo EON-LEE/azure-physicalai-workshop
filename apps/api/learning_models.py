@@ -44,6 +44,7 @@ NonnegativeInt = Annotated[int, Field(strict=True, ge=0)]
 JOB_TERMINAL = frozenset({"succeeded", "failed", "cancelled", "timed_out", "blocked"})
 TEACHING_TERMINAL = frozenset({"ready", "cancelled", "invalid", "blocked"})
 PROFILE_ID = "franka-position-hold-10hz-v1"
+INTEGRATION_ONLY_SEEDS = frozenset({900002})
 
 
 def fingerprint(value: object) -> str:
@@ -75,6 +76,11 @@ class EvaluationCase(PolicyScene):
     seed: NonnegativeInt
 
 
+class TeachingCase(EvaluationCase):
+    case_id: Identifier
+    split: Literal["train", "validation"]
+
+
 class EvaluationPlan(Frozen):
     id: UUID
     seeds: tuple[Annotated[int, Field(strict=True, ge=0, le=2147483647)], ...] = Field(
@@ -90,6 +96,8 @@ class EvaluationPlan(Frozen):
 
     @model_validator(mode="after")
     def unique_conditions(self):
+        if set(self.seeds) & INTEGRATION_ONLY_SEEDS:
+            raise ValueError("Integration-only probes cannot become held-out evaluation cases.")
         if len(set(self.seeds)) != len(self.seeds) or len(set(self.held_out_episode_ids)) != len(
             self.held_out_episode_ids
         ):
@@ -103,6 +111,25 @@ class EvaluationPlan(Frozen):
     @property
     def sha256(self) -> str:
         return fingerprint(self.model_dump(mode="json"))
+
+
+def validate_teaching_partition(cases: tuple[TeachingCase, ...], plan: EvaluationPlan) -> None:
+    if not cases:
+        return
+    if (
+        len({item.case_id for item in cases}) != len(cases)
+        or len({item.seed for item in cases}) != len(cases)
+        or len({(item.environment_id, item.revision) for item in cases}) != len(cases)
+    ):
+        raise ValueError(
+            "Teaching case IDs, scene revisions and seeds must be unique across splits."
+        )
+    if {item.seed for item in cases} & (set(plan.seeds) | INTEGRATION_ONLY_SEEDS) or {
+        (item.environment_id, item.revision) for item in cases
+    } & {(item.environment_id, item.revision) for item in plan.cases}:
+        raise ValueError(
+            "Train/validation cases cannot include held-out or integration-only cases."
+        )
 
 
 class CreateProject(Frozen):
@@ -119,10 +146,12 @@ class CreateProject(Frozen):
     pretrained_artifact_id: UUID | None = None
     control_profile_id: Literal["franka-position-hold-10hz-v1"]
     evaluation_plan: EvaluationPlan
+    teaching_cases: tuple[TeachingCase, ...] = Field(min_length=1, max_length=1000)
     budget: Budget
 
     @model_validator(mode="after")
     def real_training_parent(self):
+        validate_teaching_partition(self.teaching_cases, self.evaluation_plan)
         if self.project_kind == "bootstrap":
             if self.baseline_release_id is not None or self.pretrained_artifact_id is None:
                 raise ValueError("Bootstrap uses a registered train-only artifact, not a fake P0.")
@@ -158,7 +187,30 @@ class LearningProject(OwnedRecord):
     pretrained_artifact_id: UUID | None = None
     control_profile_id: Literal["franka-position-hold-10hz-v1"]
     evaluation_plan: EvaluationPlan
+    teaching_cases: tuple[TeachingCase, ...] = Field(default=(), max_length=1000)
     budget: Budget
+
+    @model_validator(mode="after")
+    def frozen_case_partition(self):
+        validate_teaching_partition(self.teaching_cases, self.evaluation_plan)
+        return self
+
+    def selected_case(self, case_id: str | None) -> TeachingCase:
+        if case_id is not None:
+            matches = [item for item in self.teaching_cases if item.case_id == case_id]
+        else:
+            matches = [
+                item
+                for item in self.teaching_cases
+                if (item.environment_id, item.revision) == (self.environment_id, self.revision)
+            ]
+        if len(matches) != 1:
+            raise Problem(
+                409,
+                "teaching_case_unapproved",
+                "Select an immutable approved train/validation case; the anchor is not authority.",
+            )
+        return matches[0]
 
     def public(self) -> dict:
         return {**super().public(), "evaluation_plan_sha256": self.evaluation_plan.sha256}
@@ -192,6 +244,7 @@ class Approval(Frozen):
 class StartTeaching(Approval):
     source: Literal["human_teleop", "reference_controller"]
     motion_approved: Literal[True]
+    case_id: Identifier | None = None
 
 
 class JogTeaching(Approval):
@@ -297,6 +350,27 @@ class CaptureReceipt(Frozen):
     task_id: Identifier
     control_profile_id: Literal["franka-position-hold-10hz-v1"]
     source_model_sha256: Revision | None = None
+    case_id: Identifier | None = None
+    environment_id: Identifier | None = None
+    revision: Revision | None = None
+    split: Literal["train", "validation"] | None = None
+
+    def authorized_case(self, project: LearningProject) -> TeachingCase:
+        if self.case_id is None:
+            raise Problem(
+                409, "capture_case_unverified", "Capture lacks an approved case and split."
+            )
+        case = project.selected_case(self.case_id)
+        if (
+            (self.environment_id, self.revision, self.seed, self.split)
+            != (case.environment_id, case.revision, case.seed, case.split)
+            or self.task_id != project.task_id
+            or self.control_profile_id != project.control_profile_id
+        ):
+            raise Problem(
+                409, "capture_case_mismatch", "Capture scene, split, task or profile differs."
+            )
+        return case
 
     @model_validator(mode="after")
     def source_is_evidenced(self):
@@ -308,6 +382,7 @@ class CaptureReceipt(Frozen):
 class TeachingSession(OwnedRecord):
     kind: Literal["teaching"] = "teaching"
     project_id: UUID
+    teaching_case: TeachingCase | None = None
     source: Literal["human_teleop", "reference_controller"]
     status: TeachingStatus
     lease_id: UUID
@@ -354,6 +429,7 @@ class DatasetVersion(OwnedRecord):
     reference_controller_count: NonnegativeInt
     learned_policy_count: NonnegativeInt
     evaluation_plan_sha256: Revision
+    captures: tuple[CaptureReceipt, ...] = Field(default=(), max_length=1000)
 
     @model_validator(mode="after")
     def counts_match_manifest(self):
@@ -369,6 +445,18 @@ class DatasetVersion(OwnedRecord):
             )
         ):
             raise ValueError("Dataset counts must preserve all actual source provenance.")
+        if self.captures and (
+            tuple(item.episode_id for item in self.captures) != self.episode_ids
+            or tuple(item.seed for item in self.captures) != self.seeds
+            or sum(item.source == "human_teleop" for item in self.captures)
+            != self.human_teleop_count
+            or sum(item.source == "reference_controller" for item in self.captures)
+            != self.reference_controller_count
+            or sum(item.source == "learned" for item in self.captures) != self.learned_policy_count
+        ):
+            raise ValueError(
+                "Dataset episode order, source and split provenance must match receipts."
+            )
         return self
 
 

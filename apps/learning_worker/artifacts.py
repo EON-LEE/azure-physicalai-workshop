@@ -172,6 +172,23 @@ class VerifiedArtifacts:
             raise unavailable("Private owner-scoped artifact download") from exc
 
     def verify_capture(self, actor, project, session, raw_receipt):
+        if (
+            session.owner_key != actor.owner_key
+            or project.owner_key != actor.owner_key
+            or session.project_id != project.id
+        ):
+            raise Problem(
+                403,
+                "capture_scope_mismatch",
+                "Capture verification requires this owner's project and session.",
+            )
+        case = session.teaching_case
+        if case is None or project.selected_case(case.case_id) != case:
+            raise Problem(
+                409,
+                "capture_case_unverified",
+                "The teaching session has no approved immutable case.",
+            )
         receipt = DemonstrationResult.model_validate(raw_receipt)
         if receipt.status != "uploaded":
             raise Problem(409, "capture_not_ready", "A verified uploaded manifest is required.")
@@ -212,18 +229,9 @@ class VerifiedArtifacts:
                     "The exact single-episode capture digest changed.",
                 )
             episode = validated.episodes[0].metadata
-            source = episode.get("demonstration")
-            profile = manifest.get("control_profile", {})
+            self._check_case_metadata(project, case, session.source, episode, manifest)
             if (
-                not isinstance(source, dict)
-                or source.get("kind") != session.source
-                or source.get("task_id") != project.task_id
-                or source.get("instruction") != project.instruction
-                or source.get("goal_id") != project.goal_station_id
-                or profile.get("profile_id") != project.control_profile_id
-                or episode.get("environment_id") != project.environment_id
-                or episode.get("revision") != project.revision
-                or episode.get("episode_id") != str(receipt.episode_id)
+                episode.get("episode_id") != str(receipt.episode_id)
                 or episode.get("frame_count") != receipt.frame_count
             ):
                 raise Problem(
@@ -247,17 +255,56 @@ class VerifiedArtifacts:
                 frame_count=receipt.frame_count,
                 source=session.source,
                 seed=episode["seed"],
+                case_id=case.case_id,
+                environment_id=episode["environment_id"],
+                revision=episode["revision"],
+                split=episode["split"],
                 task_id=project.task_id,
                 control_profile_id=project.control_profile_id,
+            )
+
+    @staticmethod
+    def _check_case_metadata(project, case, source_kind, episode, manifest):
+        source = episode.get("demonstration")
+        profile = manifest.get("control_profile", {})
+        if (
+            not isinstance(source, dict)
+            or source.get("kind") != source_kind
+            or source.get("task_id") != project.task_id
+            or source.get("instruction") != project.instruction
+            or source.get("goal_id") != project.goal_station_id
+            or profile.get("profile_id") != project.control_profile_id
+            or (
+                episode.get("environment_id"),
+                episode.get("revision"),
+                episode.get("seed"),
+                episode.get("split"),
+            )
+            != (case.environment_id, case.revision, case.seed, case.split)
+        ):
+            raise Problem(
+                409,
+                "capture_provenance_mismatch",
+                "Actual capture does not match its approved case, split, source, task and profile.",
             )
 
     def seal_dataset(self, actor, project, dataset_id, captures):
         from learning.capture import assemble_dataset
         from learning.common import file_digest
+        from learning.contract import validate_dataset
 
+        if project.owner_key != actor.owner_key:
+            raise Problem(
+                403, "dataset_scope_mismatch", "Dataset sealing requires this owner's project."
+            )
         with TemporaryDirectory(prefix="physicalai-seal-") as folder:
             roots = []
             for capture in captures:
+                case = capture.authorized_case(project)
+                if capture.episode_id in project.evaluation_plan.held_out_episode_ids:
+                    raise Problem(
+                        422, "held_out_overlap", "Test evidence cannot enter a teaching dataset."
+                    )
                 root = Path(folder) / str(capture.artifact_id)
                 index = self.registry.download(actor, capture.artifact_id, root)
                 if index.get("manifest_sha256") != capture.manifest_sha256:
@@ -265,6 +312,36 @@ class VerifiedArtifacts:
                         409,
                         "dataset_digest_mismatch",
                         "Capture was replaced before dataset sealing.",
+                    )
+                try:
+                    actual = validate_dataset(
+                        root,
+                        expected_scope=self._scope(actor),
+                        expected_manifest_sha256=capture.manifest_sha256,
+                        require_live=True,
+                    )
+                except ValueError as exc:
+                    raise Problem(
+                        422,
+                        "dataset_invalid",
+                        "Actual capture inventory/splits failed verification.",
+                    ) from exc
+                if len(actual.episodes) != 1:
+                    raise Problem(
+                        409,
+                        "capture_provenance_mismatch",
+                        "A receipt must bind one original episode.",
+                    )
+                episode = actual.episodes[0].metadata
+                self._check_case_metadata(project, case, capture.source, episode, actual.manifest)
+                if (
+                    episode["episode_id"] != str(capture.episode_id)
+                    or episode["frame_count"] != capture.frame_count
+                ):
+                    raise Problem(
+                        409,
+                        "capture_provenance_mismatch",
+                        "Downloaded episode differs from its verified receipt.",
                     )
                 roots.append(root)
             output = Path(folder) / "sealed"

@@ -5,6 +5,7 @@ from uuid import uuid4
 from apps.api.errors import Problem
 from apps.api.learning_models import (
     PROFILE_ID,
+    CaptureReceipt,
     DatasetVersion,
     LearningProject,
     PolicyRelease,
@@ -132,9 +133,21 @@ def learning_setup():
     factory = service()
     store = MemoryLearningStore()
     factory.store = store
-    saved = factory.save_environment(ACTOR, SaveEnvironment(document_json=json.dumps(document())))
+    anchor = document()
+    anchor["scene"]["template_id"] = "inspection-cell-learning-v1"
+    anchor["execution"].update(record_demonstration=True, demonstration_split="train")
+    saved = factory.save_environment(ACTOR, SaveEnvironment(document_json=json.dumps(anchor)))
     factory.activate(ACTOR, saved.environment_id, saved.revision)
-    request = project_request().model_copy(update={"revision": saved.revision})
+    request = project_request()
+    request = request.model_copy(
+        update={
+            "revision": saved.revision,
+            "teaching_cases": tuple(
+                case.model_copy(update={"revision": saved.revision})
+                for case in request.teaching_cases
+            ),
+        }
+    )
     now = utcnow()
     baseline = PolicyRelease(
         id=request.baseline_release_id,
@@ -168,6 +181,21 @@ def seed_project_and_dataset(store, request):
     project = LearningProject.create(ACTOR, request)
     stored = store.put_learning(ACTOR.owner_key, project, None)
     now = utcnow()
+    case = project.teaching_cases[0]
+    capture = CaptureReceipt(
+        episode_id=uuid4(),
+        manifest_sha256="e" * 64,
+        artifact_id=uuid4(),
+        frame_count=20,
+        source="human_teleop",
+        seed=case.seed,
+        task_id=project.task_id,
+        control_profile_id=project.control_profile_id,
+        case_id=case.case_id,
+        environment_id=case.environment_id,
+        revision=case.revision,
+        split=case.split,
+    )
     dataset = DatasetVersion(
         id=uuid4(),
         owner_key=ACTOR.owner_key,
@@ -179,8 +207,9 @@ def seed_project_and_dataset(store, request):
         project_id=project.id,
         artifact_id=uuid4(),
         manifest_sha256="e" * 64,
-        episode_ids=(uuid4(),),
-        seeds=(42,),
+        episode_ids=(capture.episode_id,),
+        seeds=(capture.seed,),
+        captures=(capture,),
         human_teleop_count=1,
         reference_controller_count=0,
         learned_policy_count=0,

@@ -13,6 +13,7 @@ import {
   type LearningApi, type LearningRecord, type Project, type Resource, type Teaching,
 } from './contracts';
 import './learning.css';
+import { defaultTeachingCase, savedTeachingCases, splitLabel } from './teachingCases';
 
 export function TeachingStudio({ api, environments, consoleApi }: {
   api: LearningApi; environments: EnvironmentRecord[]; consoleApi?: ConsoleApi;
@@ -65,9 +66,12 @@ function ProjectForm({ api, environments, onCreated, bootstrapAllowed, policyTyp
   const [environmentId, setEnvironmentId] = useState(environments[0]?.environment_id ?? '');
   const [kind, setKind] = useState<'adaptation' | 'bootstrap'>('adaptation');
   const [policyType, setPolicyType] = useState<Project['policy_type'] | ''>(policyTypes[0] ?? '');
+  const availableCases = savedTeachingCases(environments);
+  const [approvedCaseIds, setApprovedCaseIds] = useState<string[]>([]);
   const environment = environments.find((item) => item.environment_id === environmentId);
   const submit = async (form: HTMLFormElement) => {
     const fields = new FormData(form);
+    const teachingCases = availableCases.filter((item) => approvedCaseIds.includes(item.case_id));
     const seeds = String(fields.get('seeds')).split(',').map((value) => Number(value.trim()));
     if (!environment || !policyType || seeds.length < 20 || seeds.length > 100 || new Set(seeds).size !== seeds.length || seeds.some((value) => !Number.isSafeInteger(value) || value < 0)) {
       setError(new Error('저장 환경과 중복 없는 held-out seed 20~100개를 확인하세요.')); return;
@@ -83,6 +87,10 @@ function ProjectForm({ api, environments, onCreated, bootstrapAllowed, policyTyp
     if (cases.length !== seeds.length) {
       setError(new Error('각 held-out seed에 대해 저장된 inspection-cell-learning-v1 배치와 revision이 필요합니다. 번호만 정한 시험을 실제 배치 변화로 간주하지 않습니다.')); return;
     }
+    if (!teachingCases.length || new Set(teachingCases.map((item) => item.seed)).size !== teachingCases.length ||
+      teachingCases.some((item) => seeds.includes(item.seed)) || seeds.includes(900002)) {
+      setError(new Error('승인할 학습·검증 배치를 선택하세요. split 간 seed 중복, held-out 시험 seed와 G0 900002는 허용되지 않습니다.')); return;
+    }
     const body: CreateProjectBody = {
       request_id: requestId.current, display_name: String(fields.get('name')), task_id: String(fields.get('task')),
       instruction: String(fields.get('instruction')), goal_station_id: String(fields.get('goal')),
@@ -91,6 +99,7 @@ function ProjectForm({ api, environments, onCreated, bootstrapAllowed, policyTyp
       policy_type: policyType,
       pretrained_artifact_id: kind === 'bootstrap' ? String(fields.get('baseline')) : null,
       control_profile_id: 'franka-position-hold-10hz-v1',
+      teaching_cases: teachingCases,
       evaluation_plan: {
         id: planId.current, seeds, cases, held_out_episode_ids: [], minimum_success_rate: .9,
         maximum_axis_error_m: .04, maximum_inference_p95_ms: 80, max_step_seconds: 30,
@@ -113,17 +122,24 @@ function ProjectForm({ api, environments, onCreated, bootstrapAllowed, policyTyp
       <label className="wide-field">라이선스·하드웨어 검토 후 허용된 정확한 모델 버전<select name="policy-type" required value={policyType} onChange={(event) => { if (event.target.value === 'gr00t_n1_5' || event.target.value === 'gr00t_n1_7' || event.target.value === 'smolvla') setPolicyType(event.target.value); }}><option value="">승인된 버전 선택</option>{policyTypes.map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
       {bootstrapAllowed && <label className="wide-field">작업 유형<select value={kind} name="project-kind" onChange={(event) => setKind(event.target.value === 'bootstrap' ? 'bootstrap' : 'adaptation')}><option value="adaptation">실제 P0에서 고객 P1 학습</option><option value="bootstrap">승인 운영자: 첫 Franka P0 부트스트랩</option></select></label>}
       <label>프로젝트 이름<input name="name" required maxLength={120} autoComplete="off" /></label>
-      <label>등록할 task ID<input name="task" required pattern="[a-z][a-z0-9-]*" defaultValue="part-kitting-v1" autoComplete="off" spellCheck={false} /></label>
+      <label>등록할 task ID<input name="task" required pattern="[a-z][a-z0-9-]*" defaultValue="manufacturing-part-placement-v1" autoComplete="off" spellCheck={false} /></label>
       <label>저장된 LIVE 환경<select name="environment" value={environmentId} onChange={(event) => setEnvironmentId(event.target.value)}>{environments.map((item) => <option key={item.environment_id} value={item.environment_id}>{item.display_name}</option>)}</select></label>
-      <label>목표 스테이션<select name="goal" required>{stations.map((item) => {
+      <label>목표 스테이션<select name="goal" required defaultValue="rejected">{stations.map((item) => {
         if (!item || typeof item !== 'object' || !('id' in item) || typeof item.id !== 'string') return null;
         return <option key={item.id} value={item.id}>{item.id}</option>;
       })}</select></label>
-      <label className="wide-field">실제 작업 지시<input name="instruction" required maxLength={512} autoComplete="off" placeholder="예: 부품을 승인된 키팅 트레이에 놓습니다…" /></label>
+      <label className="wide-field">실제 작업 지시<input name="instruction" required maxLength={512} autoComplete="off" defaultValue="Pick up the synthetic part from the source platform and place it in the quarantine tray." /></label>
       <label className="wide-field">{kind === 'bootstrap' ? '검증·등록된 train-only 부모 artifact ID (실행 정책 아님)' : '운영자가 검토·등록한 P0 release ID'}<input name="baseline" required autoComplete="off" spellCheck={false} /></label>
       <label>optimizer step 상한<input name="steps" type="number" required min={1} max={100000} defaultValue={100} autoComplete="off" /></label>
       <label>작업별 최대 승인 금액 (USD)<input name="cost" type="number" required min=".01" max={10000} step=".01" autoComplete="off" /></label>
       <label className="wide-field">학습에서 제외할 seed 20~100개 (쉼표 구분)<input name="seeds" required autoComplete="off" placeholder="예: 200, 201, 202, …" /></label>
+      <fieldset className="wide-field teaching-case-approval"><legend>명시적으로 승인할 학습·검증 배치</legend>
+        <p className="small-text muted">저장된 capture split과 revision을 고정합니다. held-out test, G0 통합 전용 배치와 캡처가 비활성인 환경은 시연 목록에 넣지 않습니다.</p>
+        {availableCases.length ? availableCases.map((item) => <label className="checkbox-label" key={item.case_id}>
+          <input type="checkbox" name="teaching-case" value={item.case_id} checked={approvedCaseIds.includes(item.case_id)} onChange={(event) => setApprovedCaseIds((ids) => event.target.checked ? [...ids, item.case_id] : ids.filter((id) => id !== item.case_id))} />
+          <span>{item.environment_id} · {splitLabel(item.split)} · seed {item.seed}<code>{item.revision}</code></span>
+        </label>) : <p className="form-hint">명시적인 train/validation 캡처 설정이 있는 저장 배치를 먼저 준비하세요.</p>}
+      </fieldset>
     </div>
     <p className="form-hint">이 화면은 가격이나 용량을 추정하지 않습니다. 실제 유료 제출 전 서버가 승인된 compute·가격·시간 한도를 검증합니다. P0/P1는 동일한 미사용 조건에서 비교하며 성공 장면만 남기지 않습니다.</p>
     <ErrorNotice error={error} title="작업 정의를 저장하지 못했습니다" />
@@ -147,6 +163,8 @@ function ProjectWorkspace({ api, project, consoleApi, environments, coachConfigu
   const [datasetId, setDatasetId] = useState('');
   const [candidateId, setCandidateId] = useState('');
   const [motionApproved, setMotionApproved] = useState(false);
+  const [teachingCaseId, setTeachingCaseId] = useState(() => defaultTeachingCase(project.item.teaching_cases, project.item.environment_id, project.item.revision));
+  const selectedCase = project.item.teaching_cases.find((item) => item.case_id === teachingCaseId);
   const [paidApproved, setPaidApproved] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
@@ -165,7 +183,9 @@ function ProjectWorkspace({ api, project, consoleApi, environments, coachConfigu
   const updateJob = useCallback((value: Resource<Job>) => {
     if (value.item.kind === 'evaluation') setEvaluation({ item: value.item, etag: value.etag });
   }, []);
-  const environment = environments.find((item) => item.environment_id === project.item.environment_id && item.revision === project.item.revision);
+  const environment = environments.find((item) =>
+    teaching?.item.teaching_case?.environment_id === item.environment_id &&
+    teaching.item.teaching_case.revision === item.revision);
   const data = records.data ?? [];
   const datasets = data.filter((entry) => entry.item.kind === 'dataset');
   const candidates = data.filter((entry) => entry.item.kind === 'candidate');
@@ -176,16 +196,26 @@ function ProjectWorkspace({ api, project, consoleApi, environments, coachConfigu
     <div className="learning-workflow-grid">
       <section className="panel"><div className="panel-heading"><h2>1 · 직접 시연과 데이터</h2><button type="button" className="icon-button" aria-label="학습 자료 새로고침" onClick={records.refresh}><RefreshCw size={16} aria-hidden="true" /></button></div>
         <div className="learning-panel-body">
+          <label htmlFor="teaching-case">승인된 시연 배치</label>
+          <select id="teaching-case" name="teaching-case" value={teachingCaseId} disabled={busy} onChange={(event) => { setTeachingCaseId(event.target.value); setMotionApproved(false); }}>
+            <option value="">승인된 배치를 선택하세요</option>
+            {project.item.teaching_cases.map((item) => <option key={item.case_id} value={item.case_id}>{item.case_id} · {splitLabel(item.split)} · seed {item.seed}</option>)}
+          </select>
+          {selectedCase ? <div className="inline-note"><strong>{splitLabel(selectedCase.split)} · {selectedCase.environment_id}</strong><code>{selectedCase.revision}</code><p>이 저장 버전이 런타임에 활성화되어 있어야 시연을 시작할 수 있습니다. 검증 데이터는 optimizer 입력으로 바뀌지 않습니다.</p></div>
+            : <p className="form-hint">승인된 시연 배치가 없습니다. anchor를 임의로 train으로 취급하지 않으며, 목록이 없다면 승인 배치를 포함한 새 프로젝트가 필요합니다.</p>}
           <label className="checkbox-label"><input type="checkbox" checked={motionApproved} onChange={(event) => setMotionApproved(event.target.checked)} />저속 시연 조작과 서버의 제한된 이동 권한을 승인합니다</label>
-          <button type="button" className="button" disabled={!motionApproved || busy || Boolean(teaching && ['starting', 'recording', 'finishing', 'cancelling'].includes(teaching.item.status))} onClick={() => void operate('teach', async (id) => {
-            setTeaching(await api.teach(project.item.id, { request_id: id, source: 'human_teleop', motion_approved: true }, project.etag));
+          {consoleApi && selectedCase && <button type="button" className="button secondary" disabled={!motionApproved || busy || Boolean(teaching && ['starting', 'recording', 'finishing', 'cancelling'].includes(teaching.item.status))} onClick={() => void operate(`activate:${selectedCase.case_id}`, async () => {
+            await consoleApi.activateEnvironment(selectedCase.environment_id, selectedCase.revision);
+          })}>선택한 승인 배치 활성화 요청</button>}
+          <button type="button" className="button" disabled={!selectedCase || !motionApproved || busy || Boolean(teaching && ['starting', 'recording', 'finishing', 'cancelling'].includes(teaching.item.status))} onClick={() => selectedCase && void operate(`teach:${selectedCase.case_id}`, async (id) => {
+            setTeaching(await api.teach(project.item.id, { request_id: id, source: 'human_teleop', motion_approved: true, case_id: selectedCase.case_id }, project.etag));
           })}>새 직접 시연 세션 시작</button>
           <p className="small-text muted">자동화된 teacher 데이터는 별도의 기준 제어기 출처로 기록합니다. 업로드 중은 학습 데이터 준비 완료가 아닙니다.</p>
           <div className="teaching-list">{sessionList.map((entry) => {
             if (entry.item.kind !== 'teaching') return null;
             const item = entry.item;
             return <div key={item.id}><label className="checkbox-label"><input type="checkbox" disabled={item.status !== 'ready'} checked={selectedSessions.includes(item.id)} onChange={(event) => setSelectedSessions((ids) => event.target.checked ? [...ids, item.id] : ids.filter((id) => id !== item.id))} />{sourceLabel(item.source)} · {item.status}</label>
-              <code>{item.id}</code><button type="button" className="text-button" onClick={() => setTeaching({ item, etag: entry.etag })}>세션 상태 보기</button></div>;
+              <code>{item.id}</code><p className="small-text">{item.teaching_case ? `${item.teaching_case.case_id} · ${splitLabel(item.teaching_case.split)} · seed ${item.teaching_case.seed}` : '기존 기록 · case/split 승인 미확인'}</p><button type="button" className="text-button" onClick={() => setTeaching({ item, etag: entry.etag })}>세션 상태 보기</button></div>;
           })}</div>
           <button type="button" className="button secondary" disabled={!selectedSessions.length || busy} onClick={() => void operate(`seal:${selectedSessions.join(',')}`, async (id) => {
             const sealed = await api.seal(project.item.id, { request_id: id, teaching_session_ids: selectedSessions }, project.etag);
@@ -195,7 +225,7 @@ function ProjectWorkspace({ api, project, consoleApi, environments, coachConfigu
       </section>
       <section className="panel"><div className="panel-heading"><h2>2 · 실제 학습과 paired 평가</h2></div><div className="learning-panel-body">
         <label htmlFor="learning-dataset">고정 데이터 버전</label><select id="learning-dataset" name="learning-dataset" value={datasetId} onChange={(event) => setDatasetId(event.target.value)}><option value="">데이터 선택</option>{datasets.map((entry) => <option value={entry.item.id} key={entry.item.id}>{entry.item.id}</option>)}</select>
-        {datasets.map((entry) => entry.item.kind === 'dataset' && entry.item.id === datasetId && <div className="inline-note" key={entry.item.id}><code>{entry.item.manifest_sha256}</code><p>직접 {entry.item.human_teleop_count} · 기준 제어기 {entry.item.reference_controller_count} · 정책 생성 {entry.item.learned_policy_count}</p></div>)}
+        {datasets.map((entry) => entry.item.kind === 'dataset' && entry.item.id === datasetId && <div className="inline-note" key={entry.item.id}><code>{entry.item.manifest_sha256}</code><p>직접 {entry.item.human_teleop_count} · 기준 제어기 {entry.item.reference_controller_count} · 정책 생성 {entry.item.learned_policy_count}</p><p>학습(train) {entry.item.captures.filter((capture) => capture.split === 'train').length} · 검증(validation) {entry.item.captures.filter((capture) => capture.split === 'validation').length} · 검증은 optimizer/statistics에서 제외</p></div>)}
         <label className="checkbox-label"><input type="checkbox" checked={paidApproved} onChange={(event) => setPaidApproved(event.target.checked)} />실제 Azure 작업 비용 상한 {project.item.budget.maximum_cost_usd} USD와 시간 제한을 승인합니다</label>
         <button type="button" className="button" disabled={!datasetId || !paidApproved || busy} onClick={() => void operate(`train:${datasetId}`, async (id) => {
           setJob(await api.train(project.item.id, { request_id: id, dataset_id: datasetId, parent_release_id: project.item.baseline_release_id, pretrained_artifact_id: project.item.pretrained_artifact_id, policy_type: project.item.policy_type, optimizer_steps: project.item.budget.optimizer_steps, paid_approved: true, maximum_cost_usd: project.item.budget.maximum_cost_usd }, project.etag));
@@ -254,6 +284,7 @@ function TeachingSessionPanel({ api, session, onChange, consoleApi, environment 
   };
   return <section className="panel teaching-session"><div className="panel-heading"><h2>현재 선택한 시연</h2><Badge>{current.item.status}</Badge></div>
     <div className="learning-panel-body"><p>{sourceLabel(current.item.source)} · 물리 상태: {current.item.physical_status ?? '확인 전'} · 캡처 상태: {current.item.status}</p><code>{current.item.id}</code>
+      {current.item.teaching_case && <dl className="learning-metadata"><FieldValue label="승인된 시연 배치">{current.item.teaching_case.case_id} · {splitLabel(current.item.teaching_case.split)} · seed {current.item.teaching_case.seed}</FieldValue><FieldValue label="실제 캡처 환경 / revision"><code>{current.item.teaching_case.environment_id}</code><code>{current.item.teaching_case.revision}</code></FieldValue></dl>}
       <p className="small-text muted">권한 만료: {formatDate(current.item.expires_at)} · 업로드는 물리 실행과 별도로 완료됩니다.</p>
       {consoleApi && environment && <div className="teaching-cameras">{(['overview', 'inspection'] as const).map((camera) => <LiveCamera key={`${current.item.id}:${camera}`} api={consoleApi} environment={environment} camera={camera} enabled={current.item.status === 'recording'} unavailableReason="활성 시연의 실제 카메라만 연결합니다." />)}</div>}
       <TeachingControls api={api} session={current} onChange={onChange} />

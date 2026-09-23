@@ -59,7 +59,8 @@ from apps.api.models import (
     Stored,
     utcnow,
 )
-from apps.api.service import FactoryService, check_fresh
+from apps.api.service import FactoryService, check_fresh, content_hash
+from contracts.validate_environment import validate_environment
 
 log = logging.getLogger(__name__)
 R = TypeVar("R", bound=LearningRecord)
@@ -332,16 +333,60 @@ class LearningService:
         self._policy(parent.policy_type)
         return parent
 
-    def _verify_cases(self, actor, plan):
+    def _saved_scene(self, actor, environment_id, revision):
+        environment = self.factory.environment(actor, environment_id).value
+        if environment.revision != revision:
+            raise Problem(
+                409, "revision_conflict", "The case's pinned saved revision is no longer current."
+            )
+        if (
+            environment.environment_id != environment_id
+            or environment.document.get("environment_id") != environment_id
+            or validate_environment(environment.document)
+            or content_hash(environment.document) != revision
+        ):
+            raise Problem(
+                409, "case_environment_corrupted", "Saved case content does not match its revision."
+            )
+        if environment.document["execution"]["mode"] != "live":
+            raise Problem(409, "replay_not_live", "Only a saved LIVE case can authorize teaching.")
+        return environment
+
+    def _case_environment(self, actor, case, *, goal_station_id, robot_profile, split):
+        environment = self._saved_scene(actor, case.environment_id, case.revision)
+        execution = environment.document["execution"]
+        if execution.get("demonstration_split") != split or (
+            split != "test" and execution.get("record_demonstration") is not True
+        ):
+            raise Problem(
+                422,
+                "case_split_mismatch",
+                "The saved scene must explicitly authorize this capture split.",
+            )
+        scene = environment.document["scene"]
+        if (
+            scene["template_id"] != "inspection-cell-learning-v1"
+            or scene["seed"] != case.seed
+            or scene["robot_profile"] != robot_profile
+            or goal_station_id
+            not in {station["id"] for station in environment.document["stations"]}
+        ):
+            raise Problem(
+                422,
+                "learning_case_not_bound",
+                "Cases require the saved reviewed pose builder, exact seed, robot and task goal.",
+            )
+        return environment
+
+    def _verify_cases(self, actor, plan, *, goal_station_id, robot_profile):
         for case in plan.cases:
-            environment = self.factory._live_environment(actor, case.environment_id, case.revision)
-            scene = environment.document["scene"]
-            if scene["template_id"] != "inspection-cell-learning-v1" or scene["seed"] != case.seed:
-                raise Problem(
-                    422,
-                    "evaluation_pose_not_bound",
-                    "Held-out cases must pin the reviewed pose-variation scene and seed.",
-                )
+            self._case_environment(
+                actor,
+                case,
+                goal_station_id=goal_station_id,
+                robot_profile=robot_profile,
+                split="test",
+            )
 
     def create_project(self, actor: Principal, body: CreateProject) -> Stored[LearningProject]:
         self._enabled()
@@ -349,7 +394,7 @@ class LearningService:
         existing = self._existing(actor, "project", record.id, record.fingerprint)
         if existing:
             return existing
-        environment = self.factory._live_environment(actor, body.environment_id, body.revision)
+        environment = self._saved_scene(actor, body.environment_id, body.revision)
         if body.goal_station_id not in {item["id"] for item in environment.document["stations"]}:
             raise Problem(422, "unknown_task_goal", "Select a goal in the pinned environment.")
         if body.project_kind == "bootstrap":
@@ -368,7 +413,21 @@ class LearningService:
                     409, "baseline_task_mismatch", "The baseline belongs to a different task."
                 )
         self._policy(body.policy_type)
-        self._verify_cases(actor, body.evaluation_plan)
+        robot_profile = environment.document["scene"]["robot_profile"]
+        self._verify_cases(
+            actor,
+            body.evaluation_plan,
+            goal_station_id=body.goal_station_id,
+            robot_profile=robot_profile,
+        )
+        for case in body.teaching_cases:
+            self._case_environment(
+                actor,
+                case,
+                goal_station_id=body.goal_station_id,
+                robot_profile=robot_profile,
+                split=case.split,
+            )
         return self._claim(actor, record)[0]
 
     def train(
@@ -462,6 +521,16 @@ class LearningService:
             dataset.episode_ids
         ) & set(project.evaluation_plan.held_out_episode_ids):
             raise Problem(422, "held_out_overlap", "Held-out conditions must not enter training.")
+        if not dataset.captures:
+            raise Problem(
+                409, "dataset_case_unverified", "Reseal verified case/split-bound captures."
+            )
+        for capture in dataset.captures:
+            capture.authorized_case(project)
+        if not any(capture.split == "train" for capture in dataset.captures):
+            raise Problem(
+                422, "training_split_empty", "Validation-only data cannot become optimizer input."
+            )
 
     def _submit(self, actor: Principal, specification: JobSpecification) -> Stored:
         jobs = self._dependency(self.jobs, "Azure ML learning backend")
@@ -794,20 +863,27 @@ class LearningService:
         context = self.get(actor, "project", project_id)
         require_etag(context, etag)
         project = context.value
+        case = project.selected_case(body.case_id)
         runtime = self._dependency(self.runtime, "Verified teaching runtime")
-        environment = self.factory._live_environment(
-            actor, project.environment_id, project.revision
+        anchor = self._saved_scene(actor, project.environment_id, project.revision)
+        environment = self._case_environment(
+            actor,
+            case,
+            goal_station_id=project.goal_station_id,
+            robot_profile=anchor.document["scene"]["robot_profile"],
+            split=case.split,
         )
         observation = self.factory.bridge.observe(
-            actor.owner_key, project.environment_id, project.revision
+            actor.owner_key, case.environment_id, case.revision
         )
-        self.factory._check_scene(observation, project.environment_id, project.revision)
+        self.factory._check_scene(observation, case.environment_id, case.revision)
         check_fresh(observation, environment.document["execution"]["max_observation_age_ms"])
         duration = project.budget.teaching_seconds
         expires = utcnow() + timedelta(seconds=duration)
         session = TeachingSession(
             **metadata(actor, body.request_id, digest),
             project_id=project_id,
+            teaching_case=case,
             source=body.source,
             status="starting",
             lease_id=uuid4(),
@@ -819,8 +895,8 @@ class LearningService:
             session_id=session.id,
             lease_id=session.lease_id,
             command_id=session.command_id,
-            environment_id=project.environment_id,
-            revision=project.revision,
+            environment_id=case.environment_id,
+            revision=case.revision,
             epoch=observation.epoch,
             state_revision=observation.state_revision,
             observation_id=observation.observation_id,
@@ -834,6 +910,7 @@ class LearningService:
                 goal_id=project.goal_station_id,
             ),
             demonstrator_kind=body.source,
+            split=case.split,
         )
         stored, first = self._claim(actor, session)
         if not first:
@@ -892,7 +969,15 @@ class LearningService:
             receipt = self._dependency(self.artifacts, "Capture verifier").verify_capture(
                 actor, project, session, state.receipt.model_dump(mode="json")
             )
-            if receipt.source != session.source or receipt.task_id != project.task_id:
+            actual_case = receipt.authorized_case(project)
+            if (
+                receipt.source != session.source
+                or session.teaching_case is None
+                or actual_case != session.teaching_case
+                or receipt.episode_id != state.receipt.episode_id
+                or receipt.manifest_sha256 != state.receipt.manifest_sha256
+                or receipt.frame_count != state.receipt.frame_count
+            ):
                 raise Problem(
                     503, "capture_scope_mismatch", "Capture provenance differs from teaching."
                 )
@@ -1102,6 +1187,7 @@ class LearningService:
         context = self.get(actor, "project", project_id)
         require_etag(context, etag)
         captures = []
+        project = context.value
         for session_id in body.teaching_session_ids:
             session = self.get(actor, "teaching", session_id).value
             if (
@@ -1114,8 +1200,16 @@ class LearningService:
                     "capture_not_ready",
                     "Only this project's verified uploaded captures can be sealed.",
                 )
+            case = session.capture.authorized_case(project)
+            if (
+                session.teaching_case is None
+                or case != session.teaching_case
+                or session.capture.source != session.source
+            ):
+                raise Problem(
+                    409, "capture_case_mismatch", "Ready capture differs from its approved session."
+                )
             captures.append(session.capture)
-        project = context.value
         episodes = tuple(item.episode_id for item in captures)
         seeds = tuple(item.seed for item in captures)
         if (
@@ -1142,6 +1236,7 @@ class LearningService:
             ),
             learned_policy_count=sum(item.source == "learned" for item in captures),
             evaluation_plan_sha256=project.evaluation_plan.sha256,
+            captures=tuple(captures),
         )
         return self._claim(actor, record)[0]
 

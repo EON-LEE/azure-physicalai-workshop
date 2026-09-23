@@ -7,6 +7,17 @@ const count = z.number().int().nonnegative();
 const base = { id, actor_id: id, created_at: date, updated_at: date };
 const profile = z.literal('franka-position-hold-10hz-v1');
 const policyType = z.enum(['gr00t_n1_5', 'gr00t_n1_7', 'smolvla']);
+export const teachingCaseSchema = z.object({
+  case_id: z.string().min(1), environment_id: z.string().min(1), revision: sha,
+  seed: count, split: z.enum(['train', 'validation']),
+});
+const captureSchema = z.object({
+  episode_id: id, manifest_sha256: sha, artifact_id: id, frame_count: count,
+  source: z.enum(['human_teleop', 'reference_controller', 'learned']), seed: count,
+  task_id: z.string(), control_profile_id: profile, source_model_sha256: sha.nullable(),
+  case_id: z.string().nullable().default(null), environment_id: z.string().nullable().default(null),
+  revision: sha.nullable().default(null), split: z.enum(['train', 'validation']).nullable().default(null),
+});
 export const budgetSchema = z.object({
   teaching_seconds: z.number().int().min(5).max(300),
   training_seconds: z.number().int().positive().max(86400),
@@ -30,24 +41,23 @@ export const projectSchema = z.object({
   project_kind: z.enum(['adaptation', 'bootstrap']), baseline_release_id: id.nullable(),
   pretrained_artifact_id: id.nullable(), control_profile_id: profile,
   evaluation_plan: evaluationPlanSchema, evaluation_plan_sha256: sha, budget: budgetSchema,
+  teaching_cases: z.array(teachingCaseSchema).max(1000).default([]),
 });
 export const datasetSchema = z.object({
   ...base, kind: z.literal('dataset'), project_id: id, status: z.literal('ready'),
   artifact_id: id, manifest_sha256: sha, episode_ids: z.array(id).min(1), seeds: z.array(count),
   human_teleop_count: count, reference_controller_count: count, learned_policy_count: count,
   evaluation_plan_sha256: sha,
+  captures: z.array(captureSchema).max(1000).default([]),
 });
 export const teachingSchema = z.object({
   ...base, kind: z.literal('teaching'), project_id: id,
+  teaching_case: teachingCaseSchema.nullable().default(null),
   source: z.enum(['human_teleop', 'reference_controller']),
   status: z.enum(['starting', 'recording', 'finishing', 'finalizing', 'uploading', 'ready', 'cancelling', 'cancelled', 'invalid', 'blocked']),
   lease_id: id, epoch: id, command_id: id, expires_at: date, last_sequence: count,
   input_expires_at: date.nullable(), physical_status: z.string().nullable(),
-  capture: z.object({
-    episode_id: id, manifest_sha256: sha, artifact_id: id, frame_count: count,
-    source: z.enum(['human_teleop', 'reference_controller', 'learned']), seed: count,
-    task_id: z.string(), control_profile_id: profile, source_model_sha256: sha.nullable(),
-  }).nullable(),
+  capture: captureSchema.nullable(),
   error_code: z.string().nullable(), message: z.string().nullable(),
 });
 const jobStatus = z.enum(['submitting', 'submission_unknown', 'submitted', 'running', 'cancelling', 'succeeded', 'failed', 'cancelled', 'timed_out', 'blocked']);
@@ -139,6 +149,7 @@ export const resourceList = <T extends z.ZodType>(item: T) => z.object({ items: 
 export type Project = z.infer<typeof projectSchema>;
 export type Dataset = z.infer<typeof datasetSchema>;
 export type Teaching = z.infer<typeof teachingSchema>;
+export type TeachingCase = z.infer<typeof teachingCaseSchema>;
 export type Job = z.infer<typeof jobSchema>;
 export type Evaluation = z.infer<typeof evaluationSchema>;
 export type Candidate = z.infer<typeof candidateSchema>;
@@ -163,7 +174,7 @@ export interface LearningApi {
   projects(signal?: AbortSignal): Promise<{ items: Resource<Project>[] }>;
   createProject(body: CreateProjectBody, signal?: AbortSignal): Promise<Resource<Project>>;
   records(projectId: string, kind: LearningRecord['kind'], signal?: AbortSignal): Promise<{ items: Resource<LearningRecord>[] }>;
-  teach(projectId: string, body: { request_id: string; source: 'human_teleop' | 'reference_controller'; motion_approved: true }, etag: string, signal?: AbortSignal): Promise<Resource<Teaching>>;
+  teach(projectId: string, body: { request_id: string; source: 'human_teleop' | 'reference_controller'; motion_approved: true; case_id?: string }, etag: string, signal?: AbortSignal): Promise<Resource<Teaching>>;
   teaching(id: string, signal?: AbortSignal): Promise<Resource<Teaching>>;
   arm(id: string, body: JogBody, etag: string, signal?: AbortSignal): Promise<Resource<Grant>>;
   jog(id: string, body: JogBody, etag: string, signal?: AbortSignal): Promise<Resource<Teaching>>;

@@ -21,7 +21,9 @@ export function browserLearning(trace: LearningTrace, enabled: boolean): Learnin
     },
     async teach(_id, body) {
       mark('teach');
-      session = { ...session, item: { ...session.item, source: body.source } };
+      const selectedCase = data.project.item.teaching_cases.find((item) => item.case_id === body.case_id);
+      if (!selectedCase) throw new Error('TEST ONLY: only an approved teaching case may start.');
+      session = { ...session, item: { ...session.item, source: body.source, teaching_case: selectedCase } };
       return session;
     },
     async teaching() { return session; },

@@ -41,7 +41,7 @@ successful placeholder, fixture checkpoint or ACT fallback.
 | `POST /api/learning/projects` | `CreateProject`; returns immutable `LearningProject` |
 | `GET /api/learning/projects` | Owner project list |
 | `GET /api/learning/projects/{id}` | Project with ETag |
-| `POST /api/learning/projects/{id}/teaching-sessions` | `request_id`, `source: human_teleop|reference_controller`, `motion_approved: true` |
+| `POST /api/learning/projects/{id}/teaching-sessions` | `request_id`, `case_id`, `source: human_teleop|reference_controller`, `motion_approved: true`; only a project-approved case may be selected |
 | `GET /api/teaching-sessions/{id}` | Reconciled `TeachingSession`; physical completion and capture readiness remain separate |
 | `POST /api/teaching-sessions/{id}/arm` | `request_id`, `lease_id`, `epoch`, `sequence`, `deadman: true`, `delta_xyz_m`, `gripper`; returns a server control grant valid for at most one second; never moves |
 | `POST /api/teaching-sessions/{id}/jog` | Same intent plus `grant_id`; server stamps expiry on first admission. Stop-only `deadman:false` requires zero delta/hold and no grant |
@@ -62,7 +62,7 @@ successful placeholder, fixture checkpoint or ACT fallback.
 `CreateProject` contains `request_id`, `display_name`, `task_id`, `instruction`
 (one line, at most 512 characters), exact `policy_type`,
 `goal_station_id`, `environment_id`, `revision`, `baseline_release_id`,
-`control_profile_id`, `evaluation_plan` and `budget`. `project_kind` is
+`control_profile_id`, `teaching_cases`, `evaluation_plan` and `budget`. `project_kind` is
 `adaptation` by default. Its P0 release must exist and its model family must
 match; no GR00T/SmolVLA/ACT substitutions are allowed.
 
@@ -70,6 +70,81 @@ The initial reviewed profile is `franka-position-hold-10hz-v1`, not the existing
 60 Hz reference profile. The task goal must be a station in the pinned saved
 environment. Baseline P0 must be a real approved learned policy, not a scripted
 reference route relabeled as a policy. Prepared P0 provenance remains visible.
+
+### Varied teaching cases and split isolation
+
+New projects **must explicitly freeze** `teaching_cases`:
+
+```json
+[
+  {
+    "case_id": "train-10001",
+    "environment_id": "the-owner-saved-training-scene",
+    "revision": "exact-64-hex-revision-from-the-saved-record",
+    "seed": 10001,
+    "split": "train"
+  },
+  {
+    "case_id": "validation-20001",
+    "environment_id": "the-owner-saved-validation-scene",
+    "revision": "exact-64-hex-revision-from-the-saved-record",
+    "seed": 20001,
+    "split": "validation"
+  }
+]
+```
+
+The revision strings above illustrate fields, not ready records to submit.
+Use the actual saved-record hashes. Each case ID, seed and environment/revision
+pair is unique across the teaching allowlist. Teaching seeds/scene revisions
+must be disjoint from the frozen held-out test cases. Integration-only G0 seed
+`900002` is rejected for both teaching and final held-out evaluation.
+
+At project creation the API verifies **every** case's owner-scoped saved record,
+content hash, valid LIVE document, reviewed `inspection-cell-learning-v1`
+builder, robot profile, actual scene seed and task goal. Train/validation
+records must explicitly set `execution.record_demonstration: true` and matching
+`execution.demonstration_split`. Held-out saved records must have split `test`.
+Changing the saved document or its revision cannot silently rebind a case.
+
+`StartTeaching.case_id` selects only an allowlisted case. Its environment,
+revision, seed and split cannot be overridden in that request. Omitting the
+selector is backward-compatible **only** when the anchor environment/revision is
+already explicitly listed once in the allowlist. Older projects with no
+`teaching_cases` remain readable, but cannot authorize new teaching; create a
+new approved project rather than retroactively editing its immutable pins.
+
+Activate the selected saved scene explicitly before starting. Selection alone
+does not activate a scene, change the seed or dispatch motion. The API observes
+and authorizes the **selected** environment/revision, not the project anchor.
+The stored `TeachingSession.teaching_case` and response retain the selected
+case. Private `TeachingStartSpec` sends its exact environment/revision and
+required `split`; the runtime derives the actual seed from the saved scene and
+rejects a different split. There is no seed override or fallback to anchor.
+
+The worker checks the original native episode's environment, revision, seed,
+split, task instruction/goal, source, profile and frame count against that
+case before accepting a capture. `CaptureReceipt` retains `case_id`,
+`environment_id`, `revision`, `seed`, and `split`. `DatasetVersion.captures`
+retains these exact per-episode receipts in the same order as `episode_ids` and
+`seeds`. Legacy receipts/datasets without case provenance cannot become new
+optimizer inputs. Metadata is checked again after private download and before
+native dataset assembly.
+
+A sealed bundle may contain distinct train and validation cases without
+relabeling either. Native SmolVLA conversion/statistics/optimizer input selects
+**only `train`** episodes; validation-only bundles cannot start optimizer work.
+A mislabeled split, duplicate episode, train/validation seed overlap, unapproved
+case, held-out test episode/seed or integration seed is rejected before training.
+Physical completion and async historical capture reconciliation remain separate.
+
+For the current manufacturing task, the deployment operator freezes P0 training
+seeds `10001..10020`, P1 additional training seeds `11001..11020`, validation
+`20001..20010`, and final test `30001..30020` as separate real saved records.
+The task is `manufacturing-part-placement-v1`, goal `rejected`, instruction
+`Pick up the synthetic part from the source platform and place it in the quarantine tray.`
+These are explicit case partitions, not a constant-seed capture renamed varied
+data or handwritten ready dataset records.
 
 `budget` fixes `teaching_seconds` (5..300), `training_seconds` (1..86400),
 `evaluation_seconds` (1..21600), `optimizer_steps` (1..100000), and
@@ -172,6 +247,9 @@ flat scene/observation fields, session/lease/command UUIDs,
 `session_expires_at` (at most 300 seconds), profile, task
 `{task_id,instruction,goal_id}`, and explicit `demonstrator_kind`.
 It does not repurpose the reference/learned `MotionCommand`'s 30-second deadline.
+The required teaching `split` must match the selected immutable saved scene;
+only the private runtime may accept an integration-test capture outside this
+train/validation audience API, and that data is not approved for training.
 The public operator jog is an intent, not a trusted browser timestamp. The API
 first issues a persistent grant on `/arm`, bound to the original owner/session/
 lease/epoch/next sequence/exact delta and gripper with at most a one-second TTL.
@@ -218,8 +296,9 @@ Authenticated operators then:
 
 1. Create the immutable project using actual registered P0 (or the privileged
    train-only bootstrap path), reviewed cases and bounded budgets.
-2. Start a `human_teleop` or explicit `reference_controller` teaching session
-   with the project ETag and `motion_approved: true`. Automated G0 must use
+2. Explicitly activate an approved train/validation case, then start a
+   `human_teleop` or explicit `reference_controller` teaching session using
+   its `case_id`, the project ETag and `motion_approved: true`. Automated G0 must use
    `reference_controller`, not claim a customer's human demonstration.
 3. For held controls, request `/arm`, then echo its grant on `/jog` only while
    still held/visible. Never compute authority from browser wall time.

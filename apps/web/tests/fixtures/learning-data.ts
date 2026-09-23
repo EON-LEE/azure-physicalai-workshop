@@ -17,6 +17,10 @@ export function learningFixture() {
     goal_station_id: 'accepted', environment_id: 'reference-cell', revision: sha('a'),
     baseline_release_id: uuid(2), pretrained_artifact_id: null, control_profile_id: 'franka-position-hold-10hz-v1',
     evaluation_plan_sha256: sha('b'),
+    teaching_cases: [
+      { case_id: 'train-anchor', environment_id: 'reference-cell', revision: sha('a'), seed: 10001, split: 'train' },
+      { case_id: 'validation-20001', environment_id: 'validation-20001', revision: sha('b'), seed: 20001, split: 'validation' },
+    ],
     evaluation_plan: {
       id: uuid(3), seeds: Array.from({ length: 20 }, (_, index) => 200 + index), held_out_episode_ids: [],
       cases: Array.from({ length: 20 }, (_, index) => ({ seed: 200 + index, environment_id: `test-held-out-${index}`, revision: sha('c') })),
@@ -27,12 +31,19 @@ export function learningFixture() {
   } };
   const dataset: Resource<Dataset> = { etag: '"test-dataset-etag"', item: {
     ...base(4), kind: 'dataset', project_id: project.item.id, status: 'ready', artifact_id: uuid(5),
-    manifest_sha256: sha('d'), episode_ids: [uuid(6)], seeds: [42],
+    manifest_sha256: sha('d'), episode_ids: [uuid(6)], seeds: [10001],
     human_teleop_count: 0, reference_controller_count: 1, learned_policy_count: 0,
     evaluation_plan_sha256: project.item.evaluation_plan_sha256,
+    captures: [{
+      episode_id: uuid(6), artifact_id: uuid(5), manifest_sha256: sha('d'), frame_count: 20,
+      source: 'reference_controller', seed: 10001, task_id: project.item.task_id,
+      control_profile_id: project.item.control_profile_id, source_model_sha256: null,
+      case_id: 'train-anchor', environment_id: 'reference-cell', revision: sha('a'), split: 'train',
+    }],
   } };
   const teaching: Resource<Teaching> = { etag: '"test-teaching-etag"', item: {
     ...base(7), kind: 'teaching', project_id: project.item.id, source: 'reference_controller',
+    teaching_case: project.item.teaching_cases[0]!,
     status: 'recording', lease_id: uuid(8), epoch: uuid(9), command_id: uuid(10),
     expires_at: new Date(Date.now() + 120000).toISOString(), last_sequence: 0, input_expires_at: null,
     physical_status: 'running', capture: null, error_code: null, message: null,

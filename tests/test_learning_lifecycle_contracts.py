@@ -63,6 +63,15 @@ def project_request():
         baseline_release_id=uuid4(),
         control_profile_id="franka-position-hold-10hz-v1",
         evaluation_plan=plan(),
+        teaching_cases=(
+            {
+                "case_id": "train-anchor",
+                "environment_id": "reference-cell",
+                "revision": "a" * 64,
+                "seed": 42,
+                "split": "train",
+            },
+        ),
         budget=budget(),
     )
 

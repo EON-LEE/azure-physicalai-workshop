@@ -1,3 +1,4 @@
+import json
 from uuid import uuid4
 
 import pytest
@@ -7,6 +8,7 @@ from test_api import headers
 from apps.api.learning_models import (
     BootstrapReport,
     BootstrapTrial,
+    CaptureReceipt,
     CreateProject,
     DatasetVersion,
     PolicyCandidate,
@@ -17,7 +19,7 @@ from apps.api.learning_models import (
     fingerprint,
 )
 from apps.api.learning_service import LearningService
-from apps.api.models import utcnow
+from apps.api.models import SaveEnvironment, utcnow
 from tests.learning_api_support import learning_setup
 from tests.runtime_support import ACTOR
 
@@ -110,6 +112,7 @@ def test_empty_release_catalog_can_train_evaluate_then_explicitly_initialize_rea
         }
     )
     base = factory.environment(ACTOR, request.environment_id).value
+    evaluated_cases = []
     for case in body.evaluation_plan.cases:
         document = {
             **base.document,
@@ -119,18 +122,17 @@ def test_empty_release_catalog_can_train_evaluate_then_explicitly_initialize_rea
                 "template_id": "inspection-cell-learning-v1",
                 "seed": case.seed,
             },
+            "execution": {**base.document["execution"], "demonstration_split": "test"},
         }
-        store.put_environment(
-            ACTOR.owner_key,
-            base.model_copy(
-                update={
-                    "environment_id": case.environment_id,
-                    "revision": case.revision,
-                    "document": document,
-                }
+        saved = factory.save_environment(ACTOR, SaveEnvironment(document_json=json.dumps(document)))
+        evaluated_cases.append(case.model_copy(update={"revision": saved.revision}))
+    body = body.model_copy(
+        update={
+            "evaluation_plan": body.evaluation_plan.model_copy(
+                update={"cases": tuple(evaluated_cases)}
             ),
-            None,
-        )
+        }
+    )
     service = LearningService(
         factory,
         store,
@@ -144,6 +146,21 @@ def test_empty_release_catalog_can_train_evaluate_then_explicitly_initialize_rea
     project = service.create_project(ACTOR, body)
     assert project.value.baseline_release_id is None
     assert store.list_learning(ACTOR.owner_key, "release") == []
+    case = project.value.teaching_cases[0]
+    capture = CaptureReceipt(
+        episode_id=uuid4(),
+        artifact_id=uuid4(),
+        manifest_sha256="2" * 64,
+        frame_count=20,
+        source="reference_controller",
+        seed=case.seed,
+        task_id=project.value.task_id,
+        control_profile_id=project.value.control_profile_id,
+        case_id=case.case_id,
+        environment_id=case.environment_id,
+        revision=case.revision,
+        split=case.split,
+    )
     dataset = DatasetVersion(
         id=uuid4(),
         owner_key=ACTOR.owner_key,
@@ -155,8 +172,9 @@ def test_empty_release_catalog_can_train_evaluate_then_explicitly_initialize_rea
         project_id=project.value.id,
         artifact_id=uuid4(),
         manifest_sha256="2" * 64,
-        episode_ids=(uuid4(),),
+        episode_ids=(capture.episode_id,),
         seeds=(42,),
+        captures=(capture,),
         human_teleop_count=0,
         reference_controller_count=1,
         learned_policy_count=0,
