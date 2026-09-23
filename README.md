@@ -28,10 +28,10 @@ by a schematic or replay. Availability depends on the active Azure presentation.
 
 **Remaining boundaries:** regular supported GPU quota is not established for the
 development subscription. Its Spot VM was actually evicted, so Spot cannot be sold
-as uninterrupted presentation capacity. LeRobot/ACT and Azure ML components are
-CPU-smoke-tested, not validated learned robot policies. The running reference
-controller is not a trained VLA, and this is not an industrial safety certification
-or a blanket pass of every production-release gate.
+as uninterrupted presentation capacity. The running reference controller is not a
+trained VLA. The separate teaching/policy-learning implementation described below
+has not passed its real physical learning gates. This is not an industrial safety
+certification or a blanket pass of every production-release gate.
 
 All production workloads run on Azure. WSL is for authoring and automated tests,
 not a required production server. The default web page is a login-free,
@@ -67,14 +67,51 @@ escape/false-reject rates, MES/PLC integration and physical safety require a
 separate customer PoC. No ROI, trained-policy performance, arbitrary robot task
 support or always-on availability is claimed.
 
+## Teaching and policy learning: implemented, not yet admitted
+
+The protected Teaching Studio, owner-scoped demonstrations, immutable datasets,
+private managed-identity learning worker, actual Azure ML job adapters, separate
+Foundry learning coach, explicit released-skill plans, and before/after evidence
+verification are implemented. Released-skill execution is distinct from visual
+inspection: intentionally placing a normal part into a reviewed quarantine goal
+does not invent a defect classification or a Foundry inspection response.
+
+SmolVLA is an **explicit model selection**, not a fallback labeled as GR00T.
+Its pinned model and backbone cards declare Apache-2.0. The reviewed GR00T
+revisions remain outside production admission because of noncommercial or
+conflicting model-license artifacts. No restricted weights were used to produce
+the SmolVLA results.
+
+Actual Azure checks on 2026-09-23 established private networking/identity access,
+an A100 80 GB CUDA workload, a typed Foundry coach response, and hash-verified
+model assets. A separate diagnostic loaded the original SmolVLA vendor weights
+and returned three finite CUDA predictions using **six-dimensional synthetic
+observations**, with zero optimizer and actuator calls. That is compatibility
+evidence, not a Franka-trained policy: its approximately 248 ms warm inference
+time did not satisfy the proposed 80 ms inference gate.
+
+Actual Isaac capture attempts also failed the full 100-interval, 100 ms
+control-cycle gate; partial and truncated captures were retained as failures.
+Consequently, model/policy and bootstrap allowlists remain empty and learning
+admission remains off. A valid full-task dataset, changed weights from actual
+training, model-bound actuator execution, and all frozen held-out physical
+trials are still required. An Azure `Completed` status, passing component tests,
+or handwritten results JSON cannot supply those missing facts.
+
+See [policy learning](docs/policy-learning.md),
+[the learning API](docs/learning-api.md), and
+[runtime control and evidence](docs/runtime-control.md) for the implemented
+contracts, operator responsibilities, and remaining live gates.
+
 ## What exists
 
 ```text
 apps/web     Public audience viewer plus protected MSAL operator console
 apps/api     Authenticated API, durable revisions/runs, approval and result verification
-agents       Versioned Foundry agent definition and typed inspection function
+apps/learning_worker  Private identity-only job, artifact and policy registry boundary
+agents       Separate versioned Foundry inspection and proposal-only learning coach
 simulation   Reviewed scene builders, command guards, Isaac adapter and HTTPS bridge
-learning     Scoped demonstrations, LeRobot/ACT conversion, training, inference and AML jobs
+learning     Scoped demonstrations, explicit ACT/SmolVLA paths, AML jobs and physical evidence
 contracts    Customer JSON Schema and offline validation CLI
 examples     Reference, custom compact, and configuration-only customer examples
 infra        Azure foundation, bootstrap job and private GPU/web templates
@@ -109,6 +146,12 @@ Infrastructure compilation requires the local Azure CLI/Bicep compiler but does
 not log in or create resources. Dependency installation uses package registries.
 Browser tests run with `npm run test:e2e` from `apps/web`; their fixture harness is
 explicitly test-only and is excluded from the production build.
+
+CI additionally runs the frozen Python 3.11 CPU policy environment independently
+of the API environment: installed SmolVLA preprocessing interfaces, real LeRobot
+conversion of labeled synthetic observations, and all Azure ML pipeline schemas.
+Those jobs have no Azure credentials or vendor-weight downloads; their artifacts
+are labeled test-only and cannot pass the physical learning gate.
 
 Some app-managed Windows worktrees contain Windows-only paths in `.git`.
 WSL can execute Python in such a worktree even when Linux Git cannot resolve
