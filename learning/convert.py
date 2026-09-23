@@ -18,6 +18,7 @@ from learning.contract import CAMERAS, JOINT_NAMES, JOINT_UNITS, Scope, validate
 from learning.offline import require_lerobot
 
 CONVERSION_SCHEMA = "physicalai.lerobot-conversion/v1"
+TEACHING_CONVERSION_SCHEMA = "physicalai.lerobot-conversion/v2"
 LOCAL_REPO_ID = "azure-local/physicalai-reference-arm"
 TASK = "Inspect the visible part and place it in its approved tray."
 
@@ -86,7 +87,9 @@ def convert_dataset(
                 frame = {
                     "observation.state": np.asarray(raw["joint_positions"], dtype=np.float32),
                     "action": np.asarray(raw["commanded_joint_targets"], dtype=np.float32),
-                    "task": TASK,
+                    "task": episode.metadata["demonstration"]["instruction"]
+                    if "demonstration" in episode.metadata
+                    else TASK,
                 }
                 for camera in CAMERAS:
                     image = raw["images"][camera]
@@ -104,7 +107,9 @@ def convert_dataset(
     finally:
         dataset.finalize()
     manifest = {
-        "schema": CONVERSION_SCHEMA,
+        "schema": TEACHING_CONVERSION_SCHEMA
+        if "control_profile" in validated.manifest
+        else CONVERSION_SCHEMA,
         "lerobot_version": LEROBOT_VERSION,
         "repo_id": LOCAL_REPO_ID,
         "scope": asdict(expected_scope),
@@ -131,5 +136,7 @@ def convert_dataset(
         ],
         "files": inventory(output),
     }
+    if "control_profile" in validated.manifest:
+        manifest["control_profile"] = validated.manifest["control_profile"]
     write_json(output / "conversion.json", manifest)
     return manifest

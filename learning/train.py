@@ -26,12 +26,14 @@ from learning.contract import (
     EPISODE_KEYS,
     JOINT_NAMES,
     JOINT_UNITS,
+    ControlProfile,
+    DemonstrationSource,
     EpisodeSpec,
     Provenance,
     Scope,
     timing,
 )
-from learning.convert import CONVERSION_SCHEMA, LOCAL_REPO_ID
+from learning.convert import CONVERSION_SCHEMA, LOCAL_REPO_ID, TEACHING_CONVERSION_SCHEMA
 from learning.offline import OFFLINE_ENV, require_lerobot
 
 MODEL_SCHEMA = "physicalai.act-checkpoint/v1"
@@ -82,8 +84,15 @@ class TrainOptions:
 
 def validate_conversion(root: Path, expected_scope: Scope) -> dict:
     expected_scope.validate()
-    value = keys(read_json(root / "conversion.json"), CONVERSION_KEYS, "conversion")
-    require(value["schema"] == CONVERSION_SCHEMA, "Wrong conversion schema")
+    value = read_json(root / "conversion.json")
+    teaching = value.get("schema") == TEACHING_CONVERSION_SCHEMA
+    keys(value, CONVERSION_KEYS | ({"control_profile"} if teaching else set()), "conversion")
+    require(
+        value["schema"] in (CONVERSION_SCHEMA, TEACHING_CONVERSION_SCHEMA),
+        "Wrong conversion schema",
+    )
+    if teaching:
+        ControlProfile(**value["control_profile"]).validate()
     require(value["lerobot_version"] == LEROBOT_VERSION, "Wrong converter version")
     require(value["scope"] == asdict(expected_scope), "Tenant/owner scope mismatch")
     require(value["repo_id"] == LOCAL_REPO_ID, "Remote dataset identifiers are forbidden")
@@ -101,10 +110,14 @@ def validate_conversion(root: Path, expected_scope: Scope) -> dict:
     for index, episode in enumerate(value["episodes"]):
         keys(
             episode,
-            EPISODE_KEYS | {"episode_index", "terminated", "truncated"},
+            EPISODE_KEYS
+            | {"episode_index", "terminated", "truncated"}
+            | ({"demonstration"} if teaching else set()),
             "converted episode",
         )
         EpisodeSpec(**{name: episode[name] for name in EpisodeSpec.__dataclass_fields__}).validate()
+        if "demonstration" in episode:
+            DemonstrationSource(**episode["demonstration"]).validate()
         provenance = Provenance(
             **keys(episode["provenance"], set(Provenance.__dataclass_fields__), "provenance")
         )

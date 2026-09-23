@@ -19,6 +19,7 @@ from learning.common import (
 )
 from learning.contract import ControlProfile, DemonstrationSource, Scope
 from learning.gr00t import ACTION_HORIZON, MODEL_ID, MODEL_REVISION, POLICY_TYPE, SOURCE_COMMIT
+from learning.gr00t.licensing import require_commercial_model
 
 MODEL_SCHEMA = "physicalai.gr00t-checkpoint/v1"
 UPSTREAM = {"source_commit": SOURCE_COMMIT, "model_id": MODEL_ID, "model_revision": MODEL_REVISION}
@@ -145,6 +146,7 @@ def validate_model(
             model["role"] == "candidate" and model["training"] is not None,
             "Only actually trained Franka checkpoints can execute as P0/P1",
         )
+        require_commercial_model(POLICY_TYPE, MODEL_REVISION)
     files = model["checkpoint_files"]
     require(isinstance(files, dict) and "config.json" in files, "Missing model configuration")
     for name in files:
@@ -193,11 +195,14 @@ def validate_model(
                 "config_sha256",
                 "code_snapshot_sha256",
                 "azure_job_id",
+                "azure_pipeline_job_id",
+                "specification_sha256",
                 "optimizer_steps",
                 "cumulative_optimizer_steps",
                 "checkpoint_step",
                 "resume_from_job_id",
                 "resume_mode",
+                "ancestor_model_sha256s",
                 "test_only",
                 "episodes",
                 "gpu",
@@ -211,6 +216,7 @@ def validate_model(
             "export_sha256",
             "config_sha256",
             "code_snapshot_sha256",
+            "specification_sha256",
         ):
             sha256(training[name], name)
         steps = integer(training["optimizer_steps"], "optimizer steps", 1)
@@ -231,9 +237,22 @@ def validate_model(
             "Explicit real Azure ML job resource identity is required",
         )
         require(
+            isinstance(training["azure_pipeline_job_id"], str)
+            and training["azure_pipeline_job_id"].rsplit("/jobs/", 1)[0]
+            == training["azure_job_id"].rsplit("/jobs/", 1)[0],
+            "Pipeline/component job provenance belongs to different workspaces",
+        )
+        require(
             training["resume_mode"] in ("new", "weights_only"),
             "Unsupported pickle/optimizer resume",
         )
+        require(
+            isinstance(training["ancestor_model_sha256s"], list)
+            and training["parent_model_sha256"] in training["ancestor_model_sha256s"],
+            "Missing explicit model ancestry",
+        )
+        for ancestor in training["ancestor_model_sha256s"]:
+            sha256(ancestor, "ancestor checkpoint")
         require(
             isinstance(training["episodes"], list)
             and bool(training["episodes"])

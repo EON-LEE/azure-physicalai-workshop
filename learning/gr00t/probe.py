@@ -10,10 +10,12 @@ from pathlib import Path
 
 from learning.common import read_json, require, write_json
 from learning.contract import Scope
+from learning.gr00t import MODEL_REVISION, POLICY_TYPE
 from learning.gr00t.artifacts import validate_model
 from learning.gr00t.dataset import validate_export
 from learning.gr00t.franka_modality import FrankaDataConfig
 from learning.gr00t.inference import physical_actions
+from learning.gr00t.licensing import require_commercial_model
 from learning.gr00t.source import activate_source
 
 
@@ -26,6 +28,7 @@ def validate_probe_inputs(
     export_sha256: str,
     model_sha256: str,
 ) -> tuple[dict, dict]:
+    require_commercial_model(POLICY_TYPE, MODEL_REVISION)
     scope = Scope(tenant_id, owner_id)
     exported = validate_export(dataset, scope=scope, expected_sha256=export_sha256)
     require(exported["test_only"] is False, "G0 GPU probe needs real captured v2 data")

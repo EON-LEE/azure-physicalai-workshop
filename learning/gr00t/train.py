@@ -18,9 +18,11 @@ from learning.common import (
     write_json,
 )
 from learning.contract import ControlProfile, DemonstrationSource, Scope
+from learning.gr00t import MODEL_REVISION, POLICY_TYPE
 from learning.gr00t.artifacts import model_contract, validate_model
 from learning.gr00t.dataset import validate_export
 from learning.gr00t.franka_modality import FrankaDataConfig
+from learning.gr00t.licensing import require_commercial_model
 from learning.gr00t.source import activate_source
 
 
@@ -107,7 +109,9 @@ def _parameter_digest(model) -> tuple[str, int]:
     for name, parameter in model.named_parameters():
         if parameter.requires_grad:
             result.update(name.encode())
-            result.update(parameter.detach().reshape(-1)[:4096].float().cpu().numpy().tobytes())
+            sample = parameter.detach().reshape(-1)[:4096].float().cpu()
+            require(bool(sample.isfinite().all()), "Nonfinite trained GR00T parameter sample")
+            result.update(sample.numpy().tobytes())
             count += 1
     require(count > 0, "Upstream GR00T model exposes no trainable parameters")
     return result.hexdigest(), count
@@ -127,6 +131,7 @@ def run_training(
     client,
     options: Gr00tTrainOptions,
 ) -> dict:
+    require_commercial_model(POLICY_TYPE, MODEL_REVISION)
     options.validate()
     sha256(code_snapshot_sha256)
     exported = validate_export(dataset_root, scope=scope, expected_sha256=export_sha256)
@@ -151,12 +156,10 @@ def run_training(
         require(
             parent["role"] == "candidate", "Resume requires a verified prior training checkpoint"
         )
-    job_id = azure_job_identity(azure_config)
-    job = client.jobs.get(os.environ["AZUREML_RUN_ID"])
-    require(
-        job.id == job_id and str(job.status).lower() == "running",
-        "Azure ML did not confirm this actual running job",
-    )
+    from learning.gr00t.azure import running_job_binding
+
+    binding = running_job_binding(client, azure_config)
+    job_id = binding["azure_component_job_id"]
     require(not output.exists() or not any(output.iterdir()), "Never overwrite candidate artifacts")
     activate_source(source_root)
     import torch
@@ -212,6 +215,12 @@ def run_training(
         if step in published:
             return published[step]
         changed, _ = _parameter_digest(model)
+        losses = [
+            finite(item["loss"], "actual training loss")
+            for item in runner.trainer.state.log_history
+            if "loss" in item
+        ]
+        require(bool(losses), "No measured upstream training loss")
         require(
             changed != before_digest, "Optimizer produced no observed trainable-parameter update"
         )
@@ -241,6 +250,8 @@ def run_training(
                 "config_sha256": digest(canonical(asdict(options))),
                 "code_snapshot_sha256": code_snapshot_sha256,
                 "azure_job_id": job_id,
+                "azure_pipeline_job_id": binding["azure_job_id"],
+                "specification_sha256": binding["specification_sha256"],
                 "optimizer_steps": step,
                 "checkpoint_step": step,
                 "cumulative_optimizer_steps": prior_steps + step,
@@ -248,6 +259,10 @@ def run_training(
                 if options.resume_mode == "weights_only"
                 else None,
                 "resume_mode": options.resume_mode,
+                "ancestor_model_sha256s": [
+                    *(parent["training"]["ancestor_model_sha256s"] if parent["training"] else []),
+                    parent_model_sha256,
+                ],
                 "test_only": False,
                 "episodes": list(episodes.values()),
                 "gpu": {
@@ -257,6 +272,7 @@ def run_training(
                     "updated_parameter_sample_before": before_digest,
                     "updated_parameter_sample_after": changed,
                     "trainable_tensors": tensor_count,
+                    "latest_loss": losses[-1],
                 },
             },
         )
@@ -287,7 +303,7 @@ def run_training(
     write_json(
         output / "result.json",
         {
-            "azure_job_id": job_id,
+            **binding,
             "optimizer_steps": options.max_steps,
             "candidate": f"candidates/step-{options.max_steps:06d}",
             "model_manifest_sha256": digest(canonical(final) + b"\n"),

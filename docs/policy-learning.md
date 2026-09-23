@@ -1,5 +1,217 @@
 # Azure policy learning
 
+**Explicit commercial default: SmolVLA (2026-09-23).** The coordinator selected
+`policy_type: smolvla`, with Apache-2.0 model and backbone revisions, instead of
+using ambiguously licensed GR00T weights. This is a visible model-family choice,
+not a fallback or a claim of GR00T success. `learning/smolvla/` has its own frozen
+environment, model manifests, importer, trainer, server and AML entry points.
+No actual learned-policy accuracy or customer readiness follows from CPU tests.
+
+**GR00T commercial model use is blocked.** The exact N1.5 and N1.6
+weight licenses restrict use to non-commercial research/evaluation. N1.7's
+model card permits commercial use and links the NVIDIA Open Model License,
+but its **same pinned repository's `LICENSE` still contains the non-commercial
+restriction**. A README claim does not resolve that conflicting primary grant.
+`learning.gr00t.licensing.APPROVED_COMMERCIAL_MODELS` is therefore empty.
+Customer weight import, paid-job preflight/submission, training, probing and
+learned execution fail closed before accessing weights or launching work.
+An assent checkbox cannot override this decision. Status/cancellation, raw
+capture, CPU data conversion and source/API inspection remain available.
+No GR00T weights have been acquired or executed by this workstream.
+
+| Family | Exact inspected model revision | Decision |
+| --- | --- | --- |
+| N1.5 | `869830fc749c35f34771aa5209f923ac57e4564e` | Non-commercial; blocked |
+| N1.6 | `d0814e7ecb19202e7c8468b46098b0b7ef3a6d61` | Non-commercial; blocked |
+| N1.7 | `2fc962b973bccdd5d8ce4f67cc63b264d6886495` | README/LICENSE conflict; blocked pending authoritative clarification |
+
+Primary references: [N1.6 license](https://huggingface.co/nvidia/GR00T-N1.6-3B/raw/d0814e7ecb19202e7c8468b46098b0b7ef3a6d61/LICENSE),
+[N1.7 model card](https://huggingface.co/nvidia/GR00T-N1.7-3B/raw/2fc962b973bccdd5d8ce4f67cc63b264d6886495/README.md),
+[conflicting N1.7 license](https://huggingface.co/nvidia/GR00T-N1.7-3B/raw/2fc962b973bccdd5d8ce4f67cc63b264d6886495/LICENSE),
+and the [NVIDIA Open Model License](https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/).
+The latter includes conditional commercial rights and Cosmos attribution/
+redistribution requirements; it cannot simply be assumed to replace a
+contradictory artifact license. The deployment owner must resolve the exact
+model grant and gated backbone access first. This is separate from EA maturity
+or commercial-support availability.
+
+## Explicit SmolVLA path
+
+| Artifact | Exact identity |
+| --- | --- |
+| Native package | LeRobot 0.4.4, source `8fff0fde7c79f23a93d845d1a50e985de01f8b8a` |
+| Policy weights | `lerobot/smolvla_base` at `d9f33c94a60fb382c90dea2164c96845bd955e28` |
+| Backbone | `HuggingFaceTB/SmolVLM2-500M-Video-Instruct` at `7b375e1b73b11138ff12fe22c8f2822d8fe03467` |
+| Runtime | Python 3.11, PyTorch 2.7.1 / CUDA 12.6, Transformers 4.57.3 |
+| Licenses | Apache-2.0 model/backbone cards and source license, with exact byte hashes in `UPSTREAM` |
+
+The vendor policy declares six state/action features and three camera keys.
+That is **not** a Franka policy. `adapted_config` explicitly changes physical
+features to the actual seven arm radians plus two individual finger metres,
+two real camera keys, absolute actions, no Aloha conversion, and one action per
+10 Hz observation. Its actual native projections already use 32 internal
+dimensions; nine measured values are preserved before documented internal
+padding to 32. No missing physical joint measurement is invented. Native Smol
+image preparation supports two cameras with `empty_cameras=0`; no fake third
+observation is generated. Predicted chunks contain **50 x 9** physical values,
+not GR00T's 16-step or N1.7's observed 40-step artifact configuration.
+
+### Operator asset preparation and data
+
+The authorized deployment owner acquires only the exact reviewed public model
+and backbone files, separately from the offline job runtime. No customer data
+is uploaded to Hugging Face. The importer performs no network calls:
+
+```bash
+python -m learning.smolvla.prepare \
+  --model-source LOCAL_PINNED_SMOL_FILES --backbone-source LOCAL_PINNED_BACKBONE_FILES \
+  --binding APPROVED_BINDING.json --output NEW_PRIVATE_ASSET_BUNDLE
+```
+
+Binding JSON contains `scope: {tenant_id, owner_id}`, `control_profile` and
+`task: {task_id, instruction, goal_id}`. `owner_id` is the opaque 64-hex owner
+hash, **not** the actor's object ID. `prepare.VENDOR_SHA256` and
+`VENDOR_GIT_BLOBS` are the exact download allowlist; ONNX assets, notebooks and
+arbitrary files are not copied. The importer verifies model weights, all used
+backbone/tokenizer/config files, license cards and the installed source license.
+It emits `model/` (train-only) and `backbone/` bundles and their manifest hashes.
+
+```bash
+python -m learning.smolvla.dataset --source REAL_V2_CAPTURE --output NEW_V3_DATASET \
+  --binding APPROVED_BINDING.json --manifest-sha256 RAW_MANIFEST_SHA256
+```
+
+Only complete, scoped v2 10 Hz demonstrations enter this converter. It uses the
+real pinned LeRobot v3 API and preserves all samples, two cameras and the
+approved task instruction. The new `physicalai.lerobot-conversion/v2` sidecar
+binds the servo profile and demonstrator provenance; existing v1 ACT conversion
+artifacts remain valid. Both capture and inference share
+`validate_joint_tracking`: 0.05 rad maximum arm target/tracking change and
+0.004 m per finger per 10 Hz tick by default. A commanded full close from 0.02 m
+to zero while contacting a part is rejected as an invalid training label.
+Bad labels are not dropped, clipped, interpolated or padded into valid data.
+
+### Actual training and inference
+
+`learning.smolvla.train.run_training` verifies actual Azure component/parent job
+identity and CUDA, initializes from real checked safetensors, then calls
+`python -m lerobot.scripts.lerobot_train` with the Smol policy path. It builds
+**new nine-dimensional normalization processors from the train split**, never
+reusing vendor six-dimensional normalizers. Publishing/W&B and online Hub access
+are disabled. Both the VLM and tokenizer point to a verified mounted backbone.
+No homegrown optimization loop or ACT substitution is used.
+
+Checkpoints are saved every approved `checkpoint_steps` on `rw_mount`.
+`training-context.json` persists the original actual pipeline/component IDs,
+specification/data/parent hashes, options and pre-update parameter fingerprint.
+`recover_checkpoint` can seal a completed safe model checkpoint after verifying
+the terminal Azure job, exact original context, native `training_step.json`,
+parent fingerprint and changed trainable values. It neither loads optimizer
+pickle nor submits/restarts a paid job. Continuing requires a new durable API
+claim and reviewed `resume_mode: weights_only` job; optimizer/scheduler restart
+is explicit and ancestry/cumulative step counts are retained.
+
+The final `model` output contains `result.json` and
+`candidates/step-XXXXXX/{model.json,checkpoint/...}`. The result binds
+`azure_job_id` (parent pipeline), `azure_component_job_id` (actual optimizer
+component), `specification_sha256`, actual optimizer steps and candidate manifest
+SHA. The candidate's training fields retain the child `azure_job_id` and parent
+`azure_pipeline_job_id` separately. The validator requires changed weight bytes
+**and changed actual trainable projection samples**. `processor_sha256` binds
+the canonical map of every saved pre/postprocessor JSON and normalization
+safetensors checksum. `backbone_manifest_sha256` pins the separately supplied
+backbone bundle. Loss is not fabricated: the upstream per-step training log is
+retained, while an unparsed typed loss stays null.
+
+The deployment-selected process is:
+
+```bash
+python -m learning.smolvla.inference \
+  --model-root APPROVED_TRAINED_MODEL --backbone-root APPROVED_BACKBONE_BUNDLE \
+  --binding APPROVED_BINDING.json --model-sha256 APPROVED_MODEL_MANIFEST_SHA256 \
+  --socket-path /run/physicalai-policy/policy.sock --allowed-client-uid ISAAC_UID
+```
+
+The runtime uses `learning.smolvla.ipc.SocketChunkPolicy(socket_path, scope=...,
+model_sha256=..., profile=..., task=..., expected_peer_uid=...)` with
+`RemoteGuardedPolicyAdapter`. It preserves the existing main-thread actuator,
+approval, source-case, owner, epoch, deadline, joint, speed and cancellation guards.
+The transport schema is explicitly `physicalai.smolvla-request/v1` /
+`physicalai.smolvla-response/v1`; it cannot accept a GR00T chunk or checkpoint.
+The vendor initialization cannot execute as P0, even after its configuration
+has been adapted. Only a genuinely trained candidate can enter privileged
+evaluation; production execution additionally requires the parent's reviewed
+release and measured timing attestation.
+
+### Private AML worker and physical evaluation
+
+`learning.smolvla.azure.create_plan(config, output, deterministic_job_name=...)`
+is offline-only. `clients_for_managed_identity(config, caller_client_id=...)`
+returns `(MLClient, StorageManagementClient)`; no interactive/default credential
+is selected. `PolicyJobs(client, config, storage_client=...)` exposes `preflight`,
+`submit`, `status` and `cancel`. The API owns the durable paid-job claim. An
+existing deterministic job must match owner/specification/plan hashes and is
+reconciled, not resubmitted. Metrics remain null until verified actual outputs
+are read; Azure status `Completed` alone does not verify a model or its quality.
+
+The config schema is `physicalai.smolvla-azure/v1`, with explicit
+`compute_tier`, resource/identity/private-store settings, immutable `UPSTREAM`,
+specification/task/profile hashes, and the same bounded training options.
+`kind: train` has registered inputs `demonstrations`, `parent_model`, `backbone`;
+outputs are `dataset` and `model`. `kind: compare` has `policy_before`,
+`policy_after`, `evidence`, `plan`; `kind: bootstrap_compare` has `candidate`,
+`evidence`, `plan`. Both evaluation jobs output `report/report.json`.
+Folder hashes bind their appropriate manifest files; evaluation-plan hashes
+bind canonical native JSON. An API authorization-plan hash is a distinct value:
+the immutable specification binds the reviewed mapping to the native plan asset.
+
+Preflight reads **the actual separate outbound-rule endpoint** through
+`client.workspace_outbound_rules.list(workspace_name=...)`. The default workspace
+GET projection is insufficient. Inactive/missing approved private endpoints
+block jobs. The operator must explicitly provision the managed network; preflight
+never mutates networking, grants roles, enables storage keys or Internet egress.
+
+The ordinary comparison has two genuinely trained policies P0/P1 and
+`improved | not_improved | inconclusive`. First-P0 bootstrapping is a separate
+privileged workflow: real teacher data -> real initial optimization -> held-out
+`reference_bootstrap` evaluation -> operator publication. The scripted reference
+has no model SHA and is never a fictional P0. No fabricated release/evaluation
+ID is needed to authorize candidate evaluation.
+
+Native report schemas are `physicalai.smolvla-paired-report/v1` and
+`physicalai.smolvla-bootstrap-report/v1`; they contain all trials including
+failures, final pose/destination, exact model IDs, counts, nearest-rank p95,
+safety evidence and actual application/prediction/reference-route counters.
+Frozen cases include the reviewed scene-builder hash and initial pose;
+observed start positions must match within 1 mm. The held-out distribution must
+span at least 2 cm, so changing defect-only seeds is not placement generalization.
+Twenty complete pairs and the physical/safety/latency thresholds are required.
+Learned trials require zero scripted-route calls, actual applied physics ticks
+and fresh model predictions. Production report validation checks scope,
+trained artifact lineage, no train/test seed/episode leakage, live Azure/Isaac
+provenance and every final camera checksum. No CPU double can satisfy that path.
+
+### Evidence boundaries and commands
+
+`learning/smolvla/Dockerfile` builds the isolated CUDA image without vendor
+weights. The parent reported actual ACR build `ch15` and digest
+`sha256:914b74501c75fb8aaa60c0c5b092d640d57d1c3bef15881d1c6f1a17ca99462d`;
+that is an image-build result, not GPU allocation or model accuracy.
+`python -m learning.checks.smolvla_api_check` actually imports the installed
+policy and runs its state/image preparation helpers without weights.
+`smolvla_export_check` actually converts/reloads v3 with explicitly synthetic
+input, and `smolvla_aml_check` loads all three real SDK job schemas offline.
+These checks always report zero optimizer steps / no quality verification.
+
+The model G0 command is `python -m learning.smolvla.probe --dataset ... --parent
+... --backbone ... --binding ... --model-sha256 ... --conversion-sha256 ...
+--output ...`, executed only by the authorized Azure operator in a bounded job.
+It requires real v2 data, runs six genuine model calls with no ground-truth
+action input, records driver/CUDA/memory/latency, never actuates and never
+promotes the untrained initialization. Warm latency above 80 ms exits nonzero.
+Actual GPU optimization, bootstrap/paired Isaac accuracy, concurrent A10
+inference timing and publication remain live acceptance requirements.
+
 This is the learning slice of the existing customer inspection cell, not a second
 simulator or a replacement controller. It supports pinned Isaac Sim **5.1.0/6.0.0 Franka**
 articulation, the existing customer environment revision and reviewed scene
@@ -170,9 +382,9 @@ PNGs, missing/nonfinite values and mismatched checksums are rejected.
 
 ## Pinned real LeRobot path
 
-### GR00T N1.5 teaching path (separate from ACT)
+### GR00T N1.5 compatibility implementation (customer use blocked)
 
-The target motor policy is **GR00T N1.5**, pinned to NVIDIA source commit
+The initial compatibility implementation uses **GR00T N1.5**, pinned to NVIDIA source commit
 `4af2b622892f7dcb5aae5a3fb70bcb02dc217b96` and model
 `nvidia/GR00T-N1.5-3B` revision `869830fc749c35f34771aa5209f923ac57e4564e`.
 No N1.6/N1.7 API or SO-101 six-axis mapping is substituted. The isolated
@@ -276,7 +488,7 @@ approved 48 GB-or-larger training GPU, not a guarantee of minimum memory.
 The A10 renderer's available memory/latency for concurrent inference is not
 assumed. No model weights were downloaded or license accepted by these checks.
 
-The GPU build recipe is `learning/gr00t/Dockerfile`: digest-pinned
+The **held, N1.5-only** GPU build recipe is `learning/gr00t/Dockerfile`: digest-pinned
 `pytorch/pytorch:2.5.1-cuda12.4-cudnn9-devel`, frozen isolated runtime/Azure extras,
 FlashAttention 2.7.4.post1 compiled from its locked source distribution, and the
 exact upstream checkout at `/opt/isaac-gr00t`. It targets Ampere A100/A10
@@ -285,7 +497,11 @@ no model weights and accepts no license. An authorized Azure builder may build
 it with `-f learning/gr00t/Dockerfile` and then pin the resulting ACR digest.
 Local dependency resolution is not a completed GPU image build or GPU proof.
 
-After the operator reviews the pinned NVIDIA model license and acquires its
+The following weight/probe commands document the implementation but are
+**currently rejected by the license gate**, including when the acknowledgement
+flag is supplied. Do not build a customer workflow around the held model.
+Once an unambiguous compatible model revision is separately approved, the
+operator must acquire its
 exact three shards plus metadata into approved private Azure storage,
 `python -m learning.gr00t.prepare --source LOCAL_VENDOR_FILES --output NEW_BUNDLE
 --binding APPROVED_BINDING_JSON --acknowledge-license-review` checks the

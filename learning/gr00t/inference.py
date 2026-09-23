@@ -9,7 +9,7 @@ from pathlib import Path
 
 from learning.common import ContractError, keys, require
 from learning.contract import ControlProfile, DemonstrationSource, Scope, bounded_joints, vector
-from learning.gr00t import ACTION_HORIZON
+from learning.gr00t import ACTION_HORIZON, MODEL_REVISION, POLICY_TYPE
 from learning.gr00t.artifacts import validate_model
 from learning.gr00t.franka_modality import FrankaDataConfig
 from learning.gr00t.ipc import (
@@ -20,6 +20,7 @@ from learning.gr00t.ipc import (
     send_packet,
     validate_request,
 )
+from learning.gr00t.licensing import require_commercial_model
 from learning.gr00t.source import activate_source
 from learning.inference import PolicyObservation
 
@@ -44,6 +45,7 @@ def physical_actions(result: dict) -> tuple[tuple[float, ...], ...]:
 
 
 class LocalGr00tPolicy:
+    policy_type = POLICY_TYPE
     fps, physics_hz, chunk_size, n_action_steps = 10, 60, ACTION_HORIZON, 1
 
     def __init__(
@@ -55,6 +57,7 @@ class LocalGr00tPolicy:
         model_sha256: str,
         expected_control_profile_sha256: str,
     ) -> None:
+        require_commercial_model(POLICY_TYPE, MODEL_REVISION)
         self.metadata = validate_model(
             model_root,
             expected_scope=scope,
@@ -134,6 +137,7 @@ def serve(
                     scope=policy.scope,
                     profile=policy.profile,
                     task=policy.task,
+                    policy_type=policy.policy_type,
                 )
                 start = time.monotonic_ns()
                 deadline = min(deadline, context.deadline_monotonic_ns)

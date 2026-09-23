@@ -7,7 +7,9 @@ from pathlib import Path
 
 from learning.common import file_digest, keys, read_json, require, safe_path, write_json
 from learning.contract import ControlProfile, DemonstrationSource, Scope
+from learning.gr00t import MODEL_REVISION, POLICY_TYPE
 from learning.gr00t.artifacts import PRETRAINED_WEIGHTS, model_contract, validate_model
+from learning.gr00t.licensing import require_commercial_model
 
 PRETRAINED_METADATA = {
     "config.json": "dc65cdaf211ac2368ec9f896b1b401bbf8d9c32d",
@@ -26,6 +28,7 @@ def import_pretrained(
     acknowledge_license_review: bool,
 ) -> str:
     require(acknowledge_license_review is True, "Operator model-license review is required")
+    require_commercial_model(POLICY_TYPE, MODEL_REVISION)
     require(not output.exists(), "Never overwrite an approved pretrained artifact")
     scope.validate()
     profile.validate()
