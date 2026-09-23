@@ -256,6 +256,14 @@ socket timeout, or total inference latency above 80 ms stops the request.
 No reference route, clipping, ACT substitution or anonymous socket access is
 provided. Runtime must still verify current approval and actually applied model
 SHA immediately before actuation, with its independent safety watchdogs.
+The absolute deadline starts at adapter step entry and is shared by connect,
+send, every partial receive, JSON decoding and response validation; a dribbling
+peer cannot renew the budget. Linux `SO_PEERCRED` verifies both ends before any
+packet is accepted. Defaults require the same effective UID; differing container
+UIDs require deployment-only `SocketChunkPolicy(expected_peer_uid=...)` and
+server `--allowed-client-uid` pins. `policy.predict_calls` is a read-only count
+of IPC prediction **attempts**, not successful server inference; failed
+connections still fault and cannot count as applied policy actions.
 
 The isolated check `python -m learning.checks.groot_export_smoke --output NEW_DIR`
 performs actual Parquet/MP4 export on explicitly synthetic CPU fixtures; it is

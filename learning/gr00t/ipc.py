@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import os
 import socket
 import stat
 import struct
@@ -197,24 +198,46 @@ def validate_response(response: dict, request: dict) -> tuple[tuple[float, ...],
     )
 
 
-def send_packet(connection: socket.socket, value: dict) -> None:
+def remaining(deadline_ns: int) -> float:
+    duration = deadline_ns - time.monotonic_ns()
+    require(duration > 0, "Absolute policy IPC deadline exceeded")
+    return duration / 1e9
+
+
+def check_peer(connection: socket.socket, *, expected_uid: int) -> None:
+    integer(expected_uid, "deployment-approved peer UID", 0, 2**32 - 1)
+    require(hasattr(socket, "SO_PEERCRED"), "Linux peer credential verification is required")
+    _, uid, _ = struct.unpack(
+        "3i", connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)
+    )
+    require(uid == expected_uid, "Policy socket peer UID differs from the approved deployment")
+
+
+def send_packet(connection: socket.socket, value: dict, *, deadline_ns: int) -> None:
+    remaining(deadline_ns)
     data = canonical(value)
     require(0 < len(data) <= MAX_MESSAGE_BYTES, "IPC packet exceeds limit")
+    connection.settimeout(remaining(deadline_ns))
     connection.sendall(struct.pack("!I", len(data)) + data)
+    remaining(deadline_ns)
 
 
-def receive_packet(connection: socket.socket) -> dict:
+def receive_packet(connection: socket.socket, *, deadline_ns: int) -> dict:
     def receive(size: int) -> bytes:
         chunks = bytearray()
         while len(chunks) < size:
+            connection.settimeout(remaining(deadline_ns))
             part = connection.recv(size - len(chunks))
+            remaining(deadline_ns)
             require(bool(part), "Policy IPC peer disconnected")
             chunks.extend(part)
         return bytes(chunks)
 
     size = struct.unpack("!I", receive(4))[0]
     require(0 < size <= MAX_MESSAGE_BYTES, "IPC packet exceeds limit")
-    return parse_json(receive(size))
+    value = parse_json(receive(size))
+    remaining(deadline_ns)
+    return value
 
 
 class SocketChunkPolicy:
@@ -228,6 +251,7 @@ class SocketChunkPolicy:
         model_sha256: str,
         profile: ControlProfile,
         task: DemonstrationSource,
+        expected_peer_uid: int | None = None,
     ) -> None:
         require(
             socket_path.is_absolute()
@@ -242,6 +266,9 @@ class SocketChunkPolicy:
         sha256(model_sha256)
         self.socket_path, self.scope, self.model_sha256 = socket_path, scope, model_sha256
         self.profile, self.task = profile, task
+        self.expected_peer_uid = os.geteuid() if expected_peer_uid is None else expected_peer_uid
+        integer(self.expected_peer_uid, "deployment-approved server UID", 0, 2**32 - 1)
+        self.call_deadline_ns: int | None = None
         self.metadata = {
             "policy_type": POLICY_TYPE,
             "model_sha256": model_sha256,
@@ -256,8 +283,18 @@ class SocketChunkPolicy:
     def reset(self) -> None:
         self.context = None
 
+    @property
+    def predict_calls(self) -> int:
+        """IPC prediction attempts, not guard-step calls or proof of completed server inference."""
+        return self.sequence
+
     def predict_chunk(self, observation: PolicyObservation):
         require(self.context is not None, "IPC policy has no approved control context")
+        deadline = min(
+            self.context.deadline_monotonic_ns,
+            self.call_deadline_ns or (time.monotonic_ns() + 80_000_000),
+        )
+        remaining(deadline)
         request = make_request(
             observation,
             self.context,
@@ -268,14 +305,16 @@ class SocketChunkPolicy:
             sequence=self.sequence,
         )
         self.sequence += 1
-        deadline = min(self.context.deadline_monotonic_ns, time.monotonic_ns() + 80_000_000)
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-            connection.settimeout(max(0.001, (deadline - time.monotonic_ns()) / 1e9))
+            connection.settimeout(remaining(deadline))
             connection.connect(str(self.socket_path))
-            send_packet(connection, request)
-            response = receive_packet(connection)
-        require(time.monotonic_ns() <= deadline, "Policy IPC control deadline exceeded")
-        return validate_response(response, request)
+            remaining(deadline)
+            check_peer(connection, expected_uid=self.expected_peer_uid)
+            send_packet(connection, request, deadline_ns=deadline)
+            response = receive_packet(connection, deadline_ns=deadline)
+        result = validate_response(response, request)
+        remaining(deadline)
+        return result
 
 
 class RemoteGuardedPolicyAdapter(GuardedPolicyAdapter):
@@ -291,4 +330,8 @@ class RemoteGuardedPolicyAdapter(GuardedPolicyAdapter):
 
     def step(self, observation: PolicyObservation, context: ControlContext):
         self.policy.context = context
+        self.policy.call_deadline_ns = min(
+            context.deadline_monotonic_ns,
+            self.clock_ns() + round(self.limits.max_inference_latency_ms * 1e6),
+        )
         return super().step(observation, context)

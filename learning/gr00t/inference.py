@@ -12,7 +12,14 @@ from learning.contract import ControlProfile, DemonstrationSource, Scope, bounde
 from learning.gr00t import ACTION_HORIZON
 from learning.gr00t.artifacts import validate_model
 from learning.gr00t.franka_modality import FrankaDataConfig
-from learning.gr00t.ipc import make_response, receive_packet, send_packet, validate_request
+from learning.gr00t.ipc import (
+    check_peer,
+    make_response,
+    receive_packet,
+    remaining,
+    send_packet,
+    validate_request,
+)
 from learning.gr00t.source import activate_source
 from learning.inference import PolicyObservation
 
@@ -99,7 +106,9 @@ class LocalGr00tPolicy:
         return physical_actions(self.backend.get_action(inputs))
 
 
-def serve(policy: LocalGr00tPolicy, socket_path: Path) -> None:
+def serve(
+    policy: LocalGr00tPolicy, socket_path: Path, *, allowed_client_uid: int | None = None
+) -> None:
     require(os.name == "posix" and socket_path.is_absolute(), "Policy IPC requires Linux AF_UNIX")
     require(
         not socket_path.exists() and not socket_path.is_symlink(),
@@ -108,6 +117,7 @@ def serve(policy: LocalGr00tPolicy, socket_path: Path) -> None:
     require(socket_path.parent.is_dir(), "Provision a protected policy socket directory first")
     require(socket_path.parent.stat().st_mode & 0o007 == 0, "Socket directory is world-accessible")
     last_sequences: dict[tuple, int] = {}
+    expected_uid = os.geteuid() if allowed_client_uid is None else allowed_client_uid
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
         listener.bind(str(socket_path))
         os.chmod(socket_path, 0o660)
@@ -115,8 +125,9 @@ def serve(policy: LocalGr00tPolicy, socket_path: Path) -> None:
         while True:
             connection, _ = listener.accept()
             with connection:
-                connection.settimeout(0.08)
-                request = receive_packet(connection)
+                deadline = time.monotonic_ns() + 80_000_000
+                check_peer(connection, expected_uid=expected_uid)
+                request = receive_packet(connection, deadline_ns=deadline)
                 observation, context = validate_request(
                     request,
                     model_sha256=policy.model_sha256,
@@ -125,6 +136,8 @@ def serve(policy: LocalGr00tPolicy, socket_path: Path) -> None:
                     task=policy.task,
                 )
                 start = time.monotonic_ns()
+                deadline = min(deadline, context.deadline_monotonic_ns)
+                remaining(deadline)
                 require(
                     0 <= start - observation.monotonic_ns <= 200_000_000
                     and start < context.deadline_monotonic_ns,
@@ -159,6 +172,7 @@ def serve(policy: LocalGr00tPolicy, socket_path: Path) -> None:
                         actions,
                         inference_latency_ms=(end - start) / 1e6,
                     ),
+                    deadline_ns=deadline,
                 )
 
 
@@ -173,6 +187,7 @@ def main() -> None:
     parser.add_argument("--owner-id", required=True)
     parser.add_argument("--model-sha256", required=True)
     parser.add_argument("--control-profile-sha256", required=True)
+    parser.add_argument("--allowed-client-uid", type=int)
     args = parser.parse_args()
     try:
         policy = LocalGr00tPolicy(
@@ -182,7 +197,7 @@ def main() -> None:
             model_sha256=args.model_sha256,
             expected_control_profile_sha256=args.control_profile_sha256,
         )
-        serve(policy, args.socket_path)
+        serve(policy, args.socket_path, allowed_client_uid=args.allowed_client_uid)
     except (ContractError, OSError) as exc:
         raise SystemExit(f"GR00T policy process stopped: {exc}") from exc
 
