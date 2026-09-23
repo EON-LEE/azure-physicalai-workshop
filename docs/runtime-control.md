@@ -218,6 +218,17 @@ accepted timing attestations. The parent must separately verify real
 grip/hold/place behavior, licensed checkpoint inference, and frozen paired
 held-out trials before accepting teaching data or promoting any policy.
 
+Probe receipts are written to a same-directory temporary file, flushed and
+fsynced, then published atomically without overwriting another attempt. The
+containing directory and diagnostic streams are flushed **before** Isaac
+teardown. A failure receipt preserves its phase, exception type and observed
+state even for `Problem`, SDK initialization errors or an unexpected
+`SystemExit`. A shutdown-only `SystemExit(0)` cannot replace the original error;
+an unexpected zero exit during the probe is treated as incomplete/failing.
+The host must still require the correct receipt schema, `probe_completed` and
+ready capture evidence, never just Docker's exit status. No interval count or
+physical outcome is inferred from startup/shutdown timing.
+
 ## Explicit bootstrap reference collection
 
 After real GPU grip/hold/place validation, an approved operator can collect one

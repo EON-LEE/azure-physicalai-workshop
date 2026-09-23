@@ -5,7 +5,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 import time
+import traceback
 from dataclasses import replace
 from datetime import timedelta
 from itertools import pairwise
@@ -31,6 +33,46 @@ from simulation.runtime_contracts import (
 )
 
 FIXTURE_SHA = digest(b"physicalai-isolated-actuation-fixture/v1")
+
+
+def _persist_receipt(path: Path, report: dict) -> None:
+    temporary = path.with_suffix(f".{uuid4()}.new")
+    try:
+        with temporary.open("xb") as stream:
+            stream.write(canonical(report) + b"\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.chmod(0o600)
+        os.link(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        temporary.unlink(missing_ok=True)
+    print(
+        "PHYSICALAI_OPERATOR_RECEIPT "
+        + json.dumps(
+            {
+                "output": str(path),
+                "schema": report["schema"],
+                "probe_completed": report.get("probe_completed", False),
+                "physical_status": report["physical_status"],
+                "failure_type": report.get("failure_type"),
+            }
+        ),
+        flush=True,
+    )
+
+
+def _close_application(application, pending_error: BaseException | None) -> None:
+    try:
+        application.close()
+    except SystemExit as exc:
+        # Kit may exit Python during teardown; it must not replace the actual run outcome.
+        if pending_error is None and exc.code not in (None, 0):
+            raise
 
 
 def outcome_fields(mode: str, result: Execution | None, capture: CaptureStatus | None) -> dict:
@@ -134,37 +176,49 @@ def run_probe(args) -> dict:
         )
     require(not args.output.exists(), "Refusing to overwrite earlier probe evidence")
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    application = create_simulation_app()
-    from simulation.isaac_adapter import IsaacWorkcell
-
-    hardware = IsaacWorkcell()
-    profile = ControlProfile(servo_profile_sha256())
-    authorization_id = uuid4()
-    provider = _FixtureProvider(scope, authorization_id) if args.mode == "policy-fixture" else None
-    core = SimulationCore(
-        SceneRegistry(),
-        control_profile=profile,
-        policy_provider=provider,
-        tenant_id=scope.tenant_id,
-    )
-
-    def capture_factory(binding):
-        request = Demonstration.prepare(core, binding.command_id)
-        source = DemonstrationSource(
-            "reference_controller",
-            task["task_id"],
-            task["instruction"],
-            task["goal_id"],
-        )
-        return Demonstration(replace(request, control_profile=profile, demonstration=source))
-
     heartbeat = args.output.with_suffix(".heartbeat")
-    runtime = SimulatorRuntime(core, hardware, heartbeat=heartbeat, capture_factory=capture_factory)
     command_id, session_id, lease_id = uuid4(), uuid4(), uuid4()
     heartbeat_times = []
     initial = None
     task = None
+    application = None
+    runtime = None
+    core = None
+    hardware = None
+    report = None
+    phase = "application_initialization"
     try:
+        application = create_simulation_app()
+        from simulation.isaac_adapter import IsaacWorkcell
+
+        phase = "hardware_initialization"
+        hardware = IsaacWorkcell()
+        profile = ControlProfile(servo_profile_sha256())
+        authorization_id = uuid4()
+        provider = (
+            _FixtureProvider(scope, authorization_id) if args.mode == "policy-fixture" else None
+        )
+        core = SimulationCore(
+            SceneRegistry(),
+            control_profile=profile,
+            policy_provider=provider,
+            tenant_id=scope.tenant_id,
+        )
+
+        def capture_factory(binding):
+            request = Demonstration.prepare(core, binding.command_id)
+            source = DemonstrationSource(
+                "reference_controller",
+                task["task_id"],
+                task["instruction"],
+                task["goal_id"],
+            )
+            return Demonstration(replace(request, control_profile=profile, demonstration=source))
+
+        runtime = SimulatorRuntime(
+            core, hardware, heartbeat=heartbeat, capture_factory=capture_factory
+        )
+        phase = "scene_activation"
         core.activate(scope.owner_id, environment)
         startup_deadline = time.monotonic() + 120
         while not core.ready:
@@ -198,6 +252,7 @@ def run_probe(args) -> dict:
             goal_id=args.goal_id if collecting else core.spec.rejected_id,
         )
         motion_seconds = min(30, execution["max_step_seconds"])
+        phase = "command_admission"
         if args.mode != "policy-fixture":
             request = TeachingStart(
                 **scene,
@@ -226,6 +281,7 @@ def run_probe(args) -> dict:
         jog_sent = False
         teacher = None
         finish_sent = False
+        phase = "control"
         while core.command(scope.owner_id, command_id).status in {"queued", "running"}:
             if (
                 collecting
@@ -292,6 +348,7 @@ def run_probe(args) -> dict:
                 break
             time.sleep(0.001)
         persistence_deadline = time.monotonic() + 120
+        phase = "capture_publication"
         capture = core.captures.get((scope.owner_id, command_id))
         while capture is not None and capture.status not in {"ready", "invalid"}:
             if time.monotonic() >= persistence_deadline:
@@ -338,37 +395,58 @@ def run_probe(args) -> dict:
             ),
             "fixture_actuation": fixture,
         }
-        with args.output.open("xb") as stream:
-            stream.write(canonical(report) + b"\n")
         return report
-    except (ValueError, RuntimeError, OSError) as exc:
-        with core.lock:
-            result = core.commands.get((scope.owner_id, command_id))
-            capture = core.captures.get((scope.owner_id, command_id))
-        if not args.output.exists():
-            with args.output.open("xb") as stream:
-                stream.write(
-                    canonical(
-                        {
-                            "schema": "physicalai.operator-attempt-failure/v1",
-                            "mode": args.mode,
-                            "environment_id": environment.environment_id,
-                            "revision": environment.revision,
-                            "initial_state": initial,
-                            "command_id": str(command_id),
-                            "failure": str(exc),
-                            **outcome_fields(args.mode, result, capture),
-                        }
-                    )
-                    + b"\n"
-                )
-        raise
     finally:
+        pending_error = sys.exc_info()[1]
         try:
-            runtime.close()
+            if report is None:
+                result = None
+                capture = None
+                if core is not None:
+                    with core.lock:
+                        result = core.commands.get((scope.owner_id, command_id))
+                        capture = core.captures.get((scope.owner_id, command_id))
+                report = {
+                    "schema": "physicalai.operator-attempt-failure/v1",
+                    "mode": args.mode,
+                    "environment_id": environment.environment_id,
+                    "revision": environment.revision,
+                    "initial_state": initial,
+                    "command_id": str(command_id),
+                    "phase": phase,
+                    "failure_type": (
+                        type(pending_error).__name__
+                        if pending_error is not None
+                        else "MissingTerminalOutcome"
+                    ),
+                    "failure": str(pending_error)
+                    if pending_error is not None
+                    else "No terminal outcome",
+                    "probe_completed": False,
+                    "control_intervals": (
+                        getattr(hardware, "control_timings", []) if hardware is not None else []
+                    ),
+                    **outcome_fields(args.mode, result, capture),
+                }
+            _persist_receipt(args.output, report)
+            if pending_error is not None:
+                traceback.print_exception(
+                    type(pending_error), pending_error, pending_error.__traceback__, file=sys.stderr
+                )
+            sys.stdout.flush()
+            sys.stderr.flush()
         finally:
-            application.close()
-            heartbeat.unlink(missing_ok=True)
+            try:
+                if runtime is not None:
+                    runtime.close()
+            finally:
+                try:
+                    if application is not None:
+                        _close_application(application, pending_error or sys.exc_info()[1])
+                finally:
+                    heartbeat.unlink(missing_ok=True)
+        if isinstance(pending_error, SystemExit) and pending_error.code in (None, 0):
+            raise SystemExit(1) from pending_error
 
 
 def main() -> None:
