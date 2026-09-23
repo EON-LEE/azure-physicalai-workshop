@@ -51,6 +51,17 @@ def hardware(teaching, monkeypatch):
             joints = self.robot.get_joint_positions()
             return Action(Array([joints[0] + 0.001, *joints[1:7]]), joint_indices=range(7))
 
+    class Kinematics:
+        def set_robot_base_pose(self, position, orientation):
+            pass
+
+    class ArticulationKinematics:
+        def __init__(self, robot, solver, frame):
+            assert frame == "right_gripper"
+
+        def compute_end_effector_pose(self):
+            return Array([0.35, 0.25, 0.3]), [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
+
     modules = {
         "numpy": {
             "array": Array,
@@ -67,6 +78,13 @@ def hardware(teaching, monkeypatch):
         "isaacsim.robot.manipulators.examples.franka": {"Franka": object},
         "isaacsim.robot.manipulators.examples.franka.controllers.rmpflow_controller": {
             "RMPFlowController": RMP,
+        },
+        "isaacsim.robot_motion.motion_generation": {
+            "ArticulationKinematicsSolver": ArticulationKinematics,
+            "LulaKinematicsSolver": Kinematics,
+            "interface_config_loader": SimpleNamespace(
+                load_supported_lula_kinematics_solver_config=lambda robot: {}
+            ),
         },
         "isaacsim.sensors.camera": {"Camera": object},
         "pxr": {name: SimpleNamespace() for name in ("Gf", "Sdf", "UsdGeom", "UsdLux", "UsdShade")},
@@ -92,6 +110,9 @@ def hardware(teaching, monkeypatch):
 
         def get_joint_positions(self):
             return self.joints.copy()
+
+        def get_world_pose(self):
+            return Array([0, 0, 0]), Array([1, 0, 0, 0])
 
         def set_joint_efforts(self, efforts):
             self.efforts.append(tuple(efforts))
@@ -369,3 +390,14 @@ def test_teacher_contact_pressure_and_deadman_hold_pass_the_unchanged_student_gu
             context,
         )
         assert result.targets == frame.commanded_joint_targets
+
+
+def test_teaching_uses_the_reviewed_right_gripper_frame_not_an_arbitrary_finger_prim(hardware):
+    cell, core, request, _ = hardware
+    begin(core, request)
+    cell.robot.end_effector.get_world_pose = lambda: (
+        Array([0.35, 0.25, 0.15]),
+        Array([1, 0, 0, 0]),
+    )
+    cell.start_teaching(request, core, Recorder())
+    assert cell._measured_tcp() == (0.35, 0.25, 0.3)

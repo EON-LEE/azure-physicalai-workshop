@@ -23,6 +23,11 @@ from isaacsim.robot.manipulators.examples.franka import Franka
 from isaacsim.robot.manipulators.examples.franka.controllers.rmpflow_controller import (
     RMPFlowController,
 )
+from isaacsim.robot_motion.motion_generation import (
+    ArticulationKinematicsSolver,
+    LulaKinematicsSolver,
+    interface_config_loader,
+)
 from isaacsim.sensors.camera import Camera
 from PIL import Image
 from pxr import Gf, Sdf, UsdGeom, UsdLux, UsdShade
@@ -89,6 +94,8 @@ class IsaacWorkcell:
         self.warmup_steps = 0
         self.reset_initial_position = None
         self.render_monotonic_ns = 0
+        self.kinematics = None
+        self.articulation_kinematics = None
 
     def load(self, spec: SceneSpec) -> None:
         self._validate_asset_bundle()
@@ -356,9 +363,15 @@ class IsaacWorkcell:
         self.hold_offset = 0
         self.finish_requested = False
         self.last_jog_sequence = 0
+        kinematics = interface_config_loader.load_supported_lula_kinematics_solver_config("Franka")
+        self.kinematics = LulaKinematicsSolver(**kinematics)
+        self.articulation_kinematics = ArticulationKinematicsSolver(
+            self.robot, self.kinematics, "right_gripper"
+        )
         self.jog_goal = self._measured_tcp()
         self.jog_gripper = "hold"
-        self.orientation_target = tuple(self.robot.end_effector.get_world_pose()[1])
+        _, rotation = self.articulation_kinematics.compute_end_effector_pose()
+        self.orientation_target = tuple(float(value) for value in rot_matrix_to_quat(rotation))
         self.task_watchdog = TaskWatchdog(
             self.position(), self.spec.station(command.target_station_id).position
         )
@@ -398,7 +411,12 @@ class IsaacWorkcell:
         self.finish_requested = True
 
     def _measured_tcp(self) -> tuple[float, float, float]:
-        return tuple(float(value) for value in self.robot.end_effector.get_world_pose()[0])
+        if self.kinematics is None or self.articulation_kinematics is None:
+            raise RuntimeError("The reviewed right-gripper measurement frame is unavailable.")
+        base_position, base_orientation = self.robot.get_world_pose()
+        self.kinematics.set_robot_base_pose(base_position, base_orientation)
+        position, _ = self.articulation_kinematics.compute_end_effector_pose()
+        return tuple(float(value) for value in position)
 
     def _issue_command(self, targets, velocities) -> None:
         self.robot.apply_action(

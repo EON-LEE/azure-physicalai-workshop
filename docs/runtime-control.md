@@ -121,6 +121,13 @@ prediction attempts and successfully submitted physics-tick actions;
 includes the immutable family/release, counts and `reference_route_calls=0`.
 Stopping physics precedes model cleanup, so a reset failure cannot defer stop.
 
+Teacher and learned TCP measurements use measured articulation joints and pure
+Lula forward kinematics at the reviewed `right_gripper` frame, matching the
+reference RMPflow coordinate frame. They do not substitute an arbitrary finger
+prim pose; learned execution invokes neither inverse kinematics nor RMPflow
+action generation. This follows the pinned
+[Isaac 6 kinematics interface](https://docs.isaacsim.omniverse.nvidia.com/6.0.0/manipulators/manipulators_lula_kinematics.html).
+
 Success requires measured lift/grasp evidence, open fingers, part position
 inside the unchanged 4 cm goal tolerance, wrist separation, and a settled part.
 No model-supplied success flag is trusted.
