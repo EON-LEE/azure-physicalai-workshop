@@ -59,6 +59,7 @@ def teaching():
             "goal_id": "rejected",
         },
         demonstrator_kind="human_teleop",
+        split="train",
     )
     return core, request, clock
 
@@ -267,3 +268,12 @@ def test_grant_is_consumed_once_and_cannot_authorize_a_different_sequence(teachi
     second = first.model_copy(update={"sequence": 2})
     with pytest.raises(Problem, match="grant"):
         core.teaching_input(ACTOR.owner_key, request.session_id, second)
+
+
+def test_teaching_split_cannot_relabel_the_immutable_approved_case(teaching):
+    core, request, _ = teaching
+    request = request.model_copy(update={"split": "validation"})
+    with pytest.raises(Problem, match="split"):
+        core.start_teaching(ACTOR.owner_key, request)
+    assert core.active_command is None
+    assert core.next_action() is None

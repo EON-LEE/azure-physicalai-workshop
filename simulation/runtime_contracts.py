@@ -91,6 +91,7 @@ class TeachingStart(Model):
     control_profile_id: Literal["franka-position-hold-10hz-v1"]
     task: TaskDefinition
     demonstrator_kind: Literal["human_teleop", "reference_controller"]
+    split: Literal["train", "validation", "test"]
 
     @model_validator(mode="after")
     def matching_goal(self):

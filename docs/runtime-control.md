@@ -66,7 +66,7 @@ movement. All new motion paths keep the published 0.2 m/s measured TCP ceiling.
 
 | Bridge endpoint | Contract |
 | --- | --- |
-| `POST /v1/teaching` | Flat scene/observation binding; `command_id`, `session_id`, `lease_id`, `session_expires_at`, `control_profile_id`, approved `task`, explicit `demonstrator_kind` |
+| `POST /v1/teaching` | Flat scene/observation binding; `command_id`, `session_id`, `lease_id`, `session_expires_at`, `control_profile_id`, approved `task`, explicit `demonstrator_kind` and `split` |
 | `GET /v1/teaching/{session_id}` | `TeachingState`, physical `Execution`, and independent capture state |
 | `POST /v1/teaching/{session_id}/input` | Lease/epoch, sequence, deadman, Cartesian `delta_xyz_m`, gripper intent, server expiry and control grant |
 | `POST /v1/teaching/{session_id}/finish` | Lease/epoch; request a measured terminal check at an actual held boundary |
@@ -82,6 +82,12 @@ values. The bridge requires `grant_id` and `grant_expires_at` for positive
 deadman inputs and intersects motion expiry with that original grant. Replays
 cannot refresh authority. A neutral deadman release needs no grant and may skip
 forward sequences to fence a delayed, never-seen earlier motion request.
+
+The trusted teaching request must explicitly state `split` (`train`,
+`validation` or operator-only integration `test`) and match the split already
+encoded in the saved environment revision. It is an assertion, never a way to
+relabel an existing case. Raw episodes still derive their split and seed from
+that approved immutable scene; there is no default-to-training behavior.
 
 No input accepts joint arrays, arbitrary model paths, URLs or Python modules.
 Missing/failing providers stop explicitly; there is no baseline or animation

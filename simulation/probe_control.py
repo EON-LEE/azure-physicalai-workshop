@@ -262,6 +262,7 @@ def run_probe(args) -> dict:
                 control_profile_id=profile.profile_id,
                 task=task,
                 demonstrator_kind="reference_controller",
+                split=execution["demonstration_split"],
             )
             core.start_teaching(scope.owner_id, request)
         else:

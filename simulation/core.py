@@ -473,6 +473,12 @@ class SimulationCore:
                     "capture_not_approved",
                     "Teaching requires an approved recorded scene and dataset split.",
                 )
+            if request.split != self.spec.demonstration_split:
+                raise Problem(
+                    409,
+                    "teaching_split_changed",
+                    "The teaching split must match the immutable approved environment.",
+                )
             self._dispatch(
                 owner,
                 request,
