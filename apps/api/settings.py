@@ -33,6 +33,52 @@ class Settings(BaseSettings):
     bridge_timeout_seconds: float = Field(default=10, gt=0, le=30)
     approval_ttl_seconds: int = Field(default=300, ge=5, le=3600)
     learning_enabled: bool = False
+    learning_policy_types: tuple[Literal["gr00t_n1_5", "gr00t_n1_7", "smolvla"], ...] = ()
+    learning_bootstrap_principal_ids: frozenset[UUID] = frozenset()
+    public_learning_owner_id: UUID | None = None
+    public_learning_project_id: UUID | None = None
+    public_learning_evaluation_id: UUID | None = None
+    learning_worker_endpoint: str | None = None
+    learning_worker_scope: str | None = Field(
+        default=None, pattern=r"^api://[a-fA-F0-9-]{36}/\.default$"
+    )
+    learning_coach_agent_name: str | None = Field(default=None, min_length=1, max_length=128)
+    learning_coach_agent_version: str | None = Field(default=None, min_length=1, max_length=64)
+
+    @field_validator("learning_worker_endpoint")
+    @classmethod
+    def private_learning_worker(cls, value):
+        if value is None:
+            return value
+        parsed = urlsplit(value)
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+            or parsed.path not in ("", "/")
+            or not parsed.hostname.endswith((".azurecontainerapps.io", ".azurewebsites.net"))
+        ):
+            raise ValueError("Configure an explicit HTTPS Azure managed learning worker origin.")
+        return value.rstrip("/")
+
+    @model_validator(mode="after")
+    def complete_learning_endpoints(self):
+        if bool(self.learning_worker_endpoint) != bool(self.learning_worker_scope):
+            raise ValueError("Learning worker endpoint and managed identity scope must be paired.")
+        if bool(self.learning_coach_agent_name) != bool(self.learning_coach_agent_version):
+            raise ValueError("The separate Foundry learning coach requires a pinned version.")
+        publication = (
+            self.public_learning_owner_id,
+            self.public_learning_project_id,
+            self.public_learning_evaluation_id,
+        )
+        if any(publication) and not all(publication):
+            raise ValueError("Public learning requires an explicit owner, project and evaluation.")
+        return self
+
     public_demo_publish_live: bool = False
     public_demo_owner_id: UUID | None = None
     public_demo_environment_id: str | None = Field(

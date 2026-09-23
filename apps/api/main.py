@@ -15,6 +15,7 @@ from apps.api.auth import EntraTokens
 from apps.api.errors import Problem
 from apps.api.learning_routes import install_learning_routes
 from apps.api.learning_service import LearningService
+from apps.api.learning_setup import azure_learning_service
 from apps.api.middleware import BodyLimit
 from apps.api.models import (
     ActivateEnvironment,
@@ -124,17 +125,20 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         resources = []
+        app.state.configuration = configuration
         if service is None:
             actual, resources = azure_service(configuration)
             app.state.service = actual
         else:
             app.state.service = service
         app.state.public_demo = PublicDemo(configuration, app.state.service)
-        app.state.learning = learning or LearningService(
-            app.state.service,
-            app.state.service.store,
-            enabled=configuration.learning_enabled,
-        )
+        if learning is not None:
+            app.state.learning = learning
+        else:
+            app.state.learning, learning_resources = azure_learning_service(
+                configuration, app.state.service
+            )
+            resources = [*learning_resources, *resources]
         app.state.service.policies = app.state.learning
         try:
             yield

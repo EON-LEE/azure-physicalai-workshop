@@ -11,9 +11,9 @@ from uuid import UUID
 from pydantic import AwareDatetime, ConfigDict, Field, field_validator, model_validator
 
 from apps.api.errors import Problem
-from apps.api.models import Identifier, Model, Principal, Revision, utcnow
+from apps.api.models import Identifier, LearnedPolicyType, Model, Principal, Revision, utcnow
 
-PolicyType = Literal["gr00t_n1_5", "act_auxiliary"]
+PolicyType = Literal["gr00t_n1_5", "gr00t_n1_7", "smolvla", "act_auxiliary"]
 SourceKind = Literal["human_teleop", "reference_controller", "learned"]
 JobStatus = Literal[
     "submitting",
@@ -66,12 +66,22 @@ class Budget(Frozen):
     maximum_cost_usd: Decimal = Field(gt=0, le=10000, max_digits=9, decimal_places=2)
 
 
+class PolicyScene(Frozen):
+    environment_id: Identifier
+    revision: Revision
+
+
+class EvaluationCase(PolicyScene):
+    seed: NonnegativeInt
+
+
 class EvaluationPlan(Frozen):
     id: UUID
     seeds: tuple[Annotated[int, Field(strict=True, ge=0, le=2147483647)], ...] = Field(
         min_length=20, max_length=100
     )
     held_out_episode_ids: tuple[UUID, ...] = Field(max_length=10000)
+    cases: tuple[EvaluationCase, ...] = Field(min_length=20, max_length=100)
     minimum_success_rate: float = Field(ge=0.9, le=1)
     maximum_axis_error_m: float = Field(gt=0, le=0.04)
     maximum_inference_p95_ms: float = Field(gt=0, le=80)
@@ -84,6 +94,10 @@ class EvaluationPlan(Frozen):
             self.held_out_episode_ids
         ):
             raise ValueError("Held-out conditions must be unique and frozen before training.")
+        if tuple(item.seed for item in self.cases) != self.seeds or len(
+            {(item.environment_id, item.revision) for item in self.cases}
+        ) != len(self.cases):
+            raise ValueError("Each held-out seed must bind one distinct immutable scene revision.")
         return self
 
     @property
@@ -95,14 +109,26 @@ class CreateProject(Frozen):
     request_id: UUID
     display_name: str = Field(min_length=1, max_length=120, pattern=r"\S")
     task_id: Identifier
+    policy_type: LearnedPolicyType
     instruction: str = Field(min_length=1, max_length=512, pattern=r"^[^\r\n]*\S[^\r\n]*$")
     goal_station_id: Identifier
     environment_id: Identifier
     revision: Revision
-    baseline_release_id: UUID
+    project_kind: Literal["adaptation", "bootstrap"] = "adaptation"
+    baseline_release_id: UUID | None
+    pretrained_artifact_id: UUID | None = None
     control_profile_id: Literal["franka-position-hold-10hz-v1"]
     evaluation_plan: EvaluationPlan
     budget: Budget
+
+    @model_validator(mode="after")
+    def real_training_parent(self):
+        if self.project_kind == "bootstrap":
+            if self.baseline_release_id is not None or self.pretrained_artifact_id is None:
+                raise ValueError("Bootstrap uses a registered train-only artifact, not a fake P0.")
+        elif self.baseline_release_id is None or self.pretrained_artifact_id is not None:
+            raise ValueError("Normal adaptation requires an actual reviewed P0 release.")
+        return self
 
 
 class OwnedRecord(Frozen):
@@ -122,14 +148,20 @@ class LearningProject(OwnedRecord):
     kind: Literal["project"] = "project"
     display_name: str
     task_id: Identifier
+    policy_type: LearnedPolicyType
     instruction: str
     goal_station_id: Identifier
     environment_id: Identifier
     revision: Revision
-    baseline_release_id: UUID
+    project_kind: Literal["adaptation", "bootstrap"] = "adaptation"
+    baseline_release_id: UUID | None
+    pretrained_artifact_id: UUID | None = None
     control_profile_id: Literal["franka-position-hold-10hz-v1"]
     evaluation_plan: EvaluationPlan
     budget: Budget
+
+    def public(self) -> dict:
+        return {**super().public(), "evaluation_plan_sha256": self.evaluation_plan.sha256}
 
     @classmethod
     def create(cls, actor: Principal, request: CreateProject) -> LearningProject:
@@ -342,8 +374,9 @@ class DatasetVersion(OwnedRecord):
 
 class StartTraining(Approval):
     dataset_id: UUID
-    parent_release_id: UUID
-    policy_type: Literal["gr00t_n1_5"] = "gr00t_n1_5"
+    parent_release_id: UUID | None
+    pretrained_artifact_id: UUID | None = None
+    policy_type: LearnedPolicyType
     optimizer_steps: int = Field(strict=True, ge=1, le=100000)
     paid_approved: Literal[True]
     maximum_cost_usd: Decimal = Field(gt=0, le=10000, max_digits=9, decimal_places=2)
@@ -351,7 +384,8 @@ class StartTraining(Approval):
 
 class StartEvaluation(Approval):
     candidate_id: UUID
-    baseline_release_id: UUID
+    baseline_release_id: UUID | None
+    comparison_kind: Literal["paired_policy", "reference_bootstrap"] = "paired_policy"
     evaluation_plan_sha256: Revision
     motion_approved: Literal[True]
     paid_approved: Literal[True]
@@ -369,7 +403,8 @@ class PolicyCandidate(OwnedRecord):
     project_id: UUID
     dataset_id: UUID
     training_run_id: UUID
-    parent_release_id: UUID
+    parent_release_id: UUID | None
+    pretrained_artifact_id: UUID | None = None
     policy_type: PolicyType
     model_sha256: Revision
     parent_model_sha256: Revision
@@ -391,6 +426,8 @@ class PolicyCandidate(OwnedRecord):
 
 class TrialOutcome(Frozen):
     seed: NonnegativeInt
+    environment_id: Identifier
+    revision: Revision
     attempt: PositiveInt
     policy: Literal["before", "after"]
     status: Literal["succeeded", "failed", "cancelled", "timed_out"]
@@ -403,11 +440,17 @@ class TrialOutcome(Frozen):
     applied_action_count: NonnegativeInt
     policy_predict_calls: NonnegativeInt
     reference_route_calls: Literal[0]
+    observed_initial_pose_m: tuple[float, float, float] | None = None
+    scene_builder_sha256: Revision | None = None
+    episode_id: str | None = Field(default=None, min_length=1, max_length=128)
+    final_inspection_sha256: Revision | None = None
+    final_overview_sha256: Revision | None = None
     recording_id: UUID | None = None
     message: str
 
 
 class PairedReport(Frozen):
+    comparison_kind: Literal["paired_policy"] = "paired_policy"
     evaluation_plan_sha256: Revision
     before_model_sha256: Revision
     after_model_sha256: Revision
@@ -416,11 +459,60 @@ class PairedReport(Frozen):
     quality_gate_passed: bool
     report_sha256: Revision
     artifact_id: UUID
+    native_plan_sha256: Revision | None = None
+    runtime_sha256: Revision | None = None
+    control_profile_sha256: Revision | None = None
+
+
+class BootstrapTrial(TrialOutcome):
+    policy: Literal["reference", "candidate"]
+    model_sha256: Revision | None
+    reference_route_calls: NonnegativeInt
+
+    @model_validator(mode="after")
+    def reference_is_not_a_model(self):
+        if self.policy == "reference":
+            if (
+                self.model_sha256 is not None
+                or self.policy_predict_calls
+                or self.applied_action_count
+            ):
+                raise ValueError("Scripted reference is not a learned P0 or model prediction.")
+        elif self.model_sha256 is None or self.reference_route_calls:
+            raise ValueError("A candidate uses actual model actions, never reference fallback.")
+        return self
+
+
+class BootstrapReport(Frozen):
+    comparison_kind: Literal["reference_bootstrap"] = "reference_bootstrap"
+    evaluation_plan_sha256: Revision
+    candidate_model_sha256: Revision
+    reference_controller_sha256: Revision
+    trials: tuple[BootstrapTrial, ...] = Field(min_length=40, max_length=1000)
+    quality_gate_passed: bool
+    report_sha256: Revision
+    artifact_id: UUID
+    native_plan_sha256: Revision | None = None
+    runtime_sha256: Revision | None = None
+    control_profile_sha256: Revision | None = None
+
+
+class TrainingParent(OwnedRecord):
+    kind: Literal["training_parent"] = "training_parent"
+    role: Literal["pretrained_train_only"] = "pretrained_train_only"
+    policy_type: LearnedPolicyType
+    artifact_id: UUID
+    model_sha256: Revision
+    processor_sha256: Revision
+    source_commit: str = Field(pattern=r"^[a-f0-9]{40}$")
+    model_revision: str = Field(pattern=r"^[a-f0-9]{40}$")
+    registered_by: UUID
 
 
 class LearningJob(OwnedRecord):
     kind: Literal["training", "evaluation"]
     project_id: UUID
+    policy_type: LearnedPolicyType = "gr00t_n1_5"
     status: JobStatus
     backend_job_name: str = Field(pattern=r"^learning-[a-f0-9-]+$", max_length=100)
     azure_job_id: str | None = Field(default=None, min_length=1, max_length=2048)
@@ -445,7 +537,8 @@ class LearningMutation(OwnedRecord):
 class TrainingRun(LearningJob):
     kind: Literal["training"] = "training"
     dataset_id: UUID
-    parent_release_id: UUID
+    parent_release_id: UUID | None
+    pretrained_artifact_id: UUID | None = None
     optimizer_steps: PositiveInt
     candidate_id: UUID | None = None
 
@@ -459,9 +552,10 @@ class TrainingRun(LearningJob):
 class EvaluationRun(LearningJob):
     kind: Literal["evaluation"] = "evaluation"
     candidate_id: UUID
-    baseline_release_id: UUID
+    baseline_release_id: UUID | None
+    comparison_kind: Literal["paired_policy", "reference_bootstrap"] = "paired_policy"
     evaluation_plan_sha256: Revision
-    report: PairedReport | None = None
+    report: PairedReport | BootstrapReport | None = None
 
     @model_validator(mode="after")
     def succeeded_requires_report(self):
@@ -474,6 +568,12 @@ class ReleasePolicy(Approval):
     candidate_id: UUID
     evaluation_run_id: UUID
     release_approved: Literal[True]
+
+
+class CoachRequest(Approval):
+    instruction: str = Field(min_length=1, max_length=2000, pattern=r"\S")
+    dataset_id: UUID | None = None
+    evaluation_run_id: UUID | None = None
 
 
 class PolicyRelease(OwnedRecord):
@@ -494,6 +594,8 @@ class PolicyRelease(OwnedRecord):
     control_profile_id: Literal["franka-position-hold-10hz-v1"]
     evaluation_plan_sha256: Revision
     reviewed_by: UUID
+    comparison_kind: Literal["paired_policy", "reference_bootstrap"] = "paired_policy"
+    environment_cases: tuple[PolicyScene, ...] = ()
 
 
 LearningRecord = (
@@ -506,6 +608,7 @@ LearningRecord = (
     | PolicyRelease
     | LearningMutation
     | ControlGrant
+    | TrainingParent
 )
 
 _TRANSITIONS = {

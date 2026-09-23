@@ -23,6 +23,7 @@ from apps.api.learning_models import (
     PolicyCandidate,
     PolicyRelease,
     TeachingSession,
+    TrainingParent,
     TrainingRun,
     transition,
 )
@@ -41,6 +42,7 @@ LEARNING_MODELS = {
     "release": PolicyRelease,
     "mutation": LearningMutation,
     "control_grant": ControlGrant,
+    "training_parent": TrainingParent,
 }
 LEARNING_MUTABLE = {
     "teaching": {

@@ -192,6 +192,7 @@ def seed_project_and_dataset(store, request):
         dataset_id=dataset.id,
         parent_release_id=project.baseline_release_id,
         optimizer_steps=100,
+        policy_type="gr00t_n1_5",
         paid_approved=True,
         maximum_cost_usd="10.00",
     )

@@ -10,6 +10,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, JsonValue, mod
 
 Identifier = Annotated[str, Field(pattern=r"^[a-z][a-z0-9-]*(?![\s\S])", max_length=64)]
 Revision = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
+LearnedPolicyType = Literal["gr00t_n1_5", "gr00t_n1_7", "smolvla"]
 Position = tuple[float, float, float]
 RunStatus = Literal[
     "planning",
@@ -161,6 +162,7 @@ class DemonstrationResult(Model):
 
 class PolicyRuntime(Model):
     execution_mode: Literal["learned"] = "learned"
+    policy_type: LearnedPolicyType
     policy_release_id: UUID
     applied_model_sha: Revision | None = None
     control_profile_id: Identifier | None = None
@@ -181,7 +183,7 @@ class ReleasedPolicyBinding(Model):
     model_config = ConfigDict(frozen=True)
 
     policy_release_id: UUID
-    policy_type: Literal["gr00t_n1_5"]
+    policy_type: LearnedPolicyType
     model_sha256: Revision
     processor_sha256: Revision
     manifest_sha256: Revision

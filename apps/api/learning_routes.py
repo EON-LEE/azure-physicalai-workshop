@@ -6,6 +6,7 @@ from fastapi import Depends, Header, Request, Response
 from apps.api.learning_models import (
     Approval,
     ArmTeaching,
+    CoachRequest,
     CreateDataset,
     CreateProject,
     JogIntent,
@@ -34,7 +35,7 @@ def install_learning_routes(app, actor):
 
     @app.get("/api/learning/capabilities")
     def capabilities(user: Actor, backend: Service):
-        return backend.capabilities()
+        return backend.capabilities(user)
 
     @app.get("/api/learning/projects")
     def list_projects(user: Actor, backend: Service):
@@ -66,6 +67,10 @@ def install_learning_routes(app, actor):
                 for entry in backend.list(user, kind, project_id)
             ]
         }
+
+    @app.post("/api/learning/projects/{project_id}/coach")
+    def coach(project_id: UUID, body: CoachRequest, user: Actor, backend: Service):
+        return backend.coach_proposal(user, project_id, body)
 
     @app.post("/api/learning/projects/{project_id}/teaching-sessions", status_code=202)
     def teach(
@@ -203,5 +208,7 @@ def install_learning_routes(app, actor):
         return learning_response(backend.get(user, "release", release_id), response)
 
     @app.get("/api/demo/learning")
-    def public_learning():
-        return {"api_version": "public-learning-v1", "status": "not_published", "publication": None}
+    def public_learning(request: Request):
+        from apps.api.public_learning import learning_publication
+
+        return learning_publication(request.app.state.configuration, request.app.state.learning)

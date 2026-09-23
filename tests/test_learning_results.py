@@ -18,7 +18,9 @@ from tests.runtime_support import ACTOR
 
 def evaluated_setup(before_successes=10, after_successes=20, *, safety=0):
     factory, store, jobs, artifacts, catalog, request = learning_setup()
-    service = LearningService(factory, store, jobs, artifacts, catalog, enabled=True)
+    service = LearningService(
+        factory, store, jobs, artifacts, catalog, enabled=True, allowed_policy_types=("gr00t_n1_5",)
+    )
     project, dataset, train = seed_project_and_dataset(store, request)
     started = service.train(ACTOR, project.value.id, train, project.etag)
     now = utcnow()
@@ -58,6 +60,8 @@ def evaluated_setup(before_successes=10, after_successes=20, *, safety=0):
     trials = tuple(
         TrialOutcome(
             seed=seed,
+            environment_id=f"held-out-{seed}",
+            revision=f"{seed:064x}",
             attempt=1,
             policy=policy,
             status="succeeded" if index < count else "failed",
@@ -115,7 +119,9 @@ def evaluated_setup(before_successes=10, after_successes=20, *, safety=0):
 
 def test_training_ack_or_missing_verified_new_weights_cannot_produce_candidate_success():
     factory, store, jobs, artifacts, catalog, request = learning_setup()
-    service = LearningService(factory, store, jobs, artifacts, catalog, enabled=True)
+    service = LearningService(
+        factory, store, jobs, artifacts, catalog, enabled=True, allowed_policy_types=("gr00t_n1_5",)
+    )
     project, _, train = seed_project_and_dataset(store, request)
     started = service.train(ACTOR, project.value.id, train, project.etag)
     receipt = jobs.receipts[started.value.backend_job_name]

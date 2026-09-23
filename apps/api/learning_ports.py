@@ -6,6 +6,7 @@ from uuid import UUID
 from pydantic import AwareDatetime, Field
 
 from apps.api.learning_models import (
+    BootstrapReport,
     CaptureReceipt,
     DatasetVersion,
     EvaluationRun,
@@ -17,6 +18,7 @@ from apps.api.learning_models import (
     PolicyRelease,
     TeachingSession,
     TrainingMetrics,
+    TrainingParent,
     TrainingRun,
 )
 from apps.api.models import DemonstrationResult, Execution, Identifier, Principal, Revision, Stored
@@ -34,7 +36,8 @@ class JobSpecification(Frozen):
     owner_key: Revision
     project: LearningProject
     run: TrainingRun | EvaluationRun
-    baseline: PolicyRelease
+    baseline: PolicyRelease | None = None
+    training_parent: TrainingParent | None = None
     dataset: DatasetVersion | None = None
     candidate: PolicyCandidate | None = None
 
@@ -49,7 +52,7 @@ class BackendJob(Frozen):
     ]
     metrics: TrainingMetrics = Field(default_factory=TrainingMetrics)
     candidate: PolicyCandidate | None = None
-    report: PairedReport | None = None
+    report: PairedReport | BootstrapReport | None = None
     error_code: str | None = None
     message: str | None = None
 
@@ -90,6 +93,7 @@ class LearningArtifacts(Protocol):
 
 class PolicyCatalog(Protocol):
     def resolve(self, actor: Principal, release_id: UUID) -> PolicyRelease: ...
+    def training_parent(self, actor: Principal, artifact_id: UUID) -> TrainingParent: ...
 
 
 class RuntimeCapture(Frozen):

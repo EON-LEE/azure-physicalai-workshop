@@ -37,7 +37,7 @@ def test_learning_capability_is_explicitly_off_without_breaking_existing_runtime
     assert response.status_code == 200, response.text
     assert response.json()["enabled"] is False
     assert response.json()["status"] == "disabled"
-    assert response.json()["policy_types"] == ["gr00t_n1_5"]
+    assert response.json()["policy_types"] == []
     assert response.json()["training_verified"] is False
     assert client.get("/api/runtime", headers=headers(token)).status_code == 200
 
@@ -74,6 +74,7 @@ def test_http_owner_etag_and_paid_request_retries_are_enforced_before_dispatch(a
         artifacts,
         catalog,
         enabled=True,
+        allowed_policy_types=("gr00t_n1_5",),
     )
     project, _, train = seed_project_and_dataset(store, request)
     resource = f"/api/learning/projects/{project.value.id}"
@@ -109,7 +110,13 @@ def test_http_cannot_smuggle_authority_or_model_paths_with_explicit_paid_approva
     client, _, token = api
     factory, store, jobs, artifacts, catalog, request = learning_setup()
     client.app.state.learning = LearningService(
-        factory, store, jobs, artifacts, catalog, enabled=True
+        factory,
+        store,
+        jobs,
+        artifacts,
+        catalog,
+        enabled=True,
+        allowed_policy_types=("gr00t_n1_5",),
     )
     project, _, train = seed_project_and_dataset(store, request)
     path = f"/api/learning/projects/{project.value.id}/train"

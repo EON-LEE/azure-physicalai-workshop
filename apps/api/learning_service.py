@@ -11,6 +11,7 @@ from apps.api.learning_models import (
     PROFILE_ID,
     TEACHING_TERMINAL,
     ArmTeaching,
+    BootstrapReport,
     ControlGrant,
     CreateDataset,
     CreateProject,
@@ -23,12 +24,14 @@ from apps.api.learning_models import (
     LearningRecord,
     PairedReport,
     PolicyRelease,
+    PolicyScene,
     ReleasePolicy,
     StartEvaluation,
     StartTeaching,
     StartTraining,
     TeachingControl,
     TeachingSession,
+    TrainingParent,
     TrainingRun,
     fingerprint,
     replace_record,
@@ -41,12 +44,20 @@ from apps.api.learning_ports import (
     LearningJobs,
     LearningStore,
     PolicyCatalog,
+    RuntimeCapture,
     TeachingRuntime,
     TeachingRuntimeState,
     TeachingStartSpec,
     TeachingTask,
 )
-from apps.api.models import Principal, ReleasedPolicyBinding, Stored, utcnow
+from apps.api.models import (
+    TERMINAL,
+    LearnedPolicyType,
+    Principal,
+    ReleasedPolicyBinding,
+    Stored,
+    utcnow,
+)
 from apps.api.service import FactoryService, check_fresh
 
 log = logging.getLogger(__name__)
@@ -94,6 +105,9 @@ class LearningService:
         *,
         enabled: bool = False,
         runtime: TeachingRuntime | None = None,
+        coach=None,
+        bootstrap_principal_ids: frozenset[UUID] = frozenset(),
+        allowed_policy_types: tuple[LearnedPolicyType, ...] = (),
     ) -> None:
         self.factory = factory
         self.store = store
@@ -102,9 +116,21 @@ class LearningService:
         self.catalog = catalog
         self.enabled = enabled
         self.runtime = runtime
+        self.coach = coach
+        self.bootstrap_principal_ids = bootstrap_principal_ids
+        self.allowed_policy_types = allowed_policy_types
 
-    def capabilities(self) -> dict:
-        integrated = all((self.store, self.jobs, self.artifacts, self.catalog, self.runtime))
+    def capabilities(self, actor: Principal | None = None) -> dict:
+        integrated = all(
+            (
+                self.store,
+                self.jobs,
+                self.artifacts,
+                self.catalog,
+                self.runtime,
+                self.allowed_policy_types,
+            )
+        )
         return {
             "enabled": self.enabled and integrated,
             "status": "configured"
@@ -115,9 +141,14 @@ class LearningService:
                 if integrated
                 else "Learning dependencies are not integrated; no fallback exists."
             ),
-            "policy_types": ["gr00t_n1_5"],
+            "policy_types": list(self.allowed_policy_types),
             "control_profiles": [PROFILE_ID],
             "training_verified": False,
+            "coach_configured": self.coach is not None,
+            "bootstrap_allowed": bool(actor and actor.object_id in self.bootstrap_principal_ids),
+            "model_admission": "configured_not_verified"
+            if self.allowed_policy_types
+            else "license_or_hardware_unapproved",
         }
 
     def _enabled(self) -> None:
@@ -128,10 +159,57 @@ class LearningService:
         if self.store is None:
             raise unavailable("Durable learning store")
 
+    def coach_proposal(self, actor, project_id, body):
+        from agents.learning_coach import CoachContext
+
+        project = self.get(actor, "project", project_id).value
+        dataset = self.get(actor, "dataset", body.dataset_id).value if body.dataset_id else None
+        evaluation = (
+            self.get(actor, "evaluation", body.evaluation_run_id).value
+            if body.evaluation_run_id
+            else None
+        )
+        if (dataset and dataset.project_id != project_id) or (
+            evaluation and evaluation.project_id != project_id
+        ):
+            raise Problem(404, "learning_resource_missing", "Coach context is not in this project.")
+        releases = self.list(actor, "release", project_id)
+        context = CoachContext(
+            project_id=project_id,
+            task_id=project.task_id,
+            instruction=project.instruction,
+            human_teleop_count=dataset.human_teleop_count if dataset else 0,
+            reference_controller_count=dataset.reference_controller_count if dataset else 0,
+            learned_policy_count=dataset.learned_policy_count if dataset else 0,
+            optimizer_step_limit=project.budget.optimizer_steps,
+            dataset_id=dataset.id if dataset else None,
+            evaluation_conclusion=evaluation.report.conclusion
+            if evaluation and isinstance(evaluation.report, PairedReport)
+            else None,
+            approved_release_ids=tuple(item.value.id for item in releases),
+        )
+        proposal, response_id = self._dependency(
+            self.coach, "Separate Foundry learning coach"
+        ).propose(body.instruction, context)
+        return {
+            "request_id": str(body.request_id),
+            "model_response_id": response_id,
+            "authority": "proposal_only",
+            "proposal": proposal.model_dump(mode="json"),
+        }
+
     def _dependency(self, component, name: str):
         if component is None:
             raise unavailable(name)
         return component
+
+    def _policy(self, policy_type):
+        if policy_type not in self.allowed_policy_types:
+            raise Problem(
+                503,
+                "learning_policy_unapproved",
+                "No verified license and hardware admission exists for this pinned policy type.",
+            )
 
     def get(self, actor: Principal, kind: str, resource_id: UUID) -> Stored:
         self._enabled()
@@ -175,13 +253,54 @@ class LearningService:
         else:
             catalog = self._dependency(self.catalog, "Reviewed policy catalog")
             release = catalog.resolve(actor, release_id)
+        if not isinstance(release, PolicyRelease):
+            raise Problem(
+                409,
+                "training_parent_not_executable",
+                "Train-only weights are not a reviewed policy.",
+            )
         if release.owner_key != actor.owner_key or release.id != release_id:
             raise Problem(404, "policy_release_missing", "Reviewed policy not found.")
-        if release.policy_type != "gr00t_n1_5" or release.control_profile_id != PROFILE_ID:
+        self._policy(release.policy_type)
+        if release.control_profile_id != PROFILE_ID:
             raise Problem(
-                409, "policy_type_mismatch", "A reviewed compatible GR00T policy is required."
+                409, "policy_type_mismatch", "A reviewed compatible learned policy is required."
             )
         return release
+
+    def _bootstrap_actor(self, actor: Principal):
+        if actor.object_id not in self.bootstrap_principal_ids:
+            raise Problem(
+                403,
+                "bootstrap_forbidden",
+                "Only an explicitly configured bootstrap operator may act.",
+            )
+
+    def _training_parent(self, actor, artifact_id):
+        catalog = self._dependency(self.catalog, "Verified training-parent catalog")
+        method = getattr(catalog, "training_parent", None)
+        if not callable(method):
+            raise unavailable("Verified training-parent catalog")
+        parent = method(actor, artifact_id)
+        if (
+            not isinstance(parent, TrainingParent)
+            or parent.owner_key != actor.owner_key
+            or parent.id != artifact_id
+        ):
+            raise Problem(404, "training_parent_missing", "Registered train-only parent not found.")
+        self._policy(parent.policy_type)
+        return parent
+
+    def _verify_cases(self, actor, plan):
+        for case in plan.cases:
+            environment = self.factory._live_environment(actor, case.environment_id, case.revision)
+            scene = environment.document["scene"]
+            if scene["template_id"] != "inspection-cell-learning-v1" or scene["seed"] != case.seed:
+                raise Problem(
+                    422,
+                    "evaluation_pose_not_bound",
+                    "Held-out cases must pin the reviewed pose-variation scene and seed.",
+                )
 
     def create_project(self, actor: Principal, body: CreateProject) -> Stored[LearningProject]:
         self._enabled()
@@ -192,11 +311,23 @@ class LearningService:
         environment = self.factory._live_environment(actor, body.environment_id, body.revision)
         if body.goal_station_id not in {item["id"] for item in environment.document["stations"]}:
             raise Problem(422, "unknown_task_goal", "Select a goal in the pinned environment.")
-        baseline = self._baseline(actor, body.baseline_release_id)
-        if baseline.task_id != body.task_id:
-            raise Problem(
-                409, "baseline_task_mismatch", "The baseline belongs to a different task."
-            )
+        if body.project_kind == "bootstrap":
+            self._bootstrap_actor(actor)
+            parent = self._training_parent(actor, body.pretrained_artifact_id)
+            if parent.policy_type != body.policy_type:
+                raise Problem(
+                    409,
+                    "policy_type_mismatch",
+                    "The exact training-parent model family must match.",
+                )
+        else:
+            baseline = self._baseline(actor, body.baseline_release_id)
+            if baseline.task_id != body.task_id or baseline.policy_type != body.policy_type:
+                raise Problem(
+                    409, "baseline_task_mismatch", "The baseline belongs to a different task."
+                )
+        self._policy(body.policy_type)
+        self._verify_cases(actor, body.evaluation_plan)
         return self._claim(actor, record)[0]
 
     def train(
@@ -213,6 +344,11 @@ class LearningService:
         context = self.get(actor, "project", project_id)
         require_etag(context, etag)
         project = context.value
+        self._policy(project.policy_type)
+        if body.policy_type != project.policy_type:
+            raise Problem(
+                409, "policy_type_mismatch", "Model versions cannot be relabeled or substituted."
+            )
         dataset = self.get(actor, "dataset", body.dataset_id).value
         if (
             dataset.project_id != project_id
@@ -222,9 +358,23 @@ class LearningService:
                 409, "dataset_project_mismatch", "The dataset is not pinned to this project."
             )
         self._check_split(project, dataset)
-        if body.parent_release_id != project.baseline_release_id:
+        if (
+            body.parent_release_id != project.baseline_release_id
+            or body.pretrained_artifact_id != project.pretrained_artifact_id
+        ):
             raise Problem(409, "baseline_mismatch", "Training must use the frozen parent policy.")
-        baseline = self._baseline(actor, body.parent_release_id)
+        baseline, parent = None, None
+        if project.project_kind == "bootstrap":
+            self._bootstrap_actor(actor)
+            parent = self._training_parent(actor, project.pretrained_artifact_id)
+        else:
+            baseline = self._baseline(actor, body.parent_release_id)
+        if (parent or baseline).policy_type != project.policy_type:
+            raise Problem(
+                409,
+                "policy_type_mismatch",
+                "No cross-family fallback or artifact relabeling is allowed.",
+            )
         if body.optimizer_steps > project.budget.optimizer_steps:
             raise Problem(
                 422, "learning_budget_exceeded", "Optimizer steps exceed project approval."
@@ -233,13 +383,15 @@ class LearningService:
         record = TrainingRun(
             **metadata(actor, body.request_id, digest),
             project_id=project_id,
+            policy_type=project.policy_type,
             status="submitting",
             backend_job_name=self._job_name(actor, body.request_id),
             deadline=utcnow() + timedelta(seconds=project.budget.training_seconds),
             approved_cost_usd=body.maximum_cost_usd,
             specification_sha256=digest,
             dataset_id=dataset.id,
-            parent_release_id=baseline.id,
+            parent_release_id=baseline.id if baseline else None,
+            pretrained_artifact_id=parent.id if parent else None,
             optimizer_steps=body.optimizer_steps,
         )
         specification = JobSpecification(
@@ -247,6 +399,7 @@ class LearningService:
             project=project,
             run=record,
             baseline=baseline,
+            training_parent=parent,
             dataset=dataset,
         )
         return self._submit(actor, specification)
@@ -370,8 +523,11 @@ class LearningService:
                         503, "missing_evaluation_evidence", "A paired report is required."
                     )
                 candidate = self.get(actor, "candidate", run.candidate_id).value
-                baseline = self._baseline(actor, run.baseline_release_id)
-                validate_paired_report(project, baseline, candidate, receipt.report)
+                if run.comparison_kind == "reference_bootstrap":
+                    validate_bootstrap_report(project, candidate, receipt.report)
+                else:
+                    baseline = self._baseline(actor, run.baseline_release_id)
+                    validate_paired_report(project, baseline, candidate, receipt.report)
                 artifacts.verify_report(actor, project, run, receipt.report)
                 changes["report"] = receipt.report
         if all(getattr(run, key) == value for key, value in changes.items()):
@@ -384,15 +540,20 @@ class LearningService:
             return self.get(actor, run.kind, run.id)
 
     def _check_candidate(self, actor, project, run, candidate) -> None:
-        baseline = self._baseline(actor, run.parent_release_id)
+        parent = (
+            self._training_parent(actor, run.pretrained_artifact_id)
+            if project.project_kind == "bootstrap"
+            else self._baseline(actor, run.parent_release_id)
+        )
         if candidate is None or (
             candidate.owner_key != actor.owner_key
             or candidate.project_id != project.id
             or candidate.dataset_id != run.dataset_id
             or candidate.training_run_id != run.id
-            or candidate.parent_release_id != baseline.id
-            or candidate.parent_model_sha256 != baseline.model_sha256
-            or candidate.policy_type != "gr00t_n1_5"
+            or candidate.parent_release_id != run.parent_release_id
+            or candidate.pretrained_artifact_id != run.pretrained_artifact_id
+            or candidate.parent_model_sha256 != parent.model_sha256
+            or candidate.policy_type != project.policy_type
             or candidate.azure_job_id != run.azure_job_id
             or candidate.optimizer_steps > run.optimizer_steps
             or candidate.control_profile_id != project.control_profile_id
@@ -468,18 +629,33 @@ class LearningService:
             raise Problem(409, "evaluation_plan_mismatch", "Use the original held-out plan.")
         dataset = self.get(actor, "dataset", candidate.dataset_id).value
         self._check_split(project, dataset)
-        baseline = self._baseline(actor, body.baseline_release_id)
+        baseline = None
+        expected_kind = (
+            "reference_bootstrap" if project.project_kind == "bootstrap" else "paired_policy"
+        )
+        if body.comparison_kind != expected_kind:
+            raise Problem(
+                409,
+                "comparison_kind_mismatch",
+                "Bootstrap reference and paired policies are different evaluations.",
+            )
+        if project.project_kind == "bootstrap":
+            self._bootstrap_actor(actor)
+        else:
+            baseline = self._baseline(actor, body.baseline_release_id)
         self._cost(project, body.maximum_cost_usd)
         run = EvaluationRun(
             **metadata(actor, body.request_id, digest),
             project_id=project_id,
+            policy_type=project.policy_type,
             status="submitting",
             backend_job_name=self._job_name(actor, body.request_id),
             deadline=utcnow() + timedelta(seconds=project.budget.evaluation_seconds),
             approved_cost_usd=body.maximum_cost_usd,
             specification_sha256=digest,
             candidate_id=candidate.id,
-            baseline_release_id=baseline.id,
+            baseline_release_id=baseline.id if baseline else None,
+            comparison_kind=expected_kind,
             evaluation_plan_sha256=project.evaluation_plan.sha256,
         )
         return self._submit(
@@ -506,9 +682,15 @@ class LearningService:
             raise Problem(409, "release_gate_failed", "A completed paired evaluation is required.")
         candidate = self.get(actor, "candidate", body.candidate_id).value
         project = self.get(actor, "project", candidate.project_id).value
-        baseline = self._baseline(actor, run.baseline_release_id)
-        validate_paired_report(project, baseline, candidate, run.report)
-        if not run.report.quality_gate_passed or run.report.conclusion != "improved":
+        if project.project_kind == "bootstrap":
+            self._bootstrap_actor(actor)
+            validate_bootstrap_report(project, candidate, run.report)
+            eligible = run.report.quality_gate_passed
+        else:
+            baseline = self._baseline(actor, run.baseline_release_id)
+            validate_paired_report(project, baseline, candidate, run.report)
+            eligible = run.report.quality_gate_passed and run.report.conclusion == "improved"
+        if not eligible:
             raise Problem(
                 409, "release_gate_failed", "Safety, physical quality and improvement are required."
             )
@@ -533,19 +715,27 @@ class LearningService:
             control_profile_id=project.control_profile_id,
             evaluation_plan_sha256=project.evaluation_plan.sha256,
             reviewed_by=actor.object_id,
+            comparison_kind=run.comparison_kind,
+            environment_cases=tuple(
+                PolicyScene(environment_id=case.environment_id, revision=case.revision)
+                for case in project.evaluation_plan.cases
+            ),
         )
         return self._claim(actor, record)[0]
 
     def resolve_for_run(self, actor, release_id, environment_id, revision):
         self._enabled()
         release = self._baseline(actor, release_id)
-        if release.environment_id != environment_id or release.revision != revision:
+        if (release.environment_id, release.revision) != (environment_id, revision) and not any(
+            (case.environment_id, case.revision) == (environment_id, revision)
+            for case in release.environment_cases
+        ):
             raise Problem(
                 409, "policy_scene_mismatch", "The reviewed release pins a different scene."
             )
         return ReleasedPolicyBinding(
             policy_release_id=release.id,
-            policy_type="gr00t_n1_5",
+            policy_type=release.policy_type,
             model_sha256=release.model_sha256,
             processor_sha256=release.processor_sha256,
             manifest_sha256=release.manifest_sha256,
@@ -623,10 +813,52 @@ class LearningService:
         stored = self.get(actor, "teaching", session_id)
         if stored.value.status in TEACHING_TERMINAL:
             return stored
-        state = self._dependency(self.runtime, "Teaching runtime").teaching(
-            actor.owner_key, session_id
-        )
+        runtime = self._dependency(self.runtime, "Teaching runtime")
+        if stored.value.physical_status in TERMINAL:
+            capture = runtime.capture(actor.owner_key, stored.value.command_id)
+            status, receipt = self._capture_status(
+                actor, stored.value, capture, stored.value.status, stored.value.physical_status
+            )
+            if (status, receipt, capture.message) == (
+                stored.value.status,
+                stored.value.capture,
+                stored.value.message,
+            ):
+                return stored
+            return self._save(
+                actor, stored, status=status, capture=receipt, message=capture.message
+            )
+        state = runtime.teaching(actor.owner_key, session_id)
         return self._apply_teaching(actor, stored, state)
+
+    def _capture_status(
+        self,
+        actor,
+        session,
+        state: RuntimeCapture,
+        status,
+        physical_status,
+    ):
+        if state.command_id != session.command_id or state.epoch != session.epoch:
+            raise Problem(503, "capture_scope_mismatch", "Capture belongs to a different command.")
+        receipt = session.capture
+        if state.status == "ready":
+            if physical_status != "succeeded":
+                return "invalid", receipt
+            if not state.receipt or state.receipt.status != "uploaded":
+                raise Problem(503, "capture_not_verified", "Capture is not an uploaded manifest.")
+            project = self.get(actor, "project", session.project_id).value
+            receipt = self._dependency(self.artifacts, "Capture verifier").verify_capture(
+                actor, project, session, state.receipt.model_dump(mode="json")
+            )
+            if receipt.source != session.source or receipt.task_id != project.task_id:
+                raise Problem(
+                    503, "capture_scope_mismatch", "Capture provenance differs from teaching."
+                )
+            status = "ready"
+        elif state.status in ("finalizing", "uploading", "invalid"):
+            status = state.status
+        return status, receipt
 
     def _apply_teaching(self, actor, stored, state: TeachingRuntimeState):
         session = stored.value
@@ -660,29 +892,9 @@ class LearningService:
         }[state.status]
         capture = session.capture
         if state.capture:
-            if (
-                state.capture.command_id != session.command_id
-                or state.capture.epoch != session.epoch
-            ):
-                raise Problem(
-                    503, "capture_scope_mismatch", "Capture belongs to a different command."
-                )
-            if state.capture.status == "ready":
-                if not state.capture.receipt or state.capture.receipt.status != "uploaded":
-                    raise Problem(
-                        503, "capture_not_verified", "Capture is not an uploaded manifest."
-                    )
-                project = self.get(actor, "project", session.project_id).value
-                capture = self._dependency(self.artifacts, "Capture verifier").verify_capture(
-                    actor, project, session, state.capture.receipt.model_dump(mode="json")
-                )
-                if capture.source != session.source or capture.task_id != project.task_id:
-                    raise Problem(
-                        503, "capture_scope_mismatch", "Capture provenance differs from teaching."
-                    )
-                status = "ready"
-            elif state.capture.status in ("finalizing", "uploading", "invalid"):
-                status = state.capture.status
+            status, capture = self._capture_status(
+                actor, session, state.capture, status, state.execution.status
+            )
         if session.status == "cancelling":
             status = "cancelled" if state.status in ("cancelled", "timed_out") else "cancelling"
         changes = {
@@ -895,6 +1107,8 @@ class LearningService:
 
 def validate_paired_report(project, baseline, candidate, report: PairedReport) -> None:
     plan = project.evaluation_plan
+    if not isinstance(report, PairedReport):
+        raise Problem(503, "evaluation_kind_mismatch", "Reference bootstrap is not P0/P1 evidence.")
     if (
         report.evaluation_plan_sha256 != plan.sha256
         or report.before_model_sha256 != baseline.model_sha256
@@ -930,6 +1144,11 @@ def validate_paired_report(project, baseline, candidate, report: PairedReport) -
     successes = {"before": 0, "after": 0}
     candidate_safe = True
     for trial in report.trials:
+        case = next(item for item in plan.cases if item.seed == trial.seed)
+        if (trial.environment_id, trial.revision) != (case.environment_id, case.revision):
+            raise Problem(
+                503, "evaluation_pose_mismatch", "Trial did not use the frozen scene revision."
+            )
         expected_sha = baseline.model_sha256 if trial.policy == "before" else candidate.model_sha256
         if trial.model_sha256 != expected_sha:
             raise Problem(503, "evaluation_evidence_mismatch", "Trial used a different policy.")
@@ -959,4 +1178,71 @@ def validate_paired_report(project, baseline, candidate, report: PairedReport) -
             503,
             "evaluation_evidence_mismatch",
             "Reported quality/improvement disagrees with complete trial evidence.",
+        )
+
+
+def validate_bootstrap_report(project, candidate, report) -> None:
+    if not isinstance(report, BootstrapReport) or (
+        report.evaluation_plan_sha256 != project.evaluation_plan.sha256
+        or report.candidate_model_sha256 != candidate.model_sha256
+    ):
+        raise Problem(
+            503, "bootstrap_evidence_mismatch", "Complete reference-bootstrap evidence is required."
+        )
+    plan = project.evaluation_plan
+    expected = {(case.seed, policy) for case in plan.cases for policy in ("reference", "candidate")}
+    keys = {(trial.seed, trial.policy, trial.attempt) for trial in report.trials}
+    if (
+        len(keys) != len(report.trials)
+        or {(trial.seed, trial.policy) for trial in report.trials} != expected
+    ):
+        raise Problem(
+            503,
+            "evaluation_incomplete",
+            "Bootstrap must retain every reference and candidate trial.",
+        )
+    for seed, policy in expected:
+        attempts = sorted(t.attempt for t in report.trials if (t.seed, t.policy) == (seed, policy))
+        if attempts != list(range(1, len(attempts) + 1)):
+            raise Problem(503, "evaluation_incomplete", "Bootstrap attempts cannot be omitted.")
+    successes = 0
+    safe = True
+    for trial in report.trials:
+        case = next(item for item in plan.cases if item.seed == trial.seed)
+        if (trial.environment_id, trial.revision) != (case.environment_id, case.revision):
+            raise Problem(
+                503, "evaluation_pose_mismatch", "Bootstrap scene pose is not the frozen case."
+            )
+        if trial.policy == "reference":
+            if trial.status == "succeeded" and trial.reference_route_calls < 1:
+                raise Problem(
+                    503, "bootstrap_evidence_mismatch", "Reference motion evidence is missing."
+                )
+            continue
+        if trial.model_sha256 != candidate.model_sha256:
+            raise Problem(
+                503, "bootstrap_evidence_mismatch", "Candidate differs from actual training."
+            )
+        safe = safe and trial.safety_violations == 0
+        if trial.attempt == 1 and (
+            trial.status == "succeeded"
+            and trial.physical_success
+            and trial.axis_error_m is not None
+            and all(abs(error) <= plan.maximum_axis_error_m for error in trial.axis_error_m)
+            and trial.duration_seconds <= plan.max_step_seconds
+            and trial.inference_p95_ms is not None
+            and trial.inference_p95_ms <= plan.maximum_inference_p95_ms
+            and trial.applied_action_count > 0
+            and trial.policy_predict_calls > 0
+            and trial.reference_route_calls == 0
+            and not trial.safety_violations
+        ):
+            successes += 1
+    if report.quality_gate_passed != (
+        safe and successes / len(plan.cases) >= plan.minimum_success_rate
+    ):
+        raise Problem(
+            503,
+            "bootstrap_evidence_mismatch",
+            "Bootstrap quality claim contradicts physical evidence.",
         )

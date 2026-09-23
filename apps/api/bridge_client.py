@@ -147,6 +147,7 @@ class AzureSimulatorBridge:
             json={
                 "command": command.model_dump(mode="json"),
                 "policy_release_id": str(policy.policy_release_id),
+                "policy_type": policy.policy_type,
                 "model_sha256": policy.model_sha256,
                 "control_profile_id": policy.control_profile_id,
                 "task": {

@@ -392,6 +392,7 @@ class FactoryService:
             runtime = execution.policy_runtime
             if runtime is None or (
                 runtime.policy_release_id != run.policy.policy_release_id
+                or runtime.policy_type != run.policy.policy_type
                 or runtime.control_profile_id != run.policy.control_profile_id
                 or runtime.reference_route_calls != 0
                 or (

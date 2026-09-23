@@ -14,8 +14,21 @@ from tests.runtime_support import ACTOR, OTHER
 
 def setup():
     factory, store, jobs, artifacts, catalog, request = learning_setup()
-    learning = LearningService(factory, store, jobs, artifacts, catalog, enabled=True)
+    learning = LearningService(
+        factory, store, jobs, artifacts, catalog, enabled=True, allowed_policy_types=("gr00t_n1_5",)
+    )
     return learning, store, jobs, request
+
+
+def test_default_policy_allowlist_stays_empty_until_license_and_hardware_are_reviewed():
+    factory, store, jobs, artifacts, catalog, request = learning_setup()
+    learning = LearningService(factory, store, jobs, artifacts, catalog, enabled=True)
+    assert learning.capabilities()["policy_types"] == []
+    project, _, train = seed_project_and_dataset(store, request)
+    with pytest.raises(Problem) as failure:
+        learning.train(ACTOR, project.value.id, train, project.etag)
+    assert failure.value.code == "learning_policy_unapproved"
+    assert jobs.submissions == []
 
 
 def test_missing_owner_cannot_discover_read_or_submit_another_owners_project():
@@ -61,7 +74,13 @@ def test_concurrent_same_request_and_process_restart_do_not_duplicate_paid_submi
     assert len(jobs.submissions) == 1
     assert {item.value.id for item in results} == {train.request_id}
     restarted = LearningService(
-        learning.factory, store, jobs, learning.artifacts, learning.catalog, enabled=True
+        learning.factory,
+        store,
+        jobs,
+        learning.artifacts,
+        learning.catalog,
+        enabled=True,
+        allowed_policy_types=("gr00t_n1_5",),
     )
     assert (
         restarted.train(ACTOR, project.value.id, train, "stale-retry").value.id == train.request_id

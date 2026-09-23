@@ -1,7 +1,12 @@
 # Owner-scoped teaching and policy learning API (v1)
 
 This is an implementation contract, **not evidence of a trained or released
-GR00T model**. The feature defaults off. Existing inspection, reference motion,
+motor policy**. The feature defaults off, with an empty production model
+allowlist. SmolVLA is the explicitly selected commercial candidate; it is not
+a renamed GR00T model or an automatic fallback for a blocked GR00T request.
+GR00T N1.5 is noncommercial and N1.7's pinned primary license/card conflict
+remains unresolved. Model recognition is not license or hardware approval.
+Existing inspection, reference motion,
 operator authentication, public camera and recorded-reference-case routes keep
 their meanings. A changed environment layout is not policy learning.
 
@@ -32,7 +37,7 @@ successful placeholder, fixture checkpoint or ACT fallback.
 
 | Method / path | Body / response |
 |---|---|
-| `GET /api/learning/capabilities` | `enabled`, readiness/block reason, approved profiles, supported policy types; configuration is not a successful training test |
+| `GET /api/learning/capabilities` | `enabled`, readiness/block reason, approved profiles, exact admitted `policy_types`, `model_admission`, `bootstrap_allowed`; configuration is not a successful training test |
 | `POST /api/learning/projects` | `CreateProject`; returns immutable `LearningProject` |
 | `GET /api/learning/projects` | Owner project list |
 | `GET /api/learning/projects/{id}` | Project with ETag |
@@ -44,18 +49,22 @@ successful placeholder, fixture checkpoint or ACT fallback.
 | `POST /api/teaching-sessions/{id}/cancel` | Same binding; does not assert cancellation until confirmed |
 | `POST /api/learning/projects/{id}/datasets` | `request_id`, unique `teaching_session_ids`; only verified uploaded eligible captures |
 | `GET /api/learning/datasets/{id}` | Frozen `DatasetVersion` |
-| `POST /api/learning/projects/{id}/train` | `request_id`, `dataset_id`, `parent_release_id`, `policy_type: gr00t_n1_5`, `optimizer_steps`, `paid_approved: true`, `maximum_cost_usd` |
+| `POST /api/learning/projects/{id}/train` | `request_id`, `dataset_id`, `parent_release_id`, optional bootstrap `pretrained_artifact_id`, exact `policy_type`, `optimizer_steps`, `paid_approved: true`, `maximum_cost_usd` |
 | `POST /api/learning/projects/{id}/evaluate` | `request_id`, `candidate_id`, `baseline_release_id`, `evaluation_plan_sha256`, `motion_approved: true`, `paid_approved: true`, `maximum_cost_usd` |
 | `GET /api/learning/jobs/{id}` | Reconciles the actual named job only; never submits or restarts it |
 | `POST /api/learning/jobs/{id}/cancel` | `request_id`; cancellation state from the actual backend |
 | `GET /api/learning/candidates/{id}` | Verified candidate; not a released skill |
 | `POST /api/policy-releases` | `request_id`, `candidate_id`, `evaluation_run_id`, `release_approved: true`; exact evaluation ETag and passing gates required |
 | `GET /api/policy-releases/{id}` | Immutable reviewed release |
+| `POST /api/learning/projects/{id}/coach` | `request_id`, instruction, optional dataset/evaluation IDs; typed Foundry advice and actual response ID, no cost/motion/release authority |
 | `GET /api/demo/learning` | Explicitly curated publication only; no owner enumeration, dataset/model paths, identities or private histories |
 
-`CreateProject` contains `request_id`, `display_name`, `task_id`, `instruction`,
+`CreateProject` contains `request_id`, `display_name`, `task_id`, `instruction`
+(one line, at most 512 characters), exact `policy_type`,
 `goal_station_id`, `environment_id`, `revision`, `baseline_release_id`,
-`control_profile_id`, `evaluation_plan` and `budget`.
+`control_profile_id`, `evaluation_plan` and `budget`. `project_kind` is
+`adaptation` by default. Its P0 release must exist and its model family must
+match; no GR00T/SmolVLA/ACT substitutions are allowed.
 
 The initial reviewed profile is `franka-position-hold-10hz-v1`, not the existing
 60 Hz reference profile. The task goal must be a station in the pinned saved
@@ -70,7 +79,11 @@ an automatic spending stop**: the production admission adapter must verify
 approved SKU, duration, price and quota before dispatch; otherwise block.
 
 `evaluation_plan` fixes UUID `id`, 20..100 unique held-out `seeds`,
-`held_out_episode_ids`, `minimum_success_rate` (at least 0.9),
+`held_out_episode_ids`, and corresponding unique `cases`
+`[{seed,environment_id,revision}]`. The API checks the owner's saved
+`inspection-cell-learning-v1` scene and exact seed/revision for each case;
+defect-only seed changes are not presented as spatial variation.
+The plan also fixes `minimum_success_rate` (at least 0.9),
 `maximum_axis_error_m` (at most 0.04), `maximum_inference_p95_ms` (at most 80),
 `max_step_seconds` (at most 30), and `max_cartesian_speed_m_s` (at most 0.2).
 Its canonical SHA256 is fixed before dataset sealing or training. Any held-out
@@ -104,6 +117,36 @@ before/after trial and retry, including failures; no post-hoc favorable subset.
 - Release is a separate, explicit human review after artifact and paired-gate
   verification. Foundry can propose/select an already released skill but cannot
   publish its own model, increase limits or approve motion/cost.
+
+## Empty-store first-policy bootstrap
+
+`project_kind: bootstrap` is separately authorized by
+`LEARNING_BOOTSTRAP_PRINCIPAL_IDS`, empty by default. Ordinary operators receive
+403 even if the main learning capability is enabled. Bootstrap sets
+`baseline_release_id: null` and a registered `pretrained_artifact_id`.
+`TrainingParent` has role `pretrained_train_only` and never resolves through
+`/api/runs` as an executable `PolicyRelease`.
+
+Use the trusted, explicit `apps.learning_worker.register_parent` CLI only after
+the license is approved and the actual pinned weights are already present.
+It validates the native model manifest, scope, full inventory and pinned source
+before registration. It does not download weights or accept a model license.
+There is no API that accepts caller-supplied "ready" model metadata.
+
+Bootstrap still needs real teaching data, actual optimizer updates and changed
+weights. It evaluates the resulting Franka candidate under
+`comparison_kind: reference_bootstrap`: a distinct `BootstrapReport` records
+the reference-controller code SHA, candidate model SHA, complete reference and
+candidate trials, and physical/safety quality gate. It does **not** invent a P0
+model SHA or an improvement conclusion. Only the allowed bootstrap operator can
+explicitly review a passing report and create the first actual P0 release.
+Normal customer P1 adaptation then uses that P0 and the separate paired-policy
+improvement gate.
+
+Releases pin their approved task/instruction, model family/digests and explicit
+`environment_cases` allowlist. Review/record creation is not proof the model is
+already installed on a GPU host. GPU artifact verification, model-specific
+timing attestation and runtime catalog activation remain required.
 
 ## Runtime and learner ports
 
@@ -142,8 +185,44 @@ Azure job ID/name, owner and immutable specification hash, actual state,
 optional real metrics and verified candidate/report. No in-memory production
 job manager or fabricated receipt is acceptable.
 
-The separate GR00T worker adapter is expected to wrap
-`learning.gr00t.azure.create_plan` and injected `Gr00tJobs` without changing
-legacy ACT tooling. The API does not require training dependencies in its
-runtime. Until real adapters and train-actuate-held-out gates are verified,
-the default learning capability remains disabled.
+The separate policy-learning worker adapter wraps
+the model-family-specific, learner-owned SDK. The closed registry selects
+`learning.smolvla.azure.PolicyJobs` for explicit `smolvla`; legacy GR00T types
+are distinct and blocked for production model use. The worker binds actual
+Azure parent pipeline ID and child component ID, does not infer optimizer
+metrics from `Completed`, and verifies native model/report outputs.
+
+`native_plan_sha256` preserves the native plan artifact hash separately from
+the API authorization's `evaluation_plan_sha256`. Both are bound to the reviewed
+job specification; every trial's seed/environment/revision, measured initial
+pose, builder digest, failures/retries and actual action counters are retained.
+The API does not need Torch, Isaac or the Azure ML SDK in its own runtime.
+The separate worker lock and deployment procedure are in
+[`apps/learning_worker/README.md`](../apps/learning_worker/README.md).
+Until real train-actuate-held-out gates pass, production capability stays off.
+
+## Protected operator sequence
+
+First use `GET /api/learning/capabilities`; do not force-enable a blocked model.
+Each successful resource response supplies the next `ETag`.
+Authenticated operators then:
+
+1. Create the immutable project using actual registered P0 (or the privileged
+   train-only bootstrap path), reviewed cases and bounded budgets.
+2. Start a `human_teleop` or explicit `reference_controller` teaching session
+   with the project ETag and `motion_approved: true`. Automated G0 must use
+   `reference_controller`, not claim a customer's human demonstration.
+3. For held controls, request `/arm`, then echo its grant on `/jog` only while
+   still held/visible. Never compute authority from browser wall time.
+4. `/finish` then poll the original session. Physical completion can precede
+   upload. Old capture A is reconciled via its original command's capture route,
+   even after scene B begins; it is never rebound to B.
+5. Seal only validated `ready` captures, then submit an explicitly approved
+   paid train request. Preserve its request ID through uncertain responses.
+6. Read the actual named job and verified candidate; submit the fixed evaluation.
+   Review all failures and exact model family/digests before policy release.
+7. Select the immutable `policy_release_id` on a new inspection/run and approve
+   that plan separately. Learned dispatch goes only to `/v1/policy/commands`,
+   carrying required `policy_type`, task, model SHA, release and control profile.
+   Actual execution must report matching type/SHA and applied actions with zero
+   reference-route calls. No missing-model fallback exists.

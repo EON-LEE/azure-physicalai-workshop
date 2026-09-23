@@ -24,6 +24,14 @@ def plan():
         id=uuid4(),
         seeds=tuple(range(200, 220)),
         held_out_episode_ids=(),
+        cases=tuple(
+            {
+                "seed": seed,
+                "environment_id": f"held-out-{seed}",
+                "revision": f"{seed:064x}",
+            }
+            for seed in range(200, 220)
+        ),
         minimum_success_rate=0.9,
         maximum_axis_error_m=0.04,
         maximum_inference_p95_ms=80,
@@ -47,6 +55,7 @@ def project_request():
         request_id=uuid4(),
         display_name="제조 부품 키팅 학습",
         task_id="part-kitting-v1",
+        policy_type="gr00t_n1_5",
         instruction="부품을 승인된 트레이에 놓습니다.",
         goal_station_id="accepted",
         environment_id="reference-cell",

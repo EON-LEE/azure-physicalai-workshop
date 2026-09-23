@@ -43,6 +43,10 @@ class TeachingRuntimeStub:
     def teaching(self, owner, session_id):
         return self.state
 
+    def capture(self, owner, command_id):
+        assert command_id == self.state.command_id
+        return self.state.capture
+
     def teaching_input(self, owner, session_id, body):
         self.inputs.append(body)
         if self.error:
@@ -88,6 +92,7 @@ def setup(source="human_teleop"):
         artifacts,
         catalog,
         enabled=True,
+        allowed_policy_types=("gr00t_n1_5",),
         runtime=runtime,
     )
     started = service.start_teaching(
@@ -297,3 +302,28 @@ def test_ready_capture_must_match_owner_task_command_epoch_and_source():
         service.get_teaching(ACTOR, started.value.id)
     assert failure.value.code == "capture_scope_mismatch"
     assert service.get(ACTOR, "teaching", started.value.id).value.status != "ready"
+
+
+def test_completed_capture_is_reconciled_by_historical_command_after_another_scene_started():
+    service, _, started, runtime = setup()
+    finish = TeachingControl(
+        request_id=uuid4(),
+        lease_id=started.value.lease_id,
+        epoch=started.value.epoch,
+    )
+    result = service.control_teaching(ACTOR, started.value.id, finish, started.etag, "finish")
+    assert result.value.physical_status == "succeeded"
+
+    def different_active_scene(*args):
+        raise Problem(409, "scene_changed", "Scene B replaced the live teaching scene.")
+
+    runtime.teaching = different_active_scene
+    runtime.state = runtime.state.model_copy(
+        update={
+            "capture": runtime.state.capture.model_copy(update={"status": "uploading"}),
+        }
+    )
+    upload = service.get_teaching(ACTOR, started.value.id)
+    assert upload.value.status == "uploading"
+    assert upload.value.physical_status == "succeeded"
+    assert upload.value.epoch == started.value.epoch
