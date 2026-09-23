@@ -96,6 +96,15 @@ def hardware(teaching, monkeypatch):
         monkeypatch.setitem(sys.modules, name, module)
     previous = sys.modules.pop("simulation.isaac_adapter", None)
     adapter = importlib.import_module("simulation.isaac_adapter")
+    monkeypatch.setattr(adapter, "observation_barrier", lambda *args, **kwargs: clock[1])
+    monkeypatch.setattr(
+        adapter,
+        "camera_evidence",
+        lambda *args, **kwargs: {
+            "physics_step": kwargs["physics_step"],
+            "cameras": {},
+        },
+    )
     cell = adapter.IsaacWorkcell()
     joints = Array([0.0, 0.0, 0.0, -1.57, 0.0, 1.57, 0.0, 0.02, 0.02])
 
@@ -401,3 +410,25 @@ def test_teaching_uses_the_reviewed_right_gripper_frame_not_an_arbitrary_finger_
     )
     cell.start_teaching(request, core, Recorder())
     assert cell._measured_tcp() == (0.35, 0.25, 0.3)
+
+
+def test_profile_camera_acquires_every_scheduled_render_without_a_second_frequency_gate(hardware):
+    cell, _, _, _ = hardware
+
+    class Sensor:
+        frequency = 60
+
+        def get_resolution(self):
+            return (320, 320)
+
+        def get_frequency(self):
+            return self.frequency
+
+        def set_frequency(self, value):
+            self.frequency = value
+
+    cell.cameras = {name: Sensor() for name in ("inspection", "overview")}
+    cell.control_mode = "human_teaching"
+    assert cell._configure_cameras()
+    assert all(sensor.frequency == -1 for sensor in cell.cameras.values())
+    assert not cell._configure_cameras()

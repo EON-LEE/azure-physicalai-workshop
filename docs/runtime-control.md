@@ -112,6 +112,22 @@ from the reference controller:
   interval. Teacher contact pressure is bounded relative to measured fingers;
   neutral holds retain issued finger targets rather than dropping grip force.
 
+At each aligned observation boundary, a bounded `World.render()` barrier
+refreshes both sensors without advancing simulation time or the physics index.
+The six subsequent physics ticks do not render again; the next boundary
+produces the next actual observation. Profile cameras acquire every scheduled
+render rather than applying a second independent frequency decimator.
+The original `dt / 2` camera/physics-time check is unchanged. Barrier work is
+inside, not added to, the 100 ms budget.
+
+Isaac 6 camera `rendering_frame` is a Fabric rational identity, unlike the
+legacy integer. The recorder retains the actual integral numerator (no float
+round trip or invented counter), pins the positive denominator per camera and
+scene, and rejects rewinds or timebase changes. The original numerator and
+denominator, both camera times, world time/physics index, warmup state and
+control boundary are retained in the separate operator receipt/diagnostics.
+They are not fabricated as current timestamps or added to the closed raw schema.
+
 The v2 recorder stages an observation plus its six **actual following**
 `AppliedControl` records. It keeps one complete interval pending so graceful
 finish can mark a genuine terminal interval without synthesizing future ticks.

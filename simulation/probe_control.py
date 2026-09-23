@@ -394,6 +394,7 @@ def run_probe(args) -> dict:
             "initial_state": initial,
             "control_profile_sha256": profile.sha256,
             "control_intervals": getattr(hardware, "control_timings", []),
+            "camera_observation": getattr(hardware, "camera_observation_metadata", None),
             "probe_completed": (
                 not collecting
                 and len(getattr(hardware, "control_timings", [])) >= args.intervals
@@ -436,6 +437,11 @@ def run_probe(args) -> dict:
                     "probe_completed": False,
                     "control_intervals": (
                         getattr(hardware, "control_timings", []) if hardware is not None else []
+                    ),
+                    "camera_observation": (
+                        getattr(hardware, "camera_observation_metadata", None)
+                        if hardware is not None
+                        else None
                     ),
                     **outcome_fields(args.mode, result, capture),
                 }

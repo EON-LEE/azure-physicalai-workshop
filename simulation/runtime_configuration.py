@@ -33,6 +33,7 @@ def servo_profile_sha256() -> str:
                 name: file_digest(Path(__file__).with_name(name))
                 for name in (
                     "isaac_adapter.py",
+                    "camera_observation.py",
                     "control.py",
                     "motion.py",
                     "policy_executor.py",

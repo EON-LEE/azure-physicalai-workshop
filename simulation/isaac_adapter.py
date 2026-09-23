@@ -37,6 +37,7 @@ from learning.capture import resolve_joint_targets
 from learning.contract import AppliedControl, CameraSample, FrameSample
 from learning.inference import PolicyObservation
 from simulation.asset_references import validate_usd_bundle
+from simulation.camera_observation import camera_evidence, observation_barrier, render_identity
 from simulation.control import (
     HoldCapture,
     TaskWatchdog,
@@ -96,6 +97,8 @@ class IsaacWorkcell:
         self.render_monotonic_ns = 0
         self.kinematics = None
         self.articulation_kinematics = None
+        self.camera_timebases = {}
+        self.camera_observation_metadata = None
 
     def load(self, spec: SceneSpec) -> None:
         self._validate_asset_bundle()
@@ -110,6 +113,7 @@ class IsaacWorkcell:
         self.cameras.clear()
         self.last_render_frame.clear()
         self.empty_frames.clear()
+        self.camera_timebases.clear()
         if self.world is not None:
             self.world.stop()
             self.world.clear()
@@ -238,6 +242,7 @@ class IsaacWorkcell:
         )
         self.last_render_frame.clear()
         self.empty_frames.clear()
+        self.camera_timebases.clear()
         self.robot.gripper.set_joint_positions(self.robot.gripper.joint_opened_positions)
         self.robot.set_joint_velocities(np.zeros(9))
         self.robot.apply_action(
@@ -328,7 +333,7 @@ class IsaacWorkcell:
     def _configure_cameras(self) -> bool:
         profiled = self.control_mode != "reference"
         resolution = (320, 320) if profiled or self.spec.record_demonstration else (960, 540)
-        frequency = 10 if profiled or not self.spec.record_demonstration else 60
+        frequency = -1 if profiled else (60 if self.spec.record_demonstration else 10)
         changed = False
         for camera in self.cameras.values():
             if tuple(camera.get_resolution()) != resolution:
@@ -469,6 +474,19 @@ class IsaacWorkcell:
     def _next_control_interval(self) -> None:
         self.interval_started_ns = self.control_core.clock_ns()
         self.control_next_ns = self.interval_started_ns + 100_000_000
+        try:
+            self.render_monotonic_ns = observation_barrier(
+                self.world,
+                self.cameras,
+                dt=self.dt,
+                physics_step=self.steps,
+                clock_ns=self.control_core.clock_ns,
+                deadline_ns=self.control_next_ns,
+            )
+        finally:
+            self.camera_observation_metadata = camera_evidence(
+                self.world, self.cameras, physics_step=self.steps
+            ) | {"warmup_steps": self.warmup_steps, "hold_offset": self.hold_offset}
         joints = tuple(float(value) for value in self.robot.get_joint_positions())
         observed = self._sample_before_command(joints)
         if self.control_mode == "learned":
@@ -538,10 +556,7 @@ class IsaacWorkcell:
             )
         else:
             core.apply_guarded(self.control_binding, lambda: submit(self.held_targets))
-        render = self.hold_offset + 1 == self.control_profile.hold_steps
-        self.world.step(render=render)
-        if render:
-            self.render_monotonic_ns = core.clock_ns()
+        self.world.step(render=False)
         self.steps += 1
         self.hold_offset += 1
         if self.hold_capture is not None:
@@ -613,7 +628,10 @@ class IsaacWorkcell:
                     "A genuinely new camera frame is required for every recorded control step."
                 )
             images[name] = CameraSample(
-                image, int(metadata["rendering_frame"]), self.steps, self.render_monotonic_ns
+                image,
+                render_identity(metadata["rendering_frame"])[0],
+                self.steps,
+                self.render_monotonic_ns,
             )
         return FrameSample(
             captured_at_utc=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
@@ -820,8 +838,14 @@ class IsaacWorkcell:
         frame = camera.get_current_frame()
         render_frame = frame.get("rendering_frame")
         key = (name, consumer)
-        if render_frame is None or self.last_render_frame.get(key) == render_frame:
+        if render_frame is None:
             return None
+        identity = render_identity(render_frame)
+        previous_identity = self.last_render_frame.get(key)
+        if previous_identity == identity:
+            return None
+        if previous_identity is not None and identity[0] < previous_identity[0]:
+            raise ValueError("The native camera rendering identity moved backwards.")
         rgba = camera.get_rgba()
         if rgba is None or rgba.size == 0:
             return None
@@ -831,11 +855,15 @@ class IsaacWorkcell:
                 raise RuntimeError(f"Camera {name} kept returning empty RGB after scene loading.")
             return None
         self.empty_frames[name] = 0
+        previous_base = self.camera_timebases.get(name)
+        if previous_base is not None and previous_base != identity[1]:
+            raise ValueError("The native camera frame timebase changed within the scene.")
+        self.camera_timebases[name] = identity[1]
         output = BytesIO()
         Image.fromarray(rgba[:, :, :3].astype(np.uint8)).save(
             output, format="PNG", compress_level=1
         )
-        self.last_render_frame[key] = render_frame
+        self.last_render_frame[key] = identity
         return output.getvalue()
 
     def stop(self) -> None:
