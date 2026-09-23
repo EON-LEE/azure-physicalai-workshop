@@ -208,6 +208,13 @@ subsequent foundation deployments. The standalone demo retains `Basic` as its
 default; changing the SKU is explicit and does not enable registry admin access
 or relax Blob/Key Vault network restrictions.
 
+The owner-partitioned Cosmos `state` container enables item-level expiration
+with `defaultTtl=-1`: records without an explicit top-level `ttl` do not expire.
+Only pagination cursor metadata receives a short item TTL. Before enabling the
+paginated API against an existing deployment, verify this container setting;
+an API-side ten-minute cursor expiry does not itself remove Cosmos documents.
+Preserve the existing partition key and indexing policy when applying the change.
+
 The simulator identity normally needs registry pull, not push. If a scoped
 temporary `AcrPush` assignment is approved for host image construction, remove
 that exact assignment after the final image is pushed.

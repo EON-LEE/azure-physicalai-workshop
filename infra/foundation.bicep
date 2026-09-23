@@ -113,6 +113,7 @@ resource state 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@20
   properties: {
     resource: {
       id: 'state'
+      defaultTtl: -1
       partitionKey: { paths: ['/owner_key'], kind: 'Hash' }
       indexingPolicy: {
         indexingMode: 'consistent'

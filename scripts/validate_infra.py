@@ -59,6 +59,9 @@ def validate() -> None:
     cosmos = resources(foundation, "Microsoft.DocumentDB/databaseAccounts")[0]
     assert cosmos["properties"]["disableLocalAuth"] is True
     assert cosmos["properties"]["publicNetworkAccess"] == "Disabled"
+    state = resources(foundation, "Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers")
+    assert len(state) == 1 and state[0]["properties"]["resource"]["defaultTtl"] == -1
+    assert state[0]["properties"]["resource"]["partitionKey"]["paths"] == ["/owner_key"]
     vault = resources(foundation, "Microsoft.KeyVault/vaults")[0]
     assert vault["properties"]["publicNetworkAccess"] == "Disabled"
     foundry = resources(foundation, "Microsoft.CognitiveServices/accounts")[0]
