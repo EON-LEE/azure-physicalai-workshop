@@ -271,7 +271,7 @@ a checkpoint or grants runtime controller approval.
 `Dedicated` or `LowPriority` single-node compute (minimum zero, maximum one,
 no public node IP, SSH/local auth disabled). It does **not** submit a job or
 grant permissions. Supply `workspaceName`, `location`, existing
-`storageAccountId`, `keyVaultId`, `containerRegistryId`, `workspaceIdentityId`,
+`storageAccountId`, `keyVaultId`, `containerRegistryId`, `applicationInsightsId`, `workspaceIdentityId`,
 `computeIdentityId`, `privateEndpointSubnetId`, the two prelinked
 `privateDnsZoneIds` (`privatelink.api.azureml.ms` and
 `privatelink.notebooks.azure.net`), `computeName`, `computeSize`, and
@@ -281,6 +281,11 @@ provisioning first; quota does not prove allocation capacity. Optional
 `compute_tier` in legacy ACT plans is verified against actual compute when
 present; GR00T plans require it. Do not run the legacy final-checkpoint-only
 ACT training path on Spot as a substitute for resumable GR00T training.
+The workspace uses API **2025-06-01**, whose published schema supports
+`systemDatastoresAuthMode: Identity`; the original 2024-04-01 schema does not
+expose that setting. Existing Application Insights is bound by resource ID,
+not silently created. Registry Private Link requires an approved supporting
+ACR SKU (Premium); this template does not upgrade it or relax any firewall.
 
 `learning.azure` generates real Azure ML v2 pipeline job JSON (also valid YAML)
 and a deterministic source snapshot. The training graph is **convert -> train**.

@@ -38,6 +38,10 @@ def test_private_single_node_learning_infrastructure_exists():
         "param storageAccountId string",
         "param keyVaultId string",
         "param containerRegistryId string",
+        "param applicationInsightsId string",
+        "applicationInsights: applicationInsightsId",
+        "systemDatastoresAuthMode: 'Identity'",
+        "Microsoft.MachineLearningServices/workspaces@2025-06-01",
         "param workspaceIdentityId string",
         "param computeIdentityId string",
     ):

@@ -7,6 +7,7 @@ param location string
 param storageAccountId string
 param keyVaultId string
 param containerRegistryId string
+param applicationInsightsId string
 param workspaceIdentityId string
 param computeIdentityId string
 param privateEndpointSubnetId string
@@ -23,7 +24,7 @@ param computeSize string
 param computeTier string
 param tags object = {}
 
-resource workspace 'Microsoft.MachineLearningServices/workspaces@2024-04-01' = {
+resource workspace 'Microsoft.MachineLearningServices/workspaces@2025-06-01' = {
   name: workspaceName
   location: location
   tags: tags
@@ -39,6 +40,8 @@ resource workspace 'Microsoft.MachineLearningServices/workspaces@2024-04-01' = {
     storageAccount: storageAccountId
     keyVault: keyVaultId
     containerRegistry: containerRegistryId
+    applicationInsights: applicationInsightsId
+    systemDatastoresAuthMode: 'Identity'
     primaryUserAssignedIdentity: workspaceIdentityId
     publicNetworkAccess: 'Disabled'
     allowPublicAccessWhenBehindVnet: false
