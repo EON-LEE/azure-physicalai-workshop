@@ -549,20 +549,20 @@ class LearningService:
         if receipt.metrics.optimizer_steps is not None and run.metrics.optimizer_steps is not None:
             if receipt.metrics.optimizer_steps < run.metrics.optimizer_steps:
                 raise Problem(503, "regressing_job_metrics", "Worker step count regressed.")
-        if target == "succeeded":
+        if target == "succeeded" and isinstance(run, TrainingRun):
             project = self.get(actor, "project", run.project_id).value
             artifacts = self._dependency(self.artifacts, "Verified learning artifacts")
-            if isinstance(run, TrainingRun):
-                candidate = receipt.candidate
-                self._check_candidate(actor, project, run, candidate)
-                artifacts.verify_candidate(actor, project, run, candidate)
-                self._claim(actor, candidate)
-                changes["candidate_id"] = candidate.id
-            else:
-                if receipt.report is None:
-                    raise Problem(
-                        503, "missing_evaluation_evidence", "A paired report is required."
-                    )
+            candidate = receipt.candidate
+            self._check_candidate(actor, project, run, candidate)
+            artifacts.verify_candidate(actor, project, run, candidate)
+            self._claim(actor, candidate)
+            changes["candidate_id"] = candidate.id
+        if isinstance(run, EvaluationRun) and target in JOB_TERMINAL:
+            if target == "succeeded" and receipt.report is None:
+                raise Problem(503, "missing_evaluation_evidence", "A paired report is required.")
+            if receipt.report is not None:
+                project = self.get(actor, "project", run.project_id).value
+                artifacts = self._dependency(self.artifacts, "Verified learning artifacts")
                 candidate = self.get(actor, "candidate", run.candidate_id).value
                 if run.comparison_kind == "reference_bootstrap":
                     validate_bootstrap_report(project, candidate, receipt.report)

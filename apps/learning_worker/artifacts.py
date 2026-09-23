@@ -394,12 +394,14 @@ class VerifiedArtifacts:
             self.registry.put(actor, key, candidate.model_dump(mode="json"))
             return candidate
 
-    def completed_report(self, actor, specification, azure_job_id):
+    def completed_report(self, actor, specification, azure_job_id, *, required=True):
         from apps.learning_worker.reports import project_report
 
         with TemporaryDirectory(prefix="physicalai-evaluation-") as folder:
             output = Path(folder) / "report"
             config = self._output(actor, specification, "report", output)
+            if not (output / "report.json").is_file() and not required:
+                return None
             report = self._read_json(output / "report.json")
             if report.get("azure_job_id") != azure_job_id:
                 raise Problem(

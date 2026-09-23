@@ -18,7 +18,7 @@ def learning_publication(configuration, learning):
     ).value
     if (
         evaluation.project_id != project.id
-        or evaluation.status != "succeeded"
+        or evaluation.status not in ("succeeded", "failed", "cancelled", "timed_out")
         or evaluation.report is None
     ):
         raise Problem(
@@ -59,6 +59,7 @@ def learning_publication(configuration, learning):
             "task": project.instruction,
             "policy_type": candidate.policy_type,
             "recorded_at": evaluation.updated_at.isoformat(),
+            "evaluation_status": evaluation.status,
             "data_provenance": {
                 "human_teleop": dataset.human_teleop_count,
                 "reference_controller": dataset.reference_controller_count,

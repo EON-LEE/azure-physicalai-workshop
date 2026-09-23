@@ -7,6 +7,7 @@ export const publicLearningSchema = z.object({
   publication: z.object({
     title: z.string(), task: z.string(), policy_type: z.string(),
     recorded_at: z.iso.datetime({ offset: true }),
+    evaluation_status: z.enum(['succeeded', 'failed', 'cancelled', 'timed_out']),
     data_provenance: z.object({ human_teleop: z.number().int().nonnegative(), reference_controller: z.number().int().nonnegative(), learned: z.number().int().nonnegative() }),
     training: z.object({
       optimizer_steps: z.number().int().positive(), model_sha256: z.string(), parent_model_sha256: z.string(),

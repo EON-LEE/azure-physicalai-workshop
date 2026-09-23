@@ -10,6 +10,7 @@ from apps.api.learning_models import (
     ReleasePolicy,
     TrialOutcome,
 )
+from apps.api.learning_ports import BackendJob
 from apps.api.learning_service import LearningService, validate_paired_report
 from apps.api.models import utcnow
 from tests.learning_api_support import learning_setup, seed_project_and_dataset
@@ -211,3 +212,48 @@ def test_retry_attempts_cannot_erase_first_failures_or_omit_an_intermediate_atte
             ),
         )
     assert failure.value.code == "evaluation_incomplete"
+
+
+def test_failed_azure_evaluation_retains_its_verified_complete_no_improvement_report():
+    service, _, _, _, stored = evaluated_setup(10, 10)
+    report = stored.value.report
+    active = stored.value.model_copy(update={"status": "running", "report": None})
+    service.store.put_learning(ACTOR.owner_key, active, stored.etag)
+    service.jobs.receipts[active.backend_job_name] = BackendJob(
+        job_name=active.backend_job_name,
+        azure_job_id=active.azure_job_id,
+        owner_key=ACTOR.owner_key,
+        specification_sha256=active.specification_sha256,
+        status="failed",
+        report=report,
+        error_code="quality_gate_failed",
+        message="The native evaluator retained all results and exited without passing quality.",
+    )
+    result = service.get_job(ACTOR, active.id)
+    assert result.value.status == "failed"
+    assert result.value.report is not None
+    assert result.value.report.conclusion == "not_improved"
+    assert len(result.value.report.trials) == 40
+    assert result.value.report.quality_gate_passed is False
+
+
+def test_explicit_publication_can_truthfully_show_a_verified_failed_evaluation():
+    from apps.api.public_learning import learning_publication
+    from tests.runtime_support import settings
+
+    service, project, _, _, evaluation = evaluated_setup(10, 10)
+    failed = evaluation.value.model_copy(update={"status": "failed"})
+    service.store.put_learning(ACTOR.owner_key, failed, evaluation.etag)
+    configuration = settings().model_copy(
+        update={
+            "public_learning_owner_id": ACTOR.object_id,
+            "public_learning_project_id": project.id,
+            "public_learning_evaluation_id": failed.id,
+        }
+    )
+    value = learning_publication(configuration, service)
+    assert value["publication"]["evaluation_status"] == "failed"
+    assert value["publication"]["comparison"]["conclusion"] == "not_improved"
+    assert value["publication"]["comparison"]["quality_gate_passed"] is False
+    assert len(value["publication"]["comparison"]["trials"]) == 40
+    assert "owner_key" not in value["publication"]

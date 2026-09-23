@@ -114,6 +114,11 @@ before/after trial and retry, including failures; no post-hoc favorable subset.
   latency, predict/action counts and zero reference-route calls. A failed or
   incomplete report cannot publish a candidate. A passed physical gate without
   improvement is not a claim of learning benefit.
+  A native quality gate can write a complete verified report and then exit
+  nonzero. The worker/API retain that report alongside Azure `failed`; private
+  and explicitly curated public views show the failures without relabeling the
+  job as successful. Missing or invalid failed-job evidence stays explicitly
+  unverified, never replaced by an example comparison.
 - Release is a separate, explicit human review after artifact and paired-gate
   verification. Foundry can propose/select an already released skill but cannot
   publish its own model, increase limits or approve motion/cost.

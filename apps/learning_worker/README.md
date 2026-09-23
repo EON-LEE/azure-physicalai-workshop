@@ -126,3 +126,11 @@ authorization and native file hashes are distinct and both retained. An absent,
 malformed or unverified native report is 503, never inferred quality.
 Actual train → model load → guarded action →
 held-out physical comparison is mandatory before enabling production learning.
+
+Native adapter integration is checked against the committed SmolVLA implementation,
+including keyword-only `caller_client_id` and `deterministic_job_name`. Offline
+tests generate and revalidate real plans and load train/compare/bootstrap plans
+with Azure ML SDK 1.35.0 without requesting credentials or submitting jobs.
+An actual SDK `ResourceNotFoundError` during named-job reconciliation remains
+unconfirmed; it never causes a second submission. Complete verified reports are
+retained even when the native physical quality gate exits with Azure `failed`.

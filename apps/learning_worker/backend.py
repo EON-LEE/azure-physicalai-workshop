@@ -7,6 +7,7 @@ from decimal import Decimal
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from azure.core.exceptions import ResourceNotFoundError
 from pydantic import ValidationError
 
 from apps.api.errors import Problem, unavailable
@@ -162,7 +163,9 @@ class PolicyLearningWorker:
             sdk = importlib.import_module(f"{module_name}.azure")
         except ModuleNotFoundError as exc:
             raise unavailable("Pinned policy Azure worker dependencies") from exc
-        clients = sdk.clients_for_managed_identity(config, str(self.caller_client_id))
+        clients = sdk.clients_for_managed_identity(
+            config, caller_client_id=str(self.caller_client_id)
+        )
         jobs = getattr(sdk, jobs_name)(clients[0], config, storage_client=clients[1])
         return jobs, sdk.create_plan
 
@@ -192,7 +195,9 @@ class PolicyLearningWorker:
         jobs, create_plan = self._sdk(config, specification.project.policy_type, model_use=True)
         with TemporaryDirectory(prefix="physicalai-job-plan-") as folder:
             plan = Path(folder) / "plan"
-            digest = create_plan(config, plan, specification.run.backend_job_name)
+            digest = create_plan(
+                config, plan, deterministic_job_name=specification.run.backend_job_name
+            )
             receipt = jobs.submit(
                 plan,
                 approved_plan_sha256=digest,
@@ -222,26 +227,45 @@ class PolicyLearningWorker:
             raise Problem(
                 503, "worker_receipt_mismatch", "Azure job tags differ from the durable claim."
             )
-        if result.status == "succeeded":
-            # Completed Azure state alone never manufactures a checkpoint or a quality result.
-            if specification.run.kind == "training":
-                candidate = self.artifacts.completed_candidate(
-                    actor, specification, result.azure_job_id
+        if result.status == "succeeded" and specification.run.kind == "training":
+            candidate = self.artifacts.completed_candidate(
+                actor, specification, result.azure_job_id
+            )
+            result = result.model_copy(
+                update={
+                    "candidate": candidate,
+                    "metrics": TrainingMetrics(
+                        optimizer_steps=candidate.optimizer_steps,
+                        measured_at=candidate.updated_at,
+                    ),
+                }
+            )
+        if specification.run.kind == "evaluation" and result.status in (
+            "succeeded",
+            "failed",
+            "cancelled",
+            "timed_out",
+        ):
+            try:
+                report = self.artifacts.completed_report(
+                    actor, specification, result.azure_job_id, required=result.status == "succeeded"
                 )
+                if report is not None and not isinstance(report, (PairedReport, BootstrapReport)):
+                    raise unavailable("Verified complete physical evaluation report")
+                if result.status == "succeeded" and report is None:
+                    raise unavailable("Final physical evaluation report")
+                result = result.model_copy(update={"report": report})
+            except Problem as exc:
+                if result.status == "succeeded":
+                    raise
                 result = result.model_copy(
                     update={
-                        "candidate": candidate,
-                        "metrics": TrainingMetrics(
-                            optimizer_steps=candidate.optimizer_steps,
-                            measured_at=candidate.updated_at,
+                        "error_code": "evaluation_report_unverified",
+                        "message": (
+                            f"Azure job is {result.status}; its report is unverified ({exc.code})."
                         ),
                     }
                 )
-            else:
-                report = self.artifacts.completed_report(actor, specification, result.azure_job_id)
-                if not isinstance(report, (PairedReport, BootstrapReport)):
-                    raise unavailable("Verified complete physical evaluation report")
-                result = result.model_copy(update={"report": report})
         return result
 
     def status(self, actor, run):
@@ -253,8 +277,8 @@ class PolicyLearningWorker:
         jobs, _ = self._sdk(approval["config"], specification.project.policy_type)
         try:
             receipt = jobs.status(run.backend_job_name)
-        except Problem:
-            raise
+        except ResourceNotFoundError:
+            return None
         return self._receipt(actor, specification, receipt)
 
     def cancel(self, actor, run):
