@@ -25,6 +25,7 @@ CODE_FILES = shared.CODE_FILES + (
     "learning/smolvla/pyproject.toml",
     "learning/smolvla/uv.lock",
     "learning/smolvla/Dockerfile",
+    "learning/smolvla/rollout.py",
 )
 
 

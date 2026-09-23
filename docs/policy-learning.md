@@ -241,6 +241,109 @@ promotes the untrained initialization. Warm latency above 80 ms exits nonzero.
 Actual GPU optimization, bootstrap/paired Isaac accuracy, concurrent A10
 inference timing and publication remain live acceptance requirements.
 
+### Physical evidence producer: runtime execution, not an AML gate job
+
+`learning.smolvla.components compare/bootstrap` **does not execute physics**.
+Its input must now be a recorded
+`physicalai.smolvla-paired-results/v2` or
+`physicalai.smolvla-bootstrap-results/v2` collection. A legacy hand-assembled
+`results.json` cannot satisfy that production verification path. The outward
+paired/bootstrap **report** schemas stay v1 so the worker's checked projection
+does not need invented API fields.
+
+The actual operator-owned runtime must run every frozen case through its
+approved reference or real model controller. The runtime owner supplies the
+bounded physics/model episode loop (`run_evaluation_episode(grant, case, sink)`);
+the coordinator supplies the frozen plan, explicit evaluation-only operator
+grant, schedule and resource orchestration. Neither role may pretend the
+vendor initialization is a released P0. Candidate evaluation authorization uses
+an `evaluation_run_id`, never a fabricated production `policy_release_id`.
+No new HTTP actuator endpoint is implied by this Python integration.
+
+`learning.smolvla.rollout.PhysicalRolloutRecorder` is a **pure evidence sink**.
+It never grants authority, loads model weights, chooses a model path, calls
+Isaac, moves a robot, or synthesizes missing measurements:
+
+```python
+recorder = PhysicalRolloutRecorder(
+    new_owner_scoped_output_directory,
+    plan=frozen_native_plan,
+    runtime=actual_pinned_runtime_identity,
+    grant=operator_evaluation_grant,
+    expected_plan_sha256=approved_native_plan_sha256,
+    expected_grant_sha256=independently_approved_grant_sha256,
+)
+
+# Called by the actual runtime; not by a JSON report generator.
+recorder.start_case(binding, initial_measured_state, initial_camera_frames)
+recorder.append_control(actual_control_trace)  # One or more real counter/timing snapshots.
+recorder.finish_case(
+    actual_terminal_outcome, final_measured_state, final_camera_frames,
+    actual_uploaded_capture_manifest_bytes,
+)
+results_path = recorder.finalize()  # Only after every planned attempt is complete.
+```
+
+The grant is `physicalai.operator-rollout-grant/v1`, with
+`purpose: paired_policy_eval | reference_bootstrap`, `evaluation_run_id`,
+tenant/opaque-owner `scope`, `operator_principal_sha256`, exact
+`plan_sha256`, `runtime_sha256`, `control_profile_sha256`, approved
+`task: {task_id, instruction, goal_id}`, UTC `issued_at_utc` / `expires_at_utc`,
+`max_episode_seconds <= 30` and `max_total_seconds <= 3600`. The actual
+authorization check happens in the runtime's trusted operator/provider boundary;
+hashing a self-written grant is not permission to actuate. All per-episode
+budgets are equal, bounded by the same grant window and cross-checked against
+monotonic deadlines. Source/runtime identity includes the actual pinned image,
+source commit, GPU/Isaac and robot asset provenance.
+
+The exact stdlib dataclasses are:
+
+| Type | Actual runtime fields |
+| --- | --- |
+| `CaseBinding` | `evaluation_run_id`, purpose, scope, role (`policy`), model SHA or null for reference, frozen episode/attempt/environment/revision/seed/builder/goal, actual command ID/epoch, profile/runtime SHAs, UTC/monotonic deadline, explicit `policy_type="smolvla"` |
+| `MeasuredState` | UTC timestamp, monotonic nanoseconds, physics step, measured object position |
+| `ControlTrace` | Command/epoch, actual monotonic/physics step, cumulative prediction/application/reference counters, actually applied model SHA, **new** latency and whole-cycle measurements, last actual application timestamp, actual safety violations |
+| `TerminalOutcome` | Actual terminal status and reason, selected destination, capture ID, exact private capture-manifest URI/SHA and frame count |
+
+`camera_frames` is exactly `dict[str, CameraSample]` for inspection/overview.
+Initial/final images must belong to their actual measured physics step, have
+real monotonic capture times and advancing native renderer identities. The
+actual uploaded manifest must bind the same owner, command/episode, environment,
+revision, held-out seed, source runtime and controller. Learned evidence requires
+v2 capture with the exact model/task/profile; reference v1 capture remains
+separate from the learned profile.
+
+The schedule is fixed before execution and alternates role order per case:
+before/after then after/before (or reference/candidate then candidate/reference).
+The read-only schedule contains every planned `(role, episode_id, attempt)`.
+No automatic retry, omission of failed trials or post-hoc successful subset is
+allowed. Actual completed failures/cancellations/timeouts with full measurements
+remain in the trial counts. A scene/camera/capture failure without measurements
+calls `abort_case(phase, error)`: its incomplete record is preserved, and
+`finalize` emits a failed `collection.json` but **no** publishable `results.json`.
+It does not fill missing initial/final poses or cameras with zeros.
+
+Use one persistence thread (the existing bounded runtime worker is appropriate)
+and pass immutable snapshots from the simulator thread. Persist the initial
+record before motion; do not make PNG/fsync work part of the timed physics loop
+or silently discard trace events to meet timing. Finish with the measured stop
+state after capture publication confirms the real manifest. Files include
+`start.json`, hash-chained `control.jsonl`, `terminal.json`, the exact
+`capture-manifest.json`, real initial/final PNGs and a final inventory. The native
+gate rechecks every checksum, trace chain, authority/case/deadline binding,
+application count and summary against those source artifacts.
+
+A 20 ms model call inside a 110 ms total control cycle records a timing
+violation and cannot pass quality admission. The recorder never subtracts a
+single mechanics sample from 100 ms to invent a future inference budget.
+Model identity becomes applied only after actual actuation; cumulative counters
+cannot go backwards, exceed actual physics ticks or cross commands/epochs.
+Cryptographic consistency establishes artifact integrity, not physical truth:
+the trusted runtime and independent Azure execution receipt remain necessary.
+Unit tests use explicitly labeled synthetic observations and test attestations;
+they do not demonstrate that this new physical rollout producer has executed
+on Azure or that any candidate has passed it.
+
 This is the learning slice of the existing customer inspection cell, not a second
 simulator or a replacement controller. It supports pinned Isaac Sim **5.1.0/6.0.0 Franka**
 articulation, the existing customer environment revision and reviewed scene

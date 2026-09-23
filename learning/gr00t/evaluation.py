@@ -364,7 +364,8 @@ def verify_evidence(plan: dict, root: Path, scope: Scope, checksum: str, schema:
             "plan_sha256",
             "runtime",
             "trials",
-        },
+        }
+        | ({"recording"} if schema.endswith("/v2") else set()),
         "paired evidence",
     )
     require(
@@ -378,6 +379,10 @@ def verify_evidence(plan: dict, root: Path, scope: Scope, checksum: str, schema:
 
     validate_runtime(result["runtime"])
     Provenance(**result["runtime"]["provenance"]).validate(require_live=True)
+    if schema.endswith("/v2"):
+        from learning.smolvla.rollout import verify_recording
+
+        verify_recording(root, result, plan)
     require(isinstance(result["trials"], list), "Missing physical trial evidence")
     for trial in result["trials"]:
         keys(trial, TRIAL_KEYS, "physical trial")

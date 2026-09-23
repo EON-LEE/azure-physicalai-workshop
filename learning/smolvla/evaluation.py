@@ -6,10 +6,10 @@ from learning.smolvla import POLICY_TYPE
 from learning.smolvla.artifacts import validate_model
 
 PLAN_SCHEMA = "physicalai.smolvla-paired-plan/v1"
-RESULT_SCHEMA = "physicalai.smolvla-paired-results/v1"
+RESULT_SCHEMA = "physicalai.smolvla-paired-results/v2"
 REPORT_SCHEMA = "physicalai.smolvla-paired-report/v1"
 BOOTSTRAP_PLAN_SCHEMA = "physicalai.smolvla-bootstrap-plan/v1"
-BOOTSTRAP_RESULT_SCHEMA = "physicalai.smolvla-bootstrap-results/v1"
+BOOTSTRAP_RESULT_SCHEMA = "physicalai.smolvla-bootstrap-results/v2"
 BOOTSTRAP_REPORT_SCHEMA = "physicalai.smolvla-bootstrap-report/v1"
 
 
