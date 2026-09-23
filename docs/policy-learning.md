@@ -330,16 +330,37 @@ compilation. BF16 autocast, TF32/high matmul precision and alternative attention
 kernels are separately declared numerical changes requiring fixed-noise output
 comparisons and eventual real policy/safety evaluation.
 
-One proposed follow-up diagnostic (not authorized or run by this documentation)
-keeps one existing GPU, at most 600 execution seconds, a 1,800-second allocation
-deadline and no retry. It would collect actual parameter/activation dtypes and
-precision flags, a bounded CPU/CUDA profiler trace with separate preprocessing,
-image encoding, prefix-cache, ten expert steps and postprocessing regions, and
-uninstrumented baseline versus same-precision compiled calls. Compile time is
-bounded and reported separately; graph breaks, eager fallback and capture failures
-remain explicit. Fixed input/noise comparisons must retain finite `[1,50,6]`
-outputs and disclose max/mean error before any speedup is considered. A speedup
-would still not admit the real nine-DOF/two-camera/Isaac controller.
+The coordinator subsequently authorized exactly one follow-up diagnostic,
+`policy-smol-vendor-profile-20260923-02`, implemented by
+`learning/checks/smolvla_vendor_profile.py`. It keeps one existing GPU, at most
+600 execution seconds, a 1,800-second allocation deadline and no retry. A
+non-CUDA supervisor uses **spawn**, not a forked CUDA context, for separate
+baseline and compile processes. The compile process has a hard 240-second limit;
+its owned descendants are terminated if it overruns.
+
+The baseline measures three warmups and 20 uninstrumented calls, then a separate
+bounded CPU/CUDA profiler call. Regions distinguish preprocessing, each camera's
+vision encoder, prefix KV caching, all ten expert denoising steps and
+postprocessing. Parameter/activation dtypes, CPU wall spans, CUDA elapsed spans,
+operator/kernel counts and launch gaps are retained. Nested spans are not falsely
+summed as exclusive kernel time. The trace is limited to 8 MiB compressed and
+logs to 2 MiB per process; oversize artifacts fail explicitly rather than creating
+unbounded output or a successful incomplete result.
+
+The two processes share **identical explicit safetensors input and noise
+tensors**, with checksums, not merely a seed. The compile-only candidate preserves
+the actual precision/matmul/TF32 flags and uses `reduce-overhead` on the native
+sampling method. Native compilation's extra `high`-precision switch is not
+enabled. Numerical comparisons require finite `[1,50,6]` outputs and fixed
+`rtol=1e-3`, `atol=1e-4`; failures cannot relax those values. Actual graph
+counters, graph breaks, eager regions, compiler logs, compile/warmup time,
+20 steady latencies and CUDA memory are reported. No captured graph means
+failure, not an eager fallback disguised as optimized success. Timeout,
+numerical mismatch and import/cache errors retain partial diagnostic proof and
+exit nonzero. The harness's local spawn/timeout tests are not GPU profiling
+evidence; actual outcomes must come from the separately pinned job proof.
+Even a measured speedup would not admit the real nine-DOF/two-camera/Isaac
+controller.
 
 Official [asynchronous inference](https://github.com/huggingface/lerobot/blob/8fff0fde7c79f23a93d845d1a50e985de01f8b8a/docs/source/async.mdx)
 and [real-time chunking](https://github.com/huggingface/lerobot/blob/8fff0fde7c79f23a93d845d1a50e985de01f8b8a/docs/source/rtc.mdx)
