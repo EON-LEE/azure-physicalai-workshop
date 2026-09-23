@@ -13,7 +13,13 @@ from runtime_support import ACTOR, PNG
 from apps.api.azure_data import CosmosStore
 from apps.api.errors import Problem
 from apps.api.main import create_app
-from apps.api.models import MotionTelemetry, SaveEnvironment, StartRun
+from apps.api.models import (
+    MotionTelemetry,
+    ReleasedPolicyBinding,
+    SaveEnvironment,
+    SkillPlan,
+    StartRun,
+)
 from apps.api.presentation import INSTRUCTION, cycle_run_id, result_for
 from apps.api.public_demo import PublicDemo
 from apps.api.settings import Settings
@@ -235,6 +241,54 @@ def test_generic_or_private_run_is_rejected_before_summary_or_pixels(prepared, m
         changed.plan.observation_id = uuid4()
     else:
         changed.evidence.blob_name = "another-owner/private.png"
+    backend.store.put_run(ACTOR.owner_key, changed, stored.etag)
+    with TestClient(create_app(settings, backend)) as client:
+        for path in (
+            "/api/demo",
+            f"/api/demo/evidence?observation_id={run.evidence.observation_id}",
+        ):
+            response = client.get(path)
+            assert response.status_code == 503
+            assert "PRIVATE" not in response.text
+
+
+@pytest.mark.parametrize("mutation", ["mode", "policy", "skill-plan"])
+def test_released_skill_cannot_enter_the_legacy_public_inspection_projection(prepared, mutation):
+    _, run = planned(prepared)
+    backend, settings, _ = prepared
+    stored = backend.store.get_run(ACTOR.owner_key, run.id)
+    changed = run.model_copy(deep=True)
+    binding = ReleasedPolicyBinding(
+        policy_release_id=uuid4(),
+        policy_type="smolvla",
+        model_sha256="a" * 64,
+        processor_sha256="b" * 64,
+        manifest_sha256="c" * 64,
+        control_profile_id="franka-position-hold-10hz-v1",
+        task_id="private-reviewed-skill",
+        goal_station_id="rejected",
+        instruction="PRIVATE SKILL INSTRUCTION",
+    )
+    if mutation == "mode":
+        changed.execution_mode = "released_skill"
+    elif mutation == "policy":
+        changed.policy = binding
+    else:
+        changed.plan = SkillPlan(
+            skill_plan_id=uuid4(),
+            policy_release_id=binding.policy_release_id,
+            policy_type=binding.policy_type,
+            model_sha256=binding.model_sha256,
+            task_id=binding.task_id,
+            instruction=binding.instruction,
+            target_station_id=binding.goal_station_id,
+            object_id=run.plan.object_id,
+            summary="PRIVATE SKILL SUMMARY",
+            observation_id=run.plan.observation_id,
+            epoch=run.plan.epoch,
+            state_revision=run.plan.state_revision,
+            expires_at=run.plan.expires_at,
+        )
     backend.store.put_run(ACTOR.owner_key, changed, stored.etag)
     with TestClient(create_app(settings, backend)) as client:
         for path in (

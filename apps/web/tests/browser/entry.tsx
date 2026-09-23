@@ -6,12 +6,13 @@ import { account, environment, environmentSchema, fixtureDocument, FIXTURE_MARKE
 import '../../src/styles.css';
 import './fixture.css';
 import { browserLearning, type LearningTrace } from './learning-fixture';
+import { skillRun } from '../fixtures/released-skill';
 
 interface FixtureTrace {
   marker: string;
   calls: string[];
   saves: Array<{ documentJson: string; expectedRevision: string | null }>;
-  approvals: Array<{ id: string; planResponseId: string }>;
+  approvals: Array<{ id: string; planResponseId: string } | { id: string; skillPlanId: string }>;
 }
 
 declare global {
@@ -28,9 +29,9 @@ const learningTrace: LearningTrace = { calls: [], inputs: [] };
 window.__learningFixture = learningTrace;
 let activeRuntime: RuntimeInfo = scenario === 'unavailable'
   ? { ...runtime, simulation: { ...runtime.simulation, status: 'unavailable', epoch: null, physics_steps: null, message: 'TEST ONLY: Azure/GPU 런타임에 연결하지 않은 테스트입니다.' } }
-  : structuredClone(runtime);
+  : scenario === 'skill' ? { ...runtime, agent: { ...runtime.agent, configured: false } } : structuredClone(runtime);
 let record = structuredClone(environment);
-let run: RunRecord | null = scenario === 'approval' ? structuredClone(pendingRun) : null;
+let run: RunRecord | null = scenario === 'approval' ? structuredClone(pendingRun) : scenario === 'skill' ? structuredClone(skillRun) : null;
 let runPolls = 0;
 let activationPolls = 0;
 let frameCount = 0;
@@ -105,18 +106,20 @@ const api: ConsoleApi = {
   async getRun(id, signal) {
     call(`run:${id}`, signal);
     if (!run) throw new ApiError('not_found', 'Test run not found', 404);
-    if (run.status === 'running' && ++runPolls >= 2) run = { ...run, status: 'succeeded', execution: { command_id: 'test-only-command', status: 'succeeded', final_position: [0.5, -0.4, 0.2] } };
+    if (scenario !== 'skill' && run.status === 'running' && ++runPolls >= 2) run = { ...run, status: 'succeeded', execution: { command_id: 'test-only-command', status: 'succeeded', final_position: [0.5, -0.4, 0.2] } };
     if (run.status === 'cancelling') run = { ...run, status: 'cancelled' };
     return structuredClone(run);
   },
   async createRun(input, signal) {
     call('createRun', signal);
-    run = { ...pendingRun, environment_id: input.environment_id, revision: input.revision, instruction: input.instruction };
+    run = input.execution_mode === 'released_skill'
+      ? { ...skillRun, environment_id: input.environment_id, revision: input.revision }
+      : { ...pendingRun, environment_id: input.environment_id, revision: input.revision, instruction: input.instruction };
     return structuredClone(run);
   },
-  async approveRun(id, planResponseId, signal) {
+  async approveRun(id, approval, signal) {
     call('approve', signal);
-    trace.approvals.push({ id, planResponseId });
+    trace.approvals.push(typeof approval === 'string' ? { id, planResponseId: approval } : { id, skillPlanId: approval.skill_plan_id });
     if (!run) throw new ApiError('not_found', 'Test run not found', 404);
     run = { ...run, status: 'running', execution: { command_id: 'test-only-command', status: 'accepted' } };
     return structuredClone(run);

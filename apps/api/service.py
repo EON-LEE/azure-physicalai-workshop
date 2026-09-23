@@ -8,7 +8,7 @@ from dataclasses import asdict
 from datetime import datetime, timedelta
 from io import BytesIO
 from typing import Literal
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from PIL import Image, UnidentifiedImageError
 
@@ -28,6 +28,7 @@ from apps.api.models import (
     RunRecord,
     SaveEnvironment,
     SimulationStatus,
+    SkillPlan,
     StartRun,
     Stored,
     utcnow,
@@ -211,12 +212,33 @@ class FactoryService:
             policy = self.policies.resolve_for_run(
                 actor, request.policy_release_id, request.environment_id, request.revision
             )
+            if policy.policy_release_id != request.policy_release_id:
+                raise Problem(
+                    409,
+                    "policy_binding_mismatch",
+                    "The resolved release differs from the selected ID.",
+                )
+            if policy.goal_station_id not in {
+                station["id"] for station in environment.document["stations"]
+            }:
+                raise Problem(
+                    409,
+                    "policy_goal_mismatch",
+                    "The reviewed skill's goal is not in this saved scene.",
+                )
+            if request.instruction is not None and request.instruction != policy.instruction:
+                raise Problem(
+                    409,
+                    "policy_instruction_mismatch",
+                    "A released skill must use its exact reviewed task instruction.",
+                )
         now = utcnow()
         run = RunRecord(
             id=request.request_id,
             environment_id=environment.environment_id,
             revision=environment.revision,
-            instruction=request.instruction,
+            instruction=policy.instruction if policy else request.instruction,
+            execution_mode=request.execution_mode,
             status="planning",
             created_at=now,
             updated_at=now,
@@ -254,33 +276,52 @@ class FactoryService:
                 blob_name=blob_name,
                 sha256=hashlib.sha256(image).hexdigest(),
             )
-            decision, response_id = self.planner.inspect(request.instruction, observation)
-            if decision.object_id != observation.object_id:
-                raise Problem(
-                    422, "wrong_object", "The inspection does not refer to the observed part."
+            if policy is not None:
+                run.plan = SkillPlan(
+                    skill_plan_id=uuid4(),
+                    policy_release_id=policy.policy_release_id,
+                    policy_type=policy.policy_type,
+                    model_sha256=policy.model_sha256,
+                    task_id=policy.task_id,
+                    instruction=policy.instruction,
+                    target_station_id=policy.goal_station_id,
+                    object_id=observation.object_id,
+                    summary=(
+                        "Reviewed motor skill and original observation. "
+                        "No visual classification performed; motion requires approval."
+                    ),
+                    observation_id=observation.observation_id,
+                    epoch=observation.epoch,
+                    state_revision=observation.state_revision,
+                    expires_at=utcnow() + timedelta(seconds=self.approval_ttl_seconds),
                 )
-            workflow = environment.document["workflow"]
-            target = workflow[
-                "accept_station" if decision.classification == "accepted" else "reject_station"
-            ]
-            if policy is not None and policy.goal_station_id != target:
-                raise Problem(
-                    409,
-                    "policy_goal_mismatch",
-                    "The inspection destination is outside this reviewed policy's task.",
+            else:
+                decision, response_id = self.planner.inspect(run.instruction, observation)
+                if decision.object_id != observation.object_id:
+                    raise Problem(
+                        422, "wrong_object", "The inspection does not refer to the observed part."
+                    )
+                workflow = environment.document["workflow"]
+                target = workflow[
+                    "accept_station" if decision.classification == "accepted" else "reject_station"
+                ]
+                run.plan = Plan(
+                    **decision.model_dump(),
+                    target_station_id=target,
+                    observation_id=observation.observation_id,
+                    epoch=observation.epoch,
+                    state_revision=observation.state_revision,
+                    model_response_id=response_id,
+                    expires_at=utcnow() + timedelta(seconds=self.approval_ttl_seconds),
                 )
-            run.plan = Plan(
-                **decision.model_dump(),
-                target_station_id=target,
-                observation_id=observation.observation_id,
-                epoch=observation.epoch,
-                state_revision=observation.state_revision,
-                model_response_id=response_id,
-                expires_at=utcnow() + timedelta(seconds=self.approval_ttl_seconds),
-            )
             run.status = "awaiting_approval"
             run.events.append(
-                Event(kind="awaiting_approval", message="Inspection recorded; no motion executed.")
+                Event(
+                    kind="awaiting_approval",
+                    message="Released task and observation recorded; no classification or motion."
+                    if policy
+                    else "Inspection recorded; no motion executed.",
+                )
             )
         except Problem as exc:
             run.status = "failed"
@@ -293,12 +334,29 @@ class FactoryService:
                 raise
             return self._run(actor, run.id).value
 
-    def approve(self, actor: Principal, run_id: UUID, response_id: str) -> RunRecord:
+    def approve(
+        self,
+        actor: Principal,
+        run_id: UUID,
+        response_id: str | None = None,
+        *,
+        skill_plan_id: UUID | None = None,
+    ) -> RunRecord:
         stored = self._run(actor, run_id)
         run = stored.value.model_copy(deep=True)
-        if run.plan is None or response_id != run.plan.model_response_id:
+        skill = isinstance(run.plan, SkillPlan)
+        if (
+            run.plan is None
+            or (skill and (response_id is not None or skill_plan_id != run.plan.skill_plan_id))
+            or (
+                not skill
+                and (skill_plan_id is not None or response_id != run.plan.model_response_id)
+            )
+        ):
             raise Problem(
-                409, "approval_mismatch", "Approval must refer to the exact displayed inspection."
+                409,
+                "approval_mismatch",
+                "Approval must refer to the exact displayed plan of its own kind.",
             )
         if run.status in TERMINAL or run.status in ("running", "cancelling"):
             return run
@@ -308,8 +366,14 @@ class FactoryService:
             )
         if utcnow() >= run.plan.expires_at:
             raise Problem(
-                409, "approval_expired", "This inspection approval expired. Request a new plan."
+                409, "approval_expired", "This plan approval expired. Request a new plan."
             )
+        if skill != (run.execution_mode == "released_skill") or skill != (run.policy is not None):
+            raise Problem(
+                409, "plan_mode_mismatch", "The stored planning mode changed. Request a new plan."
+            )
+        if skill:
+            self._check_skill_plan(actor, run)
         if content_hash(run.environment_document) != run.revision:
             raise Problem(
                 409,
@@ -331,9 +395,7 @@ class FactoryService:
                 )
             )
         ):
-            raise Problem(
-                409, "scene_changed", "The part or scene changed. Request a new inspection."
-            )
+            raise Problem(409, "scene_changed", "The part or scene changed. Request a new plan.")
         deadline = utcnow() + timedelta(seconds=execution_settings["max_step_seconds"])
         command = MotionCommand(
             command_id=run.id,
@@ -350,7 +412,12 @@ class FactoryService:
         run.command_deadline = deadline
         run.execution = Execution(command_id=run.id, status="queued")
         run.events.append(
-            Event(kind="approved", message="Approved inspection; reserving one simulator command.")
+            Event(
+                kind="approved",
+                message="Approved released skill; reserving one policy command."
+                if skill
+                else "Approved inspection; reserving one simulator command.",
+            )
         )
         reserved = self.store.put_run(actor.owner_key, run, stored.etag)
         run = reserved.value.model_copy(deep=True)
@@ -381,6 +448,38 @@ class FactoryService:
             if exc.code != "revision_conflict":
                 raise
             return self._run(actor, run.id).value
+
+    def _check_skill_plan(self, actor: Principal, run: RunRecord) -> None:
+        plan, policy, evidence = run.plan, run.policy, run.evidence
+        if not isinstance(plan, SkillPlan) or policy is None or evidence is None:
+            raise Problem(409, "skill_plan_mismatch", "Released task evidence is incomplete.")
+        if (
+            plan.policy_release_id != policy.policy_release_id
+            or plan.policy_type != policy.policy_type
+            or plan.model_sha256 != policy.model_sha256
+            or plan.task_id != policy.task_id
+            or plan.instruction != policy.instruction
+            or run.instruction != policy.instruction
+            or plan.target_station_id != policy.goal_station_id
+            or plan.observation_id != evidence.observation_id
+            or plan.object_id != evidence.object_id
+            or plan.epoch != evidence.epoch
+            or plan.state_revision != evidence.state_revision
+        ):
+            raise Problem(
+                409,
+                "skill_plan_mismatch",
+                "Task, goal, model or original observation differs from the approved plan.",
+            )
+        if self.policies is None:
+            raise Problem(503, "learning_disabled", "Released learned execution is not configured.")
+        current = self.policies.resolve_for_run(
+            actor, policy.policy_release_id, run.environment_id, run.revision
+        )
+        if current != policy:
+            raise Problem(
+                409, "policy_release_changed", "The immutable reviewed policy binding changed."
+            )
 
     @staticmethod
     def _apply_execution(run: RunRecord, execution: Execution) -> None:

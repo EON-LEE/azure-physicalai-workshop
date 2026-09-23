@@ -69,29 +69,37 @@ export const runStatusSchema = z.enum([
   'timed_out',
 ]);
 
+const releasedPolicySchema = z.object({
+  policy_release_id: z.uuid(), policy_type: z.enum(['gr00t_n1_5', 'gr00t_n1_7', 'smolvla']),
+  model_sha256: id, processor_sha256: id, manifest_sha256: id,
+  control_profile_id: id, task_id: id, goal_station_id: id, instruction: z.string(),
+});
+const inspectionPlanSchema = z.object({
+  kind: z.literal('inspection').optional(),
+  classification: z.enum(['accepted', 'rejected']),
+  target_station_id: id, object_id: id, summary: z.string(),
+  observation_id: id, epoch: id, state_revision: z.number().int().nonnegative(),
+  model_response_id: id, expires_at: timestamp.optional(),
+});
+const skillPlanSchema = z.object({
+  kind: z.literal('released_skill'), skill_plan_id: z.uuid(), policy_release_id: z.uuid(),
+  policy_type: z.enum(['gr00t_n1_5', 'gr00t_n1_7', 'smolvla']), model_sha256: id,
+  task_id: id, instruction: z.string(), target_station_id: id, object_id: id,
+  summary: z.string(), observation_id: id, epoch: id,
+  state_revision: z.number().int().nonnegative(), expires_at: timestamp,
+}).strict();
+
 export const runSchema = z.object({
   id,
   environment_id: id,
   revision: id,
   instruction: z.string(),
-  policy: z.object({
-    policy_release_id: z.uuid(), policy_type: z.enum(['gr00t_n1_5', 'gr00t_n1_7', 'smolvla']),
-    model_sha256: id, processor_sha256: id, manifest_sha256: id,
-    control_profile_id: id, task_id: id, goal_station_id: id, instruction: z.string(),
-  }).nullable().optional(),
+  execution_mode: z.enum(['inspection', 'released_skill']).optional(),
+  policy: releasedPolicySchema.nullable().optional(),
   status: runStatusSchema,
   created_at: timestamp,
   updated_at: timestamp,
-  plan: z.object({
-    classification: z.enum(['accepted', 'rejected']),
-    target_station_id: id,
-    object_id: id,
-    summary: z.string(),
-    observation_id: id,
-    epoch: id,
-    state_revision: z.number().int().nonnegative(),
-    model_response_id: id,
-  }).nullable(),
+  plan: z.union([inspectionPlanSchema, skillPlanSchema]).nullable(),
   execution: z.object({
     command_id: id,
     status: id,
@@ -112,6 +120,13 @@ export const runSchema = z.object({
     retryable: z.boolean(),
   }).nullable(),
   events: z.array(z.object({ kind: id, message: z.string(), at: timestamp })),
+}).superRefine((run, context) => {
+  if (run.plan && (run.plan.kind === 'released_skill') !== (run.execution_mode === 'released_skill')) {
+    context.addIssue({ code: 'custom', message: 'The execution mode and plan kind do not match.' });
+  }
+  if (run.execution_mode === 'released_skill' && !run.policy) {
+    context.addIssue({ code: 'custom', message: 'Released-skill execution requires the reviewed policy binding.' });
+  }
 });
 
 export const runsSchema = z.object({ items: z.array(runSchema) });
@@ -128,13 +143,16 @@ export type RunStatus = RunRecord['status'];
 export type EnvironmentJsonSchema = z.infer<typeof jsonSchemaSchema>;
 export type Camera = 'overview' | 'inspection';
 
-export interface CreateRunInput {
+interface RunInputScope {
   request_id: string;
   environment_id: string;
   revision: string;
-  instruction: string;
-  policy_release_id?: string;
 }
+export type CreateRunInput = RunInputScope & (
+  { execution_mode?: 'inspection'; instruction: string; policy_release_id?: never }
+  | { execution_mode: 'released_skill'; policy_release_id: string; instruction?: string }
+);
+export type RunApproval = string | { skill_plan_id: string };
 
 export interface FrameImage {
   blob: Blob;
@@ -155,7 +173,7 @@ export interface ConsoleApi {
   getRuns(signal?: AbortSignal): Promise<Runs>;
   getRun(id: string, signal?: AbortSignal): Promise<RunRecord>;
   createRun(input: CreateRunInput, signal?: AbortSignal): Promise<RunRecord>;
-  approveRun(id: string, planResponseId: string, signal?: AbortSignal): Promise<RunRecord>;
+  approveRun(id: string, approval: RunApproval, signal?: AbortSignal): Promise<RunRecord>;
   cancelRun(id: string, signal?: AbortSignal): Promise<RunRecord>;
   getObservation(id: string, signal?: AbortSignal): Promise<Blob>;
 }

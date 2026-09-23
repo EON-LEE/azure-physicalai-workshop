@@ -141,6 +141,9 @@ Replay configurations cannot be activated by this live-runtime API.
 ```
 
 Use the same request ID for retries of the same request, never for changed input.
+`execution_mode` defaults to `inspection`; that mode requires an instruction
+and forbids a `policy_release_id`. Explicitly specifying the default mode does
+not change legacy inspection request fingerprints.
 The server captures a real observation, stores its evidence in Azure Blob,
 and obtains an inspection decision through a deployed Foundry agent.
 This bounded planning request returns a `RunRecord`. Planning does not move
@@ -152,10 +155,12 @@ the robot. Missing live dependencies produce an error, not a fake plan.
   "environment_id": "reference-cell",
   "revision": "sha256hex",
   "instruction": "Inspect this part and quarantine it if defective.",
+  "execution_mode": "inspection",
   "status": "awaiting_approval",
   "created_at": "2026-09-15T00:00:00+00:00",
   "updated_at": "2026-09-15T00:00:01+00:00",
   "plan": {
+    "kind": "inspection",
     "classification": "rejected",
     "target_station_id": "rejected",
     "object_id": "part-001",
@@ -175,7 +180,7 @@ the robot. Missing live dependencies produce an error, not a fake plan.
 
 Statuses: `planning`, `awaiting_approval`, `running`, `cancelling`, `succeeded`,
 `failed`, `cancelled`, `timed_out`. `plan`, `execution`, and `error` may be null.
-The plan classification is `accepted` or `rejected`; target station must match
+The inspection plan classification is `accepted` or `rejected`; target station must match
 the saved workflow. Summary is a concise result explanation, not hidden reasoning.
 `execution`, when present, contains `command_id`, `status`, and optional
 `final_position` and `completed_at`. `error` has `code`, `message`, `retryable`.
@@ -203,6 +208,75 @@ If the scene changed, require a new plan rather than approving a stale decision.
 Cancellation of running motion is not shown as completed until confirmed by
 the simulator. The control path must not wait for an LLM response.
 
+## Explicitly selected released motor skills
+
+An approved task such as moving a normal synthetic part into quarantine is
+**not** a defect inspection. It must not call the CV inspector, invent a
+classification, override the saved inspection workflow, or generate a fake
+Foundry response ID. Use the distinct planning mode:
+
+```json
+{
+  "request_id": "a-new-browser-generated-uuid",
+  "environment_id": "the-owner-saved-approved-case",
+  "revision": "the-exact-approved-saved-revision",
+  "execution_mode": "released_skill",
+  "policy_release_id": "the-owner-reviewed-release-uuid"
+}
+```
+
+The server resolves the owner-scoped immutable release, checks its allowed
+scene/case and goal, and uses its exact task, instruction, model family/SHA
+and control profile. Omit `instruction`; if supplied, it must equal the
+release instruction exactly. No caller task/goal/model overrides are accepted.
+The UI does not send an old freeform inspection instruction with this mode.
+
+Planning still captures and stores a real fresh PNG and returns
+`awaiting_approval` without moving. It does not require or call the Foundry
+inspection agent. The `RunRecord.execution_mode` is `released_skill`,
+`instruction` is the canonical release instruction, and `policy` contains
+the full immutable binding. Its distinct `plan` has:
+
+```json
+{
+  "kind": "released_skill",
+  "skill_plan_id": "server-generated-plan-uuid",
+  "policy_release_id": "the-selected-reviewed-release-uuid",
+  "policy_type": "smolvla",
+  "model_sha256": "exact-reviewed-model-sha256",
+  "task_id": "manufacturing-part-placement-v1",
+  "instruction": "Pick up the synthetic part from the source platform and place it in the quarantine tray.",
+  "target_station_id": "rejected",
+  "object_id": "the-actually-observed-part-id",
+  "summary": "Reviewed task and original observation; no CV classification or motion.",
+  "observation_id": "actual-captured-observation-uuid",
+  "epoch": "actual-simulation-world-uuid",
+  "state_revision": 1,
+  "expires_at": "server-issued-approval-expiry-timestamp"
+}
+```
+
+There is no `classification` or `model_response_id` in this plan.
+After deliberate human review, approve with **only**
+`{"skill_plan_id": "the-exact-displayed-server-plan-uuid"}` at the existing
+approval route. Exactly one approval reference is required: this skill ID
+or the legacy inspection `plan_response_id`, never both or the wrong kind.
+Approval rechecks expiry, every immutable release pin, original observation,
+current scene/epoch/object state and reserves one command before dispatch.
+Only the selected learned policy may execute; there is no reference fallback.
+
+Polling/cancellation retain the existing owner-scoped behavior. A successful
+learned result requires the matching applied model/family/profile, actual
+prediction/action counts with zero reference-route calls, and measured
+completion at the approved goal within deadline. Queued ACKs are not success.
+Release creation is not model installation or GPU timing proof.
+
+The public reference-inspection projection remains inspection-only and rejects
+skill-bound records. Existing inspection records lacking the new mode/kind
+fields remain readable with their original semantics. Earlier mixed
+inspection-plus-policy plans cannot be newly approved; create an explicit
+released-skill plan instead.
+
 ## UI implementation boundary
 
 Build the real console, JSON editor, approval workflow, live frame views, and run
@@ -211,5 +285,7 @@ movement, anonymous authentication bypass, or a switch to a bundled fixture.
 Authentication and HTTP clients can be injected in tests through component
 interfaces; the production entry point always uses MSAL and the real same-origin API.
 
-A full Python extension editor/runner and policy-training dashboard are not
-represented by these endpoints yet. Do not present them as working features.
+Owner-scoped teaching/training endpoints are defined separately in
+[`learning-api.md`](learning-api.md) and remain capability/admission gated.
+A full Python extension editor/runner is not represented by these endpoints.
+Do not present unavailable services as working features.

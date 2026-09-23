@@ -317,8 +317,18 @@ Authenticated operators then:
    paid train request. Preserve its request ID through uncertain responses.
 6. Read the actual named job and verified candidate; submit the fixed evaluation.
    Review all failures and exact model family/digests before policy release.
-7. Select the immutable `policy_release_id` on a new inspection/run and approve
-   that plan separately. Learned dispatch goes only to `/v1/policy/commands`,
+7. Select the immutable `policy_release_id` on a new
+   `execution_mode: released_skill` run, omit the old freeform inspection
+   instruction, and review the canonical task/goal/model and original PNG.
+   This creates a distinct `SkillPlan` with no CV classification or Foundry
+   response ID; it does not run the inspector. Approve separately with
+   `{"skill_plan_id": "<exact-displayed-id>"}`, never `plan_response_id`.
+   The API rechecks the immutable release and fresh scene before dispatch.
+   A normal part intentionally placed in quarantine is not labeled defective.
+   Legacy inspection remains a separate `inspection` mode using actual Foundry
+   classification and its own approval reference; see
+   [`http-api.md`](http-api.md#explicitly-selected-released-motor-skills).
+   Learned dispatch goes only to `/v1/policy/commands`,
    carrying required `policy_type`, task, model SHA, release and control profile.
    Actual execution must report matching type/SHA and applied actions with zero
    reference-route calls. No missing-model fallback exists.

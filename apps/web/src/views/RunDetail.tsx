@@ -19,6 +19,8 @@ export function RunDetail({ api, initialRun, runtime, runtimeFresh, environment,
   const load = useCallback((signal: AbortSignal) => api.getRun(initialRun.id, signal), [api, initialRun.id]);
   const resource = usePolling(load, { intervalMs: 2000, initialData: initialRun, continuePolling: continueRunPolling });
   const run = resource.data ?? initialRun;
+  const skill = run.execution_mode === 'released_skill';
+  const planId = run.plan?.kind === 'released_skill' ? run.plan.skill_plan_id : run.plan?.model_response_id;
   const [confirmed, setConfirmed] = useState(false);
   const [approving, setApproving] = useState(false);
   const [cancelling, setCancelling] = useState(false);
@@ -31,16 +33,25 @@ export function RunDetail({ api, initialRun, runtime, runtimeFresh, environment,
   const finalPosition = run.execution?.final_position;
 
   useEffect(() => { onChange?.(run); }, [run, onChange]);
-  useEffect(() => { setConfirmed(false); }, [run.plan?.model_response_id, run.status]);
+  useEffect(() => { setConfirmed(false); }, [planId, run.status]);
 
   let approvalBlocked: string | null = null;
   if (!run.plan) approvalBlocked = '서버가 아직 승인할 계획을 반환하지 않았습니다.';
-  else if (rejectedPlanId === run.plan.model_response_id) approvalBlocked = '서버가 이 계획의 승인을 거절했습니다. 기존 실행을 취소하고 새 관측으로 계획을 요청하세요.';
+  else if (rejectedPlanId === planId) approvalBlocked = '서버가 이 계획의 승인을 거절했습니다. 기존 실행을 취소하고 새 관측으로 계획을 요청하세요.';
   else if (resource.error || resource.paused) approvalBlocked = '실행의 최신 상태를 다시 확인해야 합니다.';
   else if (!runtimeFresh || !matchesRuntime(runtime, run)) approvalBlocked = '이 실행의 환경과 버전이 준비된 런타임에서 확인되어야 합니다.';
   else if (run.plan.epoch !== runtime?.simulation.epoch) approvalBlocked = '관측 이후 씬이 바뀌었습니다. 기존 계획을 승인하지 말고 새 계획을 요청하세요.';
   else if (!environment || environment.revision !== run.revision) approvalBlocked = '저장 버전이 변경되었거나 확인되지 않았습니다. 새 계획을 요청하세요.';
-  else if (workflowTarget(environment, run.plan.classification) !== run.plan.target_station_id) approvalBlocked = '계획의 대상 스테이션이 저장된 워크플로와 일치하지 않습니다.';
+  else if (run.plan.kind === 'released_skill') {
+    if (!skill || !run.policy || !targetPosition || run.plan.policy_release_id !== run.policy.policy_release_id ||
+      run.plan.policy_type !== run.policy.policy_type || run.plan.model_sha256 !== run.policy.model_sha256 ||
+      run.plan.task_id !== run.policy.task_id || run.plan.instruction !== run.policy.instruction ||
+      run.instruction !== run.policy.instruction || run.plan.target_station_id !== run.policy.goal_station_id) {
+      approvalBlocked = '게시된 작업의 목표·지시·모델이 계획과 일치하지 않습니다. 새 작업 계획을 요청하세요.';
+    }
+  } else if (skill || run.policy || workflowTarget(environment, run.plan.classification) !== run.plan.target_station_id) {
+    approvalBlocked = '계획의 종류 또는 대상 스테이션이 저장된 워크플로와 일치하지 않습니다.';
+  }
 
   const act = async (kind: 'approve' | 'cancel') => {
     if (kind === 'approve' && (approving || cancelling || !confirmed || approvalBlocked || run.status !== 'awaiting_approval' || !run.plan)) return;
@@ -52,7 +63,8 @@ export function RunDetail({ api, initialRun, runtime, runtimeFresh, environment,
     else setCancelling(true);
     try {
       const updated = kind === 'approve' && run.plan
-        ? await api.approveRun(run.id, run.plan.model_response_id, request.signal)
+        ? await api.approveRun(run.id, run.plan.kind === 'released_skill'
+          ? { skill_plan_id: run.plan.skill_plan_id } : run.plan.model_response_id, request.signal)
         : await api.cancelRun(run.id, request.signal);
       if (!request.current() || sequence !== actionSequence.current) return;
       resource.setData(updated);
@@ -60,7 +72,7 @@ export function RunDetail({ api, initialRun, runtime, runtimeFresh, environment,
       onChange?.(updated);
     } catch (error) {
       if (request.current() && sequence === actionSequence.current && !isAbort(error)) {
-        if (kind === 'approve' && error instanceof ApiError && error.status === 409 && run.plan) setRejectedPlanId(run.plan.model_response_id);
+        if (kind === 'approve' && error instanceof ApiError && error.status === 409 && planId) setRejectedPlanId(planId);
         setActionError(error);
         resource.refresh();
       }
@@ -75,7 +87,7 @@ export function RunDetail({ api, initialRun, runtime, runtimeFresh, environment,
 
   return <section className="panel run-detail" aria-labelledby="run-detail-title">
     <div className="panel-heading">
-      <div className="title-icon"><ShieldCheck size={19} aria-hidden="true" /><h2 id="run-detail-title">에이전트 계획과 실행</h2></div>
+      <div className="title-icon"><ShieldCheck size={19} aria-hidden="true" /><h2 id="run-detail-title">{skill ? '게시된 작업 계획과 실행' : '에이전트 계획과 실행'}</h2></div>
       <span role="status"><RunBadge status={run.status} /></span>
     </div>
     <div className="run-progress" aria-label="실행 진행 상태">
@@ -83,14 +95,16 @@ export function RunDetail({ api, initialRun, runtime, runtimeFresh, environment,
       <StepLabel number="02" title="사람의 승인" done={run.execution !== null} active={run.status === 'awaiting_approval'} />
       <StepLabel number="03" title="실행 확인" done={run.status === 'succeeded'} active={run.status === 'running' || run.status === 'cancelling'} />
     </div>
-    <div className="run-request"><span className="eyebrow">CUSTOMER INSTRUCTION</span><p>{run.instruction}</p>
+    <div className="run-request"><span className="eyebrow">{skill ? 'REVIEWED TASK INSTRUCTION' : 'CUSTOMER INSTRUCTION'}</span><p>{run.instruction}</p>
       <small>{run.environment_id} · {formatDate(run.created_at)}</small>
     </div>
     {run.policy && <div className="plan-summary"><strong>검토된 학습 정책 · {run.policy.policy_type}</strong>
       <dl className="trace-list"><FieldValue label="policy release"><code>{run.policy.policy_release_id}</code></FieldValue>
+        <FieldValue label="승인된 task_id"><code>{run.policy.task_id}</code></FieldValue>
         <FieldValue label="승인된 model SHA"><code>{run.policy.model_sha256}</code></FieldValue>
         <FieldValue label="고정된 운동 작업"><span>{run.policy.instruction}</span></FieldValue></dl>
-      <p className="small-text muted">Foundry는 검사 계획을 제안하며 이 운동 정책을 학습시키거나 대신 제어하지 않습니다.</p>
+      <p className="small-text muted">{skill ? '직접 선택한 검토된 운동 작업입니다. 비전 검사·분류 또는 Foundry 호출 결과가 아닙니다.' : 'Foundry는 검사 계획을 제안하며 이 운동 정책을 학습시키거나 대신 제어하지 않습니다.'}</p>
+      <p className="small-text muted">게시 기록은 GPU 모델 로드 완료가 아닙니다. 아래 실제 적용 SHA와 명령 결과를 별도로 확인하세요.</p>
     </div>}
     {run.execution?.policy_runtime && <dl className="execution-receipt">
       <FieldValue label="실제 적용 model SHA"><code>{run.execution.policy_runtime.applied_model_sha ?? '아직 실제 action 적용 없음'}</code></FieldValue>
@@ -98,23 +112,29 @@ export function RunDetail({ api, initialRun, runtime, runtimeFresh, environment,
       <FieldValue label="Reference route 호출 수">{run.execution.policy_runtime.reference_route_calls}</FieldValue>
     </dl>}
     <ErrorNotice error={resource.error} title="실행 상태 갱신 실패 · 마지막 응답 표시 중" retry={resource.refresh} compact />
-    {run.status === 'planning' && <div className="inline-note"><Loading>실제 관측을 바탕으로 Foundry 계획 생성 중…</Loading><p>계획 단계에서는 로봇을 움직이지 않습니다.</p></div>}
+    {run.status === 'planning' && <div className="inline-note"><Loading>{skill ? '원본 관측과 게시된 작업 확인 중…' : '실제 관측을 바탕으로 Foundry 계획 생성 중…'}</Loading><p>계획 단계에서는 로봇을 움직이지 않습니다.</p></div>}
     {run.plan && <div className="plan-summary">
-      <div className="plan-heading"><span className="eyebrow">PLAN SUMMARY</span><Badge tone={run.plan.classification === 'rejected' ? 'amber' : 'blue'}>분류: {run.plan.classification === 'rejected' ? '불량 후보' : '정상 후보'}</Badge></div>
+      <div className="plan-heading"><span className="eyebrow">{skill ? 'RELEASED SKILL' : 'PLAN SUMMARY'}</span>
+        {run.plan.kind === 'released_skill' ? <Badge tone="blue">CV 검사 수행 안 함</Badge>
+          : <Badge tone={run.plan.classification === 'rejected' ? 'amber' : 'blue'}>분류: {run.plan.classification === 'rejected' ? '불량 후보' : '정상 후보'}</Badge>}
+      </div>
       <p>{run.plan.summary}</p>
       <dl className="plan-targets">
         <FieldValue label="관측 부품"><code>{run.plan.object_id}</code></FieldValue>
         <FieldValue label="이동 대상"><code>{run.plan.target_station_id}</code></FieldValue>
       </dl>
       <dl className="plan-references" aria-label="계획 증거 ID">
-        <FieldValue label="model_response_id"><code>{run.plan.model_response_id}</code></FieldValue>
+        {run.plan.kind === 'released_skill'
+          ? <FieldValue label="skill_plan_id · 서버 발급 승인 대상"><code>{run.plan.skill_plan_id}</code></FieldValue>
+          : <FieldValue label="model_response_id"><code>{run.plan.model_response_id}</code></FieldValue>}
         <FieldValue label="observation_id"><code>{run.plan.observation_id}</code></FieldValue>
+        {run.plan.expires_at && <FieldValue label="승인 유효기간"><time dateTime={run.plan.expires_at}>{formatDate(run.plan.expires_at)}</time></FieldValue>}
       </dl>
-      <span className="muted small-text">모델의 결과 요약입니다. 숨겨진 추론 과정은 표시하지 않습니다.</span>
+      <span className="muted small-text">{skill ? '원본 관측에 연결된 고정 작업 계획입니다. 정상·불량 판정을 만들지 않습니다.' : '모델의 결과 요약입니다. 숨겨진 추론 과정은 표시하지 않습니다.'}</span>
     </div>}
     {run.status === 'awaiting_approval' && <div className="approval-box">
       <div className="title-icon"><ShieldCheck size={18} aria-hidden="true" /><strong>승인 전에는 이동하지 않습니다</strong></div>
-      <p>부품, 분류 결과와 대상 스테이션을 확인하세요. 승인 시 서버가 씬 상태를 다시 검사한 뒤 물리 명령을 전송합니다.</p>
+      <p>{skill ? '부품, release의 고정 작업·목표·모델을 확인하세요. 승인 시 서버가 정책과 씬을 다시 확인하고 해당 운동 정책만 실행합니다.' : '부품, 분류 결과와 대상 스테이션을 확인하세요. 승인 시 서버가 씬 상태를 다시 검사한 뒤 물리 명령을 전송합니다.'}</p>
       {approvalBlocked && <p className="approval-blocked">{approvalBlocked}</p>}
       <label className="checkbox-label"><input type="checkbox" checked={confirmed} disabled={Boolean(approvalBlocked) || approving || cancelling}
         onChange={(event) => setConfirmed(event.target.checked)} />표시된 계획과 이동 대상을 확인했습니다</label>
@@ -154,7 +174,9 @@ export function RunDetail({ api, initialRun, runtime, runtimeFresh, environment,
         <FieldValue label="environment revision"><code>{run.revision}</code></FieldValue>
         {run.plan && <>
           <FieldValue label="observation_id"><code>{run.plan.observation_id}</code></FieldValue>
-          <FieldValue label="model_response_id"><code>{run.plan.model_response_id}</code></FieldValue>
+          {run.plan.kind === 'released_skill'
+            ? <FieldValue label="skill_plan_id"><code>{run.plan.skill_plan_id}</code></FieldValue>
+            : <FieldValue label="model_response_id"><code>{run.plan.model_response_id}</code></FieldValue>}
           <FieldValue label="epoch"><code>{run.plan.epoch}</code></FieldValue>
           <FieldValue label="state_revision"><code>{run.plan.state_revision}</code></FieldValue>
         </>}

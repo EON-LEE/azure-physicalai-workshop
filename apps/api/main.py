@@ -351,7 +351,9 @@ def create_app(
 
     @app.post("/api/runs/{run_id}/approve")
     def approve(run_id: UUID, body: ApproveRun, user: Actor, backend: Service):
-        return backend.approve(user, run_id, body.plan_response_id).public()
+        return backend.approve(
+            user, run_id, body.plan_response_id, skill_plan_id=body.skill_plan_id
+        ).public()
 
     @app.post("/api/runs/{run_id}/cancel")
     def cancel(run_id: UUID, user: Actor, backend: Service):

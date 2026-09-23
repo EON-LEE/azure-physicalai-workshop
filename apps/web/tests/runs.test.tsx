@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { RunRecord } from '../src/api/contracts';
 import { ApiError } from '../src/api/errors';
 import { RunDetail } from '../src/views/RunDetail';
-import { environment, pendingRun, runningRun, runtime, succeededRun } from './fixtures/data';
+import { environment, inspectionResponseId, pendingRun, runningRun, runtime, succeededRun } from './fixtures/data';
 import { deferred, makeApi } from './helpers';
 
 async function flush() {
@@ -49,7 +49,7 @@ describe('approval and confirmed run transitions', () => {
     fireEvent.click(screen.getByRole('checkbox'));
     fireEvent.click(screen.getByRole('button', { name: '계획 승인 및 실행' }));
     await flush();
-    expect(api.approveRun).toHaveBeenCalledWith(pendingRun.id, pendingRun.plan?.model_response_id, expect.any(AbortSignal));
+    expect(api.approveRun).toHaveBeenCalledWith(pendingRun.id, inspectionResponseId, expect.any(AbortSignal));
     expect(api.approveRun).toHaveBeenCalledTimes(1);
     expect(screen.getByText('물리 실행 확인 중')).toBeInTheDocument();
     expect(screen.queryByText('서버가 실행 성공을 확인했습니다')).not.toBeInTheDocument();

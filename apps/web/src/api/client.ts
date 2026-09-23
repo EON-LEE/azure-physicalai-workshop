@@ -2,7 +2,7 @@ import { z } from 'zod';
 import {
   activationSchema, configSchema, environmentsSchema, environmentSchema,
   jsonSchemaSchema, runSchema, runsSchema, runtimeSchema, templatesSchema,
-  type Camera, type ConsoleApi, type CreateRunInput, type FrameImage, type PublicConfig,
+  type Camera, type ConsoleApi, type CreateRunInput, type FrameImage, type PublicConfig, type RunApproval,
 } from './contracts';
 import { ApiError, AuthenticationRequiredError, isAbort } from './errors';
 import { LearningClient } from '../learning/client';
@@ -184,10 +184,9 @@ export class ApiClient implements ConsoleApi {
     return this.request('/api/runs', (response) => decode(response, runSchema), signal, input, 'POST');
   }
 
-  async approveRun(id: string, planResponseId: string, signal?: AbortSignal) {
-    return this.request(`/api/runs/${encodeURIComponent(id)}/approve`, (response) => decode(response, runSchema), signal, {
-      plan_response_id: planResponseId,
-    }, 'POST');
+  async approveRun(id: string, approval: RunApproval, signal?: AbortSignal) {
+    const body = typeof approval === 'string' ? { plan_response_id: approval } : { skill_plan_id: approval.skill_plan_id };
+    return this.request(`/api/runs/${encodeURIComponent(id)}/approve`, (response) => decode(response, runSchema), signal, body, 'POST');
   }
 
   async cancelRun(id: string, signal?: AbortSignal) {

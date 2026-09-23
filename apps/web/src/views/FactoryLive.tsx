@@ -64,7 +64,7 @@ export function FactoryLive(props: FactoryLiveProps) {
         </section>
         <section className="panel instruction-panel" aria-labelledby="instruction-title">
           <div className="panel-heading"><div className="title-icon"><Bot size={19} aria-hidden="true" /><h2 id="instruction-title">작업 지시</h2></div><Badge>사람의 승인 필요</Badge></div>
-          <RunComposer api={api} environment={environment} ready={ready && Boolean(runtime?.agent.configured) && props.requestsKnown} currentRun={currentRun}
+          <RunComposer api={api} environment={environment} ready={ready && (Boolean(props.draft.policyReleaseId?.trim()) || Boolean(runtime?.agent.configured)) && props.requestsKnown} currentRun={currentRun}
             onRunChange={onRunChange} draft={props.draft} setDraft={props.setDraft} />
         </section>
         <section className="workflow-guide" aria-label="안전한 실행 흐름">
@@ -94,18 +94,22 @@ function RunComposer({ api, environment, ready, currentRun, onRunChange, draft, 
   const [error, setError] = useState<unknown>(null);
   const startRequest = useRequestScope();
   const activeRun = currentRun && !isTerminal(currentRun.status);
+  const releaseId = draft.policyReleaseId?.trim() || undefined;
+  const releasedSkill = releaseId !== undefined;
 
   const submit = async () => {
-    if (!environment || !ready || activeRun || submitting || !draft.instruction.trim()) return;
+    if (!environment || !ready || activeRun || submitting || (!releasedSkill && !draft.instruction.trim())) return;
     const previous = draft.attempt;
+    const requestInstruction = releasedSkill ? undefined : draft.instruction;
     const input: CreateRunInput = previous &&
       previous.environment_id === environment.environment_id && previous.revision === environment.revision &&
-      previous.instruction === draft.instruction && previous.policy_release_id === (draft.policyReleaseId?.trim() || undefined) ? previous : {
+      previous.instruction === requestInstruction && previous.policy_release_id === releaseId ? previous : {
         request_id: crypto.randomUUID(),
         environment_id: environment.environment_id,
         revision: environment.revision,
-        instruction: draft.instruction,
-        ...(draft.policyReleaseId?.trim() ? { policy_release_id: draft.policyReleaseId.trim() } : {}),
+        ...(releaseId
+          ? { execution_mode: 'released_skill', policy_release_id: releaseId }
+          : { instruction: draft.instruction }),
       };
     setDraft((value) => ({ ...value, attempt: input }));
     setSubmitting(true);
@@ -125,21 +129,22 @@ function RunComposer({ api, environment, ready, currentRun, onRunChange, draft, 
   };
 
   return <form onSubmit={(event) => { event.preventDefault(); void submit(); }}>
-    <label htmlFor="run-instruction">검사·분류 작업을 설명하세요</label>
-    <textarea id="run-instruction" value={draft.instruction} rows={3} disabled={submitting || Boolean(activeRun)} required
+    {!releasedSkill ? <><label htmlFor="run-instruction">검사·분류 작업을 설명하세요</label>
+    <textarea id="run-instruction" name="instruction" autoComplete="off" value={draft.instruction} rows={3} disabled={submitting || Boolean(activeRun)} required
       aria-describedby="run-instruction-help"
       placeholder="예: 이 부품을 검사하고 결함이 보이면 불량 분류 스테이션으로 이동하는 계획을 세워 주세요."
-      onChange={(event) => { const instruction = event.target.value; setDraft((value) => ({ ...value, instruction })); }} />
+      onChange={(event) => { const instruction = event.target.value; setDraft((value) => ({ ...value, instruction })); }} /></>
+      : <div className="inline-note" role="status"><strong>게시된 운동 작업을 선택했습니다 · CV 검사 수행 안 함</strong><p>서버에 고정된 release의 작업·목표·모델만 계획합니다. 이전 검사 지시는 전송하지 않습니다. 새 원본 관측과 정확한 작업 지시를 계획 카드에서 검토한 뒤 별도로 승인하세요.</p></div>}
     <div className="composer-footer"><p id="run-instruction-help"><ShieldCheck size={15} aria-hidden="true" />요청은 계획만 생성합니다. 로봇 이동은 승인 후 시작됩니다.</p>
-      <button type="submit" className="button" disabled={!ready || !draft.instruction.trim() || submitting || Boolean(activeRun)}><Send size={15} aria-hidden="true" />{submitting ? '관측·계획 요청 중…' : error && draft.attempt ? '동일 요청 다시 확인' : '관측하고 계획 요청'}</button>
+      <button type="submit" className="button" disabled={!ready || (!releasedSkill && !draft.instruction.trim()) || submitting || Boolean(activeRun)}><Send size={15} aria-hidden="true" />{submitting ? '관측·계획 요청 중…' : error && draft.attempt ? '동일 요청 다시 확인' : releasedSkill ? '게시된 작업 계획 확인' : '관측하고 계획 요청'}</button>
     </div>
     <details className="trace-details"><summary>검토된 학습 정책 선택 (선택 사항)</summary>
       <label htmlFor="run-policy-release">정책 release ID · 비우면 기존 reference 제어</label>
       <input id="run-policy-release" name="policy-release" autoComplete="off" spellCheck={false} disabled={submitting || Boolean(activeRun)} value={draft.policyReleaseId ?? ''}
         onChange={(event) => { const policyReleaseId = event.target.value; setDraft((value) => ({ ...value, policyReleaseId })); }} />
-      <p className="small-text muted">서버가 소유자·환경·작업·게시된 SHA를 검증합니다. 모델 경로나 미게시 후보를 입력할 수 없고, 실패 시 기존 제어기로 대체하지 않습니다.</p>
+      <p className="small-text muted">release를 입력하면 검사·분류가 아닌 게시된 작업 모드로 전환됩니다. 서버가 소유자·환경·고정 작업·게시된 SHA를 검증합니다. 임의 목표나 모델 경로를 받지 않으며, 실패 시 기존 제어기로 대체하지 않습니다.</p>
     </details>
-    {!ready && <p className="form-hint">LIVE 씬의 저장 버전이 런타임과 일치하고 Foundry 설정이 확인되어야 요청할 수 있습니다.</p>}
+    {!ready && <p className="form-hint">{releasedSkill ? 'LIVE 씬과 저장 버전이 일치해야 합니다. 게시된 작업은 CV 검사 호출을 요구하지 않습니다.' : 'LIVE 씬의 저장 버전이 런타임과 일치하고 Foundry 설정이 확인되어야 요청할 수 있습니다.'}</p>}
     {activeRun && <p className="form-hint">진행 중인 실행이 있습니다. 기존 계획을 검토하거나 취소를 확인한 뒤 새 작업을 요청하세요.</p>}
     {submitting && <div className="inline-note" role="status"><strong>계획 응답을 기다리고 있습니다 · 로봇 이동 없음</strong><p>실행 ID가 수신되면 취소할 수 있습니다. 화면을 나가도 서버에 접수된 요청이 취소되는 것은 아닙니다.</p></div>}
     {draft.attempt && <small className="request-id" title={draft.attempt.request_id}>request_id: {shortId(draft.attempt.request_id)} · 같은 입력의 재시도에 동일 ID 사용</small>}

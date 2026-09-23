@@ -64,18 +64,39 @@ class StartRun(Model):
     request_id: UUID
     environment_id: Identifier
     revision: Revision
-    instruction: str = Field(min_length=1, max_length=2000, pattern=r"\S")
+    instruction: str | None = Field(default=None, min_length=1, max_length=2000, pattern=r"\S")
     policy_release_id: UUID | None = None
+    execution_mode: Literal["inspection", "released_skill"] = "inspection"
+
+    @model_validator(mode="after")
+    def explicit_planning_mode(self):
+        if self.execution_mode == "inspection":
+            if self.instruction is None or self.policy_release_id is not None:
+                raise ValueError(
+                    "Inspection requires an instruction and no learned skill selector."
+                )
+        elif self.policy_release_id is None:
+            raise ValueError("Released-skill planning requires an immutable reviewed release ID.")
+        return self
 
     def fingerprint_document(self) -> dict:
         value = self.model_dump(mode="json")
         if self.policy_release_id is None:
             value.pop("policy_release_id")
+        if self.execution_mode == "inspection":
+            value.pop("execution_mode")
         return value
 
 
 class ApproveRun(Model):
-    plan_response_id: str = Field(min_length=1, max_length=256)
+    plan_response_id: str | None = Field(default=None, min_length=1, max_length=256)
+    skill_plan_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def exactly_one_plan_reference(self):
+        if (self.plan_response_id is None) == (self.skill_plan_id is None):
+            raise ValueError("Supply exactly one inspection response ID or released-skill plan ID.")
+        return self
 
 
 class Event(Model):
@@ -122,11 +143,31 @@ class Decision(Model):
 
 
 class Plan(Decision):
+    kind: Literal["inspection"] = "inspection"
     target_station_id: Identifier
     observation_id: UUID
     epoch: UUID
     state_revision: int
     model_response_id: str
+    expires_at: AwareDatetime
+
+
+class SkillPlan(Model):
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["released_skill"] = "released_skill"
+    skill_plan_id: UUID
+    policy_release_id: UUID
+    policy_type: LearnedPolicyType
+    model_sha256: Revision
+    task_id: Identifier
+    instruction: str = Field(min_length=1, max_length=512, pattern=r"^[^\r\n]*\S[^\r\n]*$")
+    target_station_id: Identifier
+    object_id: str = Field(min_length=1, max_length=64)
+    summary: str
+    observation_id: UUID
+    epoch: UUID
+    state_revision: int = Field(ge=0)
     expires_at: AwareDatetime
 
 
@@ -210,13 +251,14 @@ class RunRecord(Model):
     environment_id: Identifier
     revision: Revision
     instruction: str
+    execution_mode: Literal["inspection", "released_skill"] = "inspection"
     status: RunStatus
     created_at: AwareDatetime
     updated_at: AwareDatetime
     request_fingerprint: str
     environment_document: dict[str, JsonValue]
     command_deadline: AwareDatetime | None = None
-    plan: Plan | None = None
+    plan: Plan | SkillPlan | None = None
     evidence: Evidence | None = None
     execution: Execution | None = None
     error: RunError | None = None

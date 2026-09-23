@@ -38,6 +38,7 @@ export const runtime: RuntimeInfo = {
   storage: { provider: 'azure_cosmos_blob' },
   release_ready: false,
 };
+export const inspectionResponseId = 'test-only-foundry-response-id';
 export const pendingRun: RunRecord = {
   id: 'test-only-run-awaiting-approval',
   environment_id: environment.environment_id,
@@ -50,7 +51,7 @@ export const pendingRun: RunRecord = {
     classification: 'rejected', target_station_id: 'rejected', object_id: 'part-001',
     summary: '테스트 픽스처의 계획 요약입니다. 실제 Foundry 응답이 아닙니다.',
     observation_id: 'test-only-observation-id', epoch: 'test-only-world-epoch', state_revision: 1,
-    model_response_id: 'test-only-foundry-response-id',
+    model_response_id: inspectionResponseId,
   },
   execution: null, error: null,
   events: [{ kind: 'planning', message: '테스트 전용 관측 이벤트 · Azure 검증 아님', at: '2026-09-15T02:10:00+00:00' }],

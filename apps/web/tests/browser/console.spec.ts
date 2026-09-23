@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
-import { environment, fixtureDocument, pendingRun } from '../fixtures/data';
+import { environment, fixtureDocument, inspectionResponseId, pendingRun } from '../fixtures/data';
+import { skillInstruction, skillPlanId, skillRun } from '../fixtures/released-skill';
 
 test('strict CSP, keyboard approval, confirmed completion and a labeled fixture screenshot', async ({ page }) => {
   const errors: string[] = [];
@@ -21,10 +22,30 @@ test('strict CSP, keyboard approval, confirmed completion and a labeled fixture 
   await expect(page.getByRole('button', { name: '계획 승인 및 실행' })).toBeFocused();
   await page.keyboard.press('Enter');
   await expect(page.getByText('물리 실행 확인 중', { exact: true })).toBeVisible();
-  expect(await page.evaluate(() => window.__factoryFixture.approvals)).toEqual([{ id: pendingRun.id, planResponseId: pendingRun.plan?.model_response_id }]);
+  expect(await page.evaluate(() => window.__factoryFixture.approvals)).toEqual([{ id: pendingRun.id, planResponseId: inspectionResponseId }]);
   await expect(page.getByText('서버가 실행 성공을 확인했습니다', { exact: true })).toBeVisible();
   expect(errors).toEqual([]);
   expect(externalRequests).toEqual([]);
+});
+
+test('a released skill is not classified by CV and requires its own deliberate keyboard approval', async ({ page }) => {
+  await page.goto('/?scenario=skill');
+  await expect(page.getByRole('note')).toContainText('Azure / GPU 동작 검증이 아닙니다');
+  await expect(page.getByRole('heading', { name: '게시된 작업 계획과 실행' })).toBeVisible();
+  await expect(page.getByText('CV 검사 수행 안 함', { exact: true })).toBeVisible();
+  await expect(page.getByText(skillInstruction, { exact: true }).first()).toBeVisible();
+  await expect(page.getByText('model_response_id', { exact: true })).toHaveCount(0);
+  await expect(page.getByText(/분류: (정상|불량) 후보/)).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '계획 승인 및 실행' })).toBeDisabled();
+  expect(await page.evaluate(() => window.__factoryFixture.approvals)).toEqual([]);
+  await page.getByRole('checkbox', { name: '표시된 계획과 이동 대상을 확인했습니다' }).focus();
+  await page.keyboard.press('Space');
+  await page.keyboard.press('Tab');
+  await expect(page.getByRole('button', { name: '계획 승인 및 실행' })).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(page.getByText('물리 실행 확인 중', { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => window.__factoryFixture.approvals)).toEqual([{ id: skillRun.id, skillPlanId }]);
+  await expect(page.getByText('서버가 실행 성공을 확인했습니다', { exact: true })).toHaveCount(0);
 });
 
 test('raw JSON and revision survive conflict under CSP; navigation preserves the draft', async ({ page }) => {

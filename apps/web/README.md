@@ -192,6 +192,17 @@ The controls below belong to the separately protected operator area.
   `model_response_id`. Runtime epoch/revision and saved workflow are checked
   before enabling approval; the server rechecks authoritative state. Approval
   conflicts block that stale decision until a new plan is obtained.
+- **Released motor skill:** Selecting a reviewed release explicitly switches to
+  `execution_mode: released_skill`. The prior freeform inspection instruction
+  is hidden and omitted from the request. The server supplies the exact
+  approved task/instruction/goal/model; its distinct plan shows **no CV
+  inspection performed**, not a normal/defective classification or a synthetic
+  Foundry response ID. No configured CV agent is required for this path.
+  Fresh live scene checks still apply. Deliberate confirmation sends only
+  `skill_plan_id`; the server rechecks policy pins, expiry and scene before
+  learned dispatch. A normal part placed in quarantine is not relabeled
+  defective. Release records alone do not prove runtime installation or GPU
+  readiness, and the public reference-inspection projection is unchanged.
 - **Results and history:** Only API runs/events/IDs are shown. A command ACK is
   not success. Cancellation is available without waiting for an in-flight
   approval response and is not complete until the API confirms it. Evidence
@@ -216,6 +227,9 @@ Vitest + Testing Library exercise configuration/auth failures, structured API
 errors, raw JSON/CRLF preservation, duplicate keys, revision conflicts, pending
 approval, stale plans, actual run transitions, cancellation races, bounded
 polling, aborts and object-URL revocation.
+Released-skill tests also cover separate approval IDs, canonical instructions
+instead of stale freeform text, no CV classification/response fabrication,
+mixed wire provenance and changed task/goal/model rejection.
 
 ```bash
 npm test

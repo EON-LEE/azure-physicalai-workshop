@@ -20,7 +20,7 @@ def test_released_policy_request_never_silently_uses_reference_dispatch(api):
             "request_id": str(uuid4()),
             "environment_id": saved.environment_id,
             "revision": saved.revision,
-            "instruction": "검사하고 승인된 정책으로 이동합니다.",
+            "execution_mode": "released_skill",
             "policy_release_id": str(uuid4()),
         },
     )
@@ -100,7 +100,7 @@ def test_approved_policy_is_pinned_in_plan_and_only_the_learned_dispatch_is_used
             "request_id": str(uuid4()),
             "environment_id": saved.environment_id,
             "revision": saved.revision,
-            "instruction": "검사하고 검토된 정책으로 격리하세요.",
+            "execution_mode": "released_skill",
             "policy_release_id": str(binding.policy_release_id),
         },
     )
@@ -112,7 +112,7 @@ def test_approved_policy_is_pinned_in_plan_and_only_the_learned_dispatch_is_used
         f"/api/runs/{run['id']}/approve",
         headers=auth,
         json={
-            "plan_response_id": run["plan"]["model_response_id"],
+            "skill_plan_id": run["plan"]["skill_plan_id"],
         },
     )
     assert approved.status_code == 200, approved.text

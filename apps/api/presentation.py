@@ -11,6 +11,7 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 from apps.api.errors import Problem
 from apps.api.models import (
     EnvironmentRecord,
+    Plan,
     PresentationRecord,
     PresentationResult,
     Principal,
@@ -156,7 +157,10 @@ def validate_run_identity(
         instruction=INSTRUCTION,
     )
     if (
-        run.id != record.run_id
+        run.execution_mode != "inspection"
+        or run.policy is not None
+        or (run.plan is not None and not isinstance(run.plan, Plan))
+        or run.id != record.run_id
         or run.id != request.request_id
         or run.environment_id != environment.environment_id
         or run.revision != environment.revision
@@ -200,7 +204,7 @@ def validate_run(
 
 
 def inspection_correct(record: PresentationRecord, run: RunRecord) -> bool | None:
-    if run.plan is None:
+    if not isinstance(run.plan, Plan) or run.execution_mode != "inspection":
         return None
     expected = "accepted" if slot(record)[2] == "normal" else "rejected"
     return run.plan.classification == expected
