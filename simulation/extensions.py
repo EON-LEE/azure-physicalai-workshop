@@ -11,7 +11,10 @@ from pathlib import Path
 from apps.api.errors import Problem
 from apps.api.models import EnvironmentRecord, Position
 from apps.api.service import content_hash
-from contracts.validate_environment import validate_environment
+from contracts.validate_environment import (
+    validate_environment,
+    validate_paused_learning_environment,
+)
 
 
 @dataclass(frozen=True)
@@ -19,6 +22,51 @@ class Station:
     id: str
     role: str
     position: Position
+
+
+@dataclass(frozen=True)
+class PausedSceneAuthority:
+    schema: str
+    execution_timing: str
+    profile_id: str
+    max_simulation_seconds: int
+    max_wall_seconds: int
+
+    def __post_init__(self) -> None:
+        if (
+            self.schema != "physicalai.paused-simulation/v1"
+            or self.execution_timing != "paused_simulation"
+            or self.profile_id != "franka-position-hold-10hz-paused-v1"
+            or type(self.max_simulation_seconds) is not int
+            or not 1 <= self.max_simulation_seconds <= 30
+            or type(self.max_wall_seconds) is not int
+            or not 1 <= self.max_wall_seconds <= 600
+        ):
+            raise ValueError("Invalid explicit paused scene authority.")
+
+    @property
+    def real_time_admission(self) -> bool:
+        return False
+
+    @property
+    def max_simulation_steps(self) -> int:
+        return self.max_simulation_seconds * 60
+
+    def validate_request(self, *, wall_seconds: float, simulation_steps: int) -> None:
+        if type(wall_seconds) not in (int, float) or not 0 < wall_seconds <= self.max_wall_seconds:
+            raise Problem(
+                409, "paused_wall_budget", "Requested wall budget exceeds the approved scene limit."
+            )
+        if (
+            type(simulation_steps) is not int
+            or not 6 <= simulation_steps <= self.max_simulation_steps
+            or simulation_steps % 6
+        ):
+            raise Problem(
+                409,
+                "paused_simulation_budget",
+                "Simulation budget must be six-tick aligned within the approved scene limit.",
+            )
 
 
 @dataclass(frozen=True)
@@ -39,6 +87,16 @@ class SceneSpec:
     builder_id: str = "inspection-cell-v1"
     initial_part_position: Position | None = None
     scene_builder_sha256: str | None = None
+    learning_execution: PausedSceneAuthority | None = None
+
+    def require_paused_authority(self) -> PausedSceneAuthority:
+        if self.learning_execution is None:
+            raise Problem(
+                409,
+                "paused_execution_required",
+                "Explicit saved non-real-time simulation authority is required.",
+            )
+        return self.learning_execution
 
     @property
     def part_position(self) -> Position:
@@ -174,6 +232,13 @@ class SceneRegistry:
             )
         if environment.document["execution"]["mode"] != "live":
             raise Problem(409, "replay_not_live", "This simulator accepts live environments only.")
+        paused = None
+        if "learning_execution" in environment.document:
+            if validate_paused_learning_environment(environment.document):
+                raise Problem(
+                    422, "invalid_paused_environment", "Paused scene authority is invalid."
+                )
+            paused = PausedSceneAuthority(**environment.document["learning_execution"])
         builder = self.builders.get(environment.document["scene"]["template_id"])
         if builder is None:
             raise Problem(
@@ -187,6 +252,7 @@ class SceneRegistry:
         spec = replace(
             spec,
             scene_builder_sha256=self.builder_digest(environment.document["scene"]["template_id"]),
+            learning_execution=paused,
         )
         if spec.robot_profile != "reference-arm":
             raise Problem(

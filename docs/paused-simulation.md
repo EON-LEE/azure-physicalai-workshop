@@ -14,6 +14,15 @@ Authorization also requires a newly saved, versioned
 absence is denial, not an implicit fallback. The old environment's
 `execution.max_step_seconds` continues to mean a **wall-clock** limit.
 
+The optional root environment object is closed and has no implicit defaults:
+`schema="physicalai.paused-simulation/v1"`, `execution_timing="paused_simulation"`,
+`profile_id="franka-position-hold-10hz-paused-v1"`,
+`max_simulation_seconds` (integer 1..30) and `max_wall_seconds` (integer 1..600).
+Only `inspection-cell-learning-v1` may declare it. `SceneRegistry` decodes
+these validated values into immutable `PausedSceneAuthority`; requested wall
+and six-tick-aligned simulation budgets cannot exceed the lower saved limits.
+A budget change creates a new environment revision and scene binding.
+
 ## Physics and wall time are independent
 
 Physics advances only through six explicit 1/60-second ticks for each accepted
