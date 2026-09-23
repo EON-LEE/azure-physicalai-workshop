@@ -12,18 +12,41 @@ from itertools import pairwise
 from pathlib import Path
 from uuid import UUID, uuid4
 
-from apps.api.models import EnvironmentRecord, MotionCommand, utcnow
+from apps.api.models import EnvironmentRecord, Execution, MotionCommand, utcnow
 from learning.common import canonical, digest, read_json, require
 from learning.contract import ControlProfile, DemonstrationSource, Scope
 from learning.inference import GuardedPolicyAdapter
 from simulation.core import SimulationCore
 from simulation.demonstrations import Demonstration
 from simulation.extensions import SceneRegistry
+from simulation.reference_teaching import ReferenceTeacher
 from simulation.run_isaac import SimulatorRuntime, create_simulation_app
 from simulation.runtime_configuration import servo_profile_sha256
-from simulation.runtime_contracts import PolicyCommand, TeachingInput, TeachingStart
+from simulation.runtime_contracts import (
+    CaptureStatus,
+    PolicyCommand,
+    TeachingInput,
+    TeachingLease,
+    TeachingStart,
+)
 
 FIXTURE_SHA = digest(b"physicalai-isolated-actuation-fixture/v1")
+
+
+def outcome_fields(mode: str, result: Execution | None, capture: CaptureStatus | None) -> dict:
+    return {
+        "model_weights_loaded": False,
+        "learning_quality_proven": False,
+        "production_ready": False,
+        "physical_task_success": (
+            mode == "collect-reference" and result is not None and result.status == "succeeded"
+        ),
+        "physical_status": result.status if result is not None else "not_started",
+        "error": result.error.model_dump(mode="json")
+        if result is not None and result.error
+        else None,
+        "capture": capture.model_dump(mode="json") if capture is not None else None,
+    }
 
 
 def arguments(argv=None):
@@ -31,13 +54,20 @@ def arguments(argv=None):
     parser.add_argument("--environment-record", type=Path, required=True)
     parser.add_argument("--owner", required=True)
     parser.add_argument("--tenant-id", type=UUID, required=True)
-    parser.add_argument("--mode", choices=("teaching", "policy-fixture"), required=True)
+    parser.add_argument(
+        "--mode", choices=("teaching", "policy-fixture", "collect-reference"), required=True
+    )
     parser.add_argument("--intervals", type=int, default=100)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--confirm-isolated-simulator", action="store_true", required=True)
+    parser.add_argument("--task-id")
+    parser.add_argument("--instruction")
+    parser.add_argument("--goal-id")
     args = parser.parse_args(argv)
     if not 100 <= args.intervals <= 150:
         parser.error("The probe is bounded to 100..150 complete control intervals.")
+    if args.mode == "collect-reference" and not all((args.task_id, args.instruction, args.goal_id)):
+        parser.error("Reference collection requires the approved task ID, instruction and goal.")
     return args
 
 
@@ -91,12 +121,19 @@ def run_probe(args) -> dict:
     )
     environment = EnvironmentRecord.model_validate(read_json(args.environment_record))
     execution = environment.document["execution"]
+    collecting = args.mode == "collect-reference"
     require(
         execution.get("record_demonstration") is True
-        and execution.get("demonstration_split") == "test",
-        "Save and explicitly approve a TEST-split capture environment for this mechanics probe",
+        and (collecting or execution.get("demonstration_split") == "test"),
+        "Approve capture and a prechosen split; mechanics probes require the TEST split",
     )
+    if collecting:
+        require(
+            environment.document["scene"]["template_id"] == "inspection-cell-learning-v1",
+            "Bootstrap collection requires the reviewed pose-varying learning scene",
+        )
     require(not args.output.exists(), "Refusing to overwrite earlier probe evidence")
+    args.output.parent.mkdir(parents=True, exist_ok=True)
     application = create_simulation_app()
     from simulation.isaac_adapter import IsaacWorkcell
 
@@ -115,17 +152,18 @@ def run_probe(args) -> dict:
         request = Demonstration.prepare(core, binding.command_id)
         source = DemonstrationSource(
             "reference_controller",
-            "runtime-mechanics-probe",
-            "Hold a measured pose during a bounded mechanics probe.",
-            core.spec.rejected_id,
+            task["task_id"],
+            task["instruction"],
+            task["goal_id"],
         )
         return Demonstration(replace(request, control_profile=profile, demonstration=source))
 
     heartbeat = args.output.with_suffix(".heartbeat")
     runtime = SimulatorRuntime(core, hardware, heartbeat=heartbeat, capture_factory=capture_factory)
-    args.output.parent.mkdir(parents=True, exist_ok=True)
     command_id, session_id, lease_id = uuid4(), uuid4(), uuid4()
     heartbeat_times = []
+    initial = None
+    task = None
     try:
         core.activate(scope.owner_id, environment)
         startup_deadline = time.monotonic() + 120
@@ -148,19 +186,24 @@ def run_probe(args) -> dict:
             state_revision=core.state_revision,
             observation_id=observation.observation_id,
             object_id=observation.object_id,
-            target_station_id=core.spec.rejected_id,
+            target_station_id=args.goal_id if collecting else core.spec.rejected_id,
         )
         task = dict(
-            task_id="runtime-mechanics-probe",
-            instruction="Hold a measured pose during a bounded mechanics probe.",
-            goal_id=core.spec.rejected_id,
+            task_id=args.task_id if collecting else "runtime-mechanics-probe",
+            instruction=(
+                args.instruction
+                if collecting
+                else "Hold a measured pose during a bounded mechanics probe."
+            ),
+            goal_id=args.goal_id if collecting else core.spec.rejected_id,
         )
-        if args.mode == "teaching":
+        motion_seconds = min(30, execution["max_step_seconds"])
+        if args.mode != "policy-fixture":
             request = TeachingStart(
                 **scene,
                 session_id=session_id,
                 lease_id=lease_id,
-                session_expires_at=utcnow() + timedelta(seconds=30),
+                session_expires_at=utcnow() + timedelta(seconds=motion_seconds),
                 control_profile_id=profile.profile_id,
                 task=task,
                 demonstrator_kind="reference_controller",
@@ -170,7 +213,9 @@ def run_probe(args) -> dict:
             core.dispatch_policy(
                 scope.owner_id,
                 PolicyCommand(
-                    command=MotionCommand(**scene, deadline=utcnow() + timedelta(seconds=30)),
+                    command=MotionCommand(
+                        **scene, deadline=utcnow() + timedelta(seconds=motion_seconds)
+                    ),
                     policy_type="smolvla",
                     policy_release_id=authorization_id,
                     model_sha256=FIXTURE_SHA,
@@ -179,7 +224,40 @@ def run_probe(args) -> dict:
                 ),
             )
         jog_sent = False
+        teacher = None
+        finish_sent = False
         while core.command(scope.owner_id, command_id).status in {"queued", "running"}:
+            if (
+                collecting
+                and not finish_sent
+                and hardware.control_mode == "human_teaching"
+                and not hardware.warmup_steps
+                and not core.deadline_expired()
+                and core.clock_ns() >= hardware.control_next_ns
+                and (hardware.held_targets is None or hardware.hold_offset == profile.hold_steps)
+            ):
+                if teacher is None:
+                    teacher = ReferenceTeacher(
+                        request, core.spec, tcp=hardware._measured_tcp(), part=hardware.position()
+                    )
+                try:
+                    intent = teacher.next_input(
+                        now=core.clock_utc(),
+                        tcp=hardware._measured_tcp(),
+                        finger_gap=float(sum(hardware.robot.get_joint_positions()[7:])),
+                        part=hardware.position(),
+                    )
+                    if intent is None:
+                        core.finish_teaching(
+                            scope.owner_id,
+                            session_id,
+                            TeachingLease(lease_id=lease_id, epoch=core.epoch),
+                        )
+                        finish_sent = True
+                    else:
+                        core.teaching_input(scope.owner_id, session_id, intent)
+                except (ValueError, RuntimeError) as exc:
+                    runtime.finish("failed", str(exc))
             if (
                 args.mode == "teaching"
                 and not jog_sent
@@ -208,55 +286,83 @@ def run_probe(args) -> dict:
                 timestamp = float(heartbeat.read_text())
                 if not heartbeat_times or timestamp != heartbeat_times[-1]:
                     heartbeat_times.append(timestamp)
-            require(core.error is None, f"Isaac probe failed: {core.error}")
-            if len(getattr(hardware, "control_timings", ())) >= args.intervals:
+            if not collecting and len(getattr(hardware, "control_timings", ())) >= args.intervals:
                 core.cancel(scope.owner_id, command_id)
                 runtime.tick()
                 break
             time.sleep(0.001)
-        require(
-            len(hardware.control_timings) >= args.intervals, "Probe ended before its interval goal"
-        )
         persistence_deadline = time.monotonic() + 120
-        while core.capture(scope.owner_id, command_id).status not in {"ready", "invalid"}:
-            require(time.monotonic() < persistence_deadline, "Capture publication probe timed out")
+        capture = core.captures.get((scope.owner_id, command_id))
+        while capture is not None and capture.status not in {"ready", "invalid"}:
+            if time.monotonic() >= persistence_deadline:
+                runtime.capture_worker.invalidate("Capture publication probe timed out.")
             runtime.tick()
+            capture = core.capture(scope.owner_id, command_id)
             timestamp = float(heartbeat.read_text())
             if not heartbeat_times or timestamp != heartbeat_times[-1]:
                 heartbeat_times.append(timestamp)
             time.sleep(0.001)
-        capture = core.capture(scope.owner_id, command_id)
-        require(capture.status == "ready", "The real probe capture was not published")
         result = core.command(scope.owner_id, command_id)
         fixture = None
-        if args.mode == "policy-fixture":
+        if args.mode == "policy-fixture" and result.policy_runtime is not None:
             fixture = result.policy_runtime.model_dump(mode="json")
             fixture["fixture_authorization_id"] = fixture.pop("policy_release_id")
             fixture["fixture_compatibility_type"] = fixture.pop("policy_type")
             fixture["applied_fixture_sha256"] = fixture.pop("applied_model_sha")
         report = {
-            "schema": "physicalai.gpu-control-probe/v1",
+            "schema": (
+                "physicalai.reference-teaching-receipt/v1"
+                if collecting
+                else "physicalai.gpu-control-probe/v1"
+            ),
             "mode": args.mode,
             "demonstrator_kind": "reference_controller",
-            "model_weights_loaded": False,
-            "learning_quality_proven": False,
-            "production_ready": False,
-            "physical_task_success": False,
+            **outcome_fields(args.mode, result, capture),
+            "command_id": str(command_id),
+            "task": task,
+            "split": execution["demonstration_split"],
             "environment_id": environment.environment_id,
             "revision": environment.revision,
             "initial_state": initial,
             "control_profile_sha256": profile.sha256,
-            "control_intervals": hardware.control_timings,
+            "control_intervals": getattr(hardware, "control_timings", []),
+            "probe_completed": (
+                not collecting
+                and len(getattr(hardware, "control_timings", [])) >= args.intervals
+                and capture is not None
+                and capture.status == "ready"
+            ),
             "max_heartbeat_gap_ms": max(
                 ((b - a) * 1000 for a, b in pairwise(heartbeat_times)),
                 default=0,
             ),
             "fixture_actuation": fixture,
-            "capture": capture.model_dump(mode="json"),
-            "physical_status": result.status,
         }
-        args.output.write_bytes(canonical(report) + b"\n")
+        with args.output.open("xb") as stream:
+            stream.write(canonical(report) + b"\n")
         return report
+    except (ValueError, RuntimeError, OSError) as exc:
+        with core.lock:
+            result = core.commands.get((scope.owner_id, command_id))
+            capture = core.captures.get((scope.owner_id, command_id))
+        if not args.output.exists():
+            with args.output.open("xb") as stream:
+                stream.write(
+                    canonical(
+                        {
+                            "schema": "physicalai.operator-attempt-failure/v1",
+                            "mode": args.mode,
+                            "environment_id": environment.environment_id,
+                            "revision": environment.revision,
+                            "initial_state": initial,
+                            "command_id": str(command_id),
+                            "failure": str(exc),
+                            **outcome_fields(args.mode, result, capture),
+                        }
+                    )
+                    + b"\n"
+                )
+        raise
     finally:
         try:
             runtime.close()
@@ -280,6 +386,11 @@ def main() -> None:
         ),
         flush=True,
     )
+    if args.mode == "collect-reference":
+        if not report["physical_task_success"] or report["capture"]["status"] != "ready":
+            raise SystemExit(1)
+    elif not report["probe_completed"]:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

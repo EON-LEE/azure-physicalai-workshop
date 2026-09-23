@@ -370,6 +370,7 @@ class IsaacWorkcell:
         )
         self.jog_goal = self._measured_tcp()
         self.jog_gripper = "hold"
+        self.jog_speed = min(0.05, self.spec.requested_speed)
         _, rotation = self.articulation_kinematics.compute_end_effector_pose()
         self.orientation_target = tuple(float(value) for value in rot_matrix_to_quat(rotation))
         self.task_watchdog = TaskWatchdog(
@@ -386,6 +387,8 @@ class IsaacWorkcell:
 
     def start_teaching(self, request: TeachingStart, core: SimulationCore, recording=None) -> None:
         self._start_control("human_teaching", request, core, recording)
+        if request.demonstrator_kind == "reference_controller":
+            self.jog_speed = min(0.1, self.spec.requested_speed)
         self.controller = RMPFlowController(
             name="bounded-cartesian-teaching",
             robot_articulation=self.robot,
@@ -442,9 +445,7 @@ class IsaacWorkcell:
             if intent.gripper != "hold":
                 self.jog_gripper = intent.gripper
             self.last_jog_sequence = intent.sequence
-        target = move_toward(
-            current, self.jog_goal, min(0.05, self.spec.requested_speed) / profile.control_hz
-        )
+        target = move_toward(current, self.jog_goal, self.jog_speed / profile.control_hz)
         if any(abs(a - b) > 1e-7 for a, b in zip(current, target, strict=True)):
             requested = self.controller.forward(
                 target_end_effector_position=np.array(target),

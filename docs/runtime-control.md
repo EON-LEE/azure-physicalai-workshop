@@ -217,3 +217,43 @@ was established, and production is not ready. They are not automatically
 accepted timing attestations. The parent must separately verify real
 grip/hold/place behavior, licensed checkpoint inference, and frozen paired
 held-out trials before accepting teaching data or promoting any policy.
+
+## Explicit bootstrap reference collection
+
+After real GPU grip/hold/place validation, an approved operator can collect one
+complete scripted expert attempt, not merely a jog:
+
+```bash
+/isaac-sim/python.sh -m simulation.probe_control \
+  --environment-record /data/cases/approved-train-case-001.json \
+  --owner <opaque-owner-key> --tenant-id <tenant-uuid> \
+  --mode collect-reference \
+  --task-id <approved-task-id> --instruction "<approved-single-line-instruction>" \
+  --goal-id <approved-station-id> \
+  --output /data/receipts/train-case-001-attempt-001.json \
+  --confirm-isolated-simulator
+```
+
+The record must already select `inspection-cell-learning-v1`, capture, the
+intended train/validation/test split, and the prechosen seed/revision. The tool
+does not modify these, resample poses, retry a failure, or label automation as
+human input. Each invocation has one immutable receipt and a deadline bounded
+by both **30 seconds** and the environment's original step budget.
+
+`ReferenceTeacher` progresses reviewed pick/inspection/place waypoints only
+from measured TCP, finger opening and part state. It rejects lifting without
+the actual part, then requests graceful finish for the shared measured
+grasp/release/goal/settling checks. It produces only granted, one-centimetre
+Cartesian/gripper intents through the teaching lease. The explicit scripted
+source can request at most 0.1 m/s task-space goals (human jog goals remain
+0.05 m/s); the same position-hold servo, joint tracking/slew limits and 0.2 m/s
+physical watchdog remain mandatory. No expert joint command bypass exists.
+
+Receipts use `physicalai.reference-teaching-receipt/v1` and keep physical outcome,
+capture status, actual initial pose, immutable environment revision, task,
+split, profile hash, complete interval timings and explicit errors separate.
+Failed, cancelled and timed-out attempts are retained and exit nonzero.
+Interrupted partial holds are invalid rather than padded. A setup failure has
+an explicit `physicalai.operator-attempt-failure/v1` receipt, not an invented
+episode. Selecting accepted demonstrations for a frozen dataset remains a
+separate reviewed operation; a published capture alone is not a quality label.
