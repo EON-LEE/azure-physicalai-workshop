@@ -1,5 +1,6 @@
 import subprocess
 import sys
+from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from uuid import uuid4
 
@@ -112,14 +113,24 @@ def test_a_mechanics_fixture_never_becomes_a_task_or_model_learning_success():
 def test_isaac_launch_preserves_reference_defaults_and_explicitly_selects_control_profile(
     monkeypatch, sensor_only
 ):
-    from simulation.run_isaac import create_simulation_app
+    from simulation import run_isaac
+
+    create_simulation_app = run_isaac.create_simulation_app
 
     configs = []
+    experiences = []
+    monkeypatch.setattr(
+        run_isaac,
+        "control_experience_path",
+        lambda: Path("/reviewed/isaacsim.exp.base.zero_delay.kit"),
+        raising=False,
+    )
     isaac = ModuleType("isaacsim")
 
     class Application:
-        def __init__(self, config):
+        def __init__(self, config, experience=None):
             configs.append(config)
+            experiences.append(experience)
 
         def close(self):
             pass
@@ -143,6 +154,7 @@ def test_isaac_launch_preserves_reference_defaults_and_explicitly_selects_contro
         monkeypatch.setitem(sys.modules, name, module)
     create_simulation_app(sensor_only=sensor_only)
     if sensor_only:
+        assert experiences == ["/reviewed/isaacsim.exp.base.zero_delay.kit"]
         assert configs == [
             {
                 "headless": True,
@@ -153,4 +165,5 @@ def test_isaac_launch_preserves_reference_defaults_and_explicitly_selects_contro
             }
         ]
     else:
+        assert experiences == [None]
         assert configs == [{"headless": True, "width": 1280, "height": 720}]

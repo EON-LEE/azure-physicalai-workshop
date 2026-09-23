@@ -2,10 +2,30 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 from collections.abc import Callable
 from math import isfinite
 from numbers import Integral, Real
+from pathlib import Path
+
+CONTROL_EXPERIENCE = "isaacsim.exp.base.zero_delay.kit"
+CONTROL_EXPERIENCE_SHA256 = "776a905289b9029d760fdc0d9b9d6e6cb96b20a4a5f00763f8f120ea9f7e0b88"
+
+
+def control_experience_path() -> Path:
+    root = os.environ.get("EXP_PATH")
+    if not root:
+        raise ValueError("The pinned Isaac experience directory is unavailable.")
+    path = Path(root) / CONTROL_EXPERIENCE
+    if not path.is_absolute() or path.is_symlink() or not path.is_file():
+        raise ValueError("The reviewed zero-delay control experience is unavailable.")
+    if hashlib.sha256(path.read_bytes()).hexdigest() != CONTROL_EXPERIENCE_SHA256:
+        raise ValueError(
+            "The installed zero-delay experience checksum differs from the reviewed SDK."
+        )
+    return path
 
 
 def sensor_launch_config() -> dict:

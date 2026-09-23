@@ -21,7 +21,11 @@ from learning.common import canonical, digest, read_json, require
 from learning.contract import ControlProfile, DemonstrationSource, Scope
 from learning.inference import GuardedPolicyAdapter
 from simulation.assets import configure_asset_environment
-from simulation.camera_observation import sensor_launch_config
+from simulation.camera_observation import (
+    CONTROL_EXPERIENCE,
+    CONTROL_EXPERIENCE_SHA256,
+    sensor_launch_config,
+)
 from simulation.core import SimulationCore
 from simulation.demonstrations import Demonstration
 from simulation.extensions import SceneRegistry
@@ -395,6 +399,10 @@ def run_probe(args) -> dict:
             "initial_state": initial,
             "control_profile_sha256": profile.sha256,
             "sensor_render_profile": sensor_launch_config(),
+            "sensor_experience": {
+                "name": CONTROL_EXPERIENCE,
+                "sha256": CONTROL_EXPERIENCE_SHA256,
+            },
             "control_intervals": getattr(hardware, "control_timings", []),
             "unarmed_warmup": getattr(hardware, "control_warmup_timings", []),
             "camera_observation": getattr(hardware, "camera_observation_metadata", None),

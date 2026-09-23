@@ -1,10 +1,12 @@
 """CPU sensor-ordering doubles; actual camera timing must still pass on the GPU."""
 
+import hashlib
 from fractions import Fraction
 from types import SimpleNamespace
 
 import pytest
 
+from simulation import camera_observation
 from simulation.camera_observation import observation_barrier, render_identity, sensor_launch_config
 
 
@@ -249,3 +251,17 @@ def test_control_launch_disables_only_unused_viewport_and_uses_real_rtx_sensor_r
     assert config["disable_viewport_updates"] is True
     assert config["renderer"] == "RaytracedLighting"
     assert (config["width"], config["height"]) == (320, 320)
+
+
+def test_control_experience_is_pinned_and_cannot_silently_fall_back(tmp_path, monkeypatch):
+    path = tmp_path / camera_observation.CONTROL_EXPERIENCE
+    data = b"CPU fixture experience, not an actual SDK proof"
+    path.write_bytes(data)
+    monkeypatch.setenv("EXP_PATH", str(tmp_path))
+    monkeypatch.setattr(
+        camera_observation, "CONTROL_EXPERIENCE_SHA256", hashlib.sha256(data).hexdigest()
+    )
+    assert camera_observation.control_experience_path() == path
+    path.write_bytes(b"changed experience")
+    with pytest.raises(ValueError, match="checksum"):
+        camera_observation.control_experience_path()

@@ -12,7 +12,7 @@ from uuid import UUID
 import uvicorn
 from azure.core.exceptions import AzureError
 
-from simulation.camera_observation import sensor_launch_config
+from simulation.camera_observation import control_experience_path, sensor_launch_config
 from simulation.capture_status import CaptureStatusStore
 from simulation.capture_worker import CaptureBackend, CaptureWorker
 from simulation.core import (
@@ -274,7 +274,11 @@ def create_simulation_app(*, sensor_only: bool = False):
     config = (
         sensor_launch_config() if sensor_only else {"headless": True, "width": 1280, "height": 720}
     )
-    simulation_app = SimulationApp(config)
+    simulation_app = (
+        SimulationApp(config, experience=str(control_experience_path()))
+        if sensor_only
+        else SimulationApp(config)
+    )
     import omni.kit.app
 
     manager = omni.kit.app.get_app().get_extension_manager()

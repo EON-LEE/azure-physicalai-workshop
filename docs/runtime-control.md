@@ -107,6 +107,17 @@ its existing defaults. These settings are source/profile hashed and require
 new measured timing evidence; the probe receipt records the selected profile.
 They are not a synthetic image path or a change to motion/freshness thresholds.
 
+Control-only launches additionally use the installed Isaac 6
+`isaacsim.exp.base.zero_delay.kit` experience, verified against SHA-256
+`776a905289b9029d760fdc0d9b9d6e6cb96b20a4a5f00763f8f120ea9f7e0b88`.
+Its supported Hydra wait-idle/render-completion ordering prevents the default
+multi-frame-in-flight pipeline from pairing old camera metadata with current
+physics. Both production control and the isolated probe select this exact
+experience; missing/mismatched files fail instead of reverting to pipelined
+rendering. Reference-only launch remains unchanged. The experience name/hash
+are included in the reviewed profile source and actual probe receipt. See
+[Isaac 6 rendering-frame delay](https://docs.isaacsim.omniverse.nvidia.com/6.0.0/python_scripting/util_snippets.html#rendering-frame-delay).
+
 The reviewed control profile selects a 60 Hz physics clock and zero automatic
 rendering timestep so each SDK call takes the documented explicit physics-step
 path, not an unrestricted Kit application update. Every recorded tick requests
