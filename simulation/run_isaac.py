@@ -12,6 +12,7 @@ from uuid import UUID
 import uvicorn
 from azure.core.exceptions import AzureError
 
+from simulation.camera_observation import sensor_launch_config
 from simulation.capture_status import CaptureStatusStore
 from simulation.capture_worker import CaptureBackend, CaptureWorker
 from simulation.core import (
@@ -265,10 +266,13 @@ class SimulatorRuntime:
         self._publish_capture()
 
 
-def create_simulation_app():
+def create_simulation_app(*, sensor_only: bool = False):
     from isaacsim import SimulationApp
 
-    simulation_app = SimulationApp({"headless": True, "width": 1280, "height": 720})
+    config = (
+        sensor_launch_config() if sensor_only else {"headless": True, "width": 1280, "height": 720}
+    )
+    simulation_app = SimulationApp(config)
     import omni.kit.app
 
     manager = omni.kit.app.get_app().get_extension_manager()
@@ -296,11 +300,11 @@ def main() -> None:
         raise RuntimeError(
             "A provisioned TLS certificate and key are required; plaintext is disabled."
         )
-    simulation_app = create_simulation_app()
+    profile, policies = load_deployment()
+    simulation_app = create_simulation_app(sensor_only=profile is not None)
     from simulation.isaac_adapter import IsaacWorkcell
 
     hardware = IsaacWorkcell()
-    profile, policies = load_deployment()
     capture_store = CaptureStatusStore(
         Path(os.environ.get("CAPTURE_STATUS_ROOT", "/data/demonstrations/.capture-status"))
     )

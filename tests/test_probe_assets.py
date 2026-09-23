@@ -42,12 +42,12 @@ def test_direct_probe_prepares_verified_assets_before_creating_isaac(probe, monk
         monkeypatch.setenv("FRANKA_ASSET_ROOT", "/data/assets/" + "a" * 64)
         monkeypatch.setenv("FRANKA_USD_PATH", "/data/assets/" + "a" * 64 + "/franka.usd")
 
-    def application():
+    def application(**kwargs):
         assert os.environ.get("FRANKA_ASSET_ROOT") is not None, (
             "Verified asset root was not initialized"
         )
         assert os.environ.get("FRANKA_USD_PATH") is not None
-        return factory()
+        return factory(**kwargs)
 
     class Runtime:
         def __init__(self, core, hardware, **kwargs):

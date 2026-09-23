@@ -70,7 +70,7 @@ def probe(monkeypatch, tmp_path):
     module = ModuleType("simulation.isaac_adapter")
     module.IsaacWorkcell = lambda: hardware
     monkeypatch.setitem(sys.modules, "simulation.isaac_adapter", module)
-    monkeypatch.setattr(probe_control, "create_simulation_app", Application)
+    monkeypatch.setattr(probe_control, "create_simulation_app", lambda **kwargs: Application())
     return args, events, at_close, module
 
 

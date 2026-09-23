@@ -99,6 +99,14 @@ error, not permission to select another model family.
 `franka-position-hold-10hz-v1` has a deliberately different low-level contract
 from the reference controller:
 
+The control server and isolated probe both explicitly select the same real
+RTX `RaytracedLighting` sensor-rendering configuration, a 320 by 320 application
+surface, and disabled **unused viewport** updates. Both actual camera render
+products remain enabled at 320 by 320. The normal reference-only launch keeps
+its existing defaults. These settings are source/profile hashed and require
+new measured timing evidence; the probe receipt records the selected profile.
+They are not a synthetic image path or a change to motion/freshness thresholds.
+
 * One synchronized observation and nine absolute targets per six actual 60 Hz
   physics ticks; no intermediate targets are dropped or resampled.
 * The identical targets and explicit zero velocity targets are passed to

@@ -483,6 +483,7 @@ class IsaacWorkcell:
             "capture_queue_ms": 0.0,
             "measurement_guard_ms": 0.0,
         }
+        barrier_details = {}
         try:
             self.render_monotonic_ns = observation_barrier(
                 self.world,
@@ -497,11 +498,16 @@ class IsaacWorkcell:
                     for name in self.cameras
                     if (name, "recording") in self.last_render_frame
                 },
+                diagnostics=barrier_details,
             )
         finally:
             self.camera_observation_metadata = camera_evidence(
                 self.world, self.cameras, physics_step=self.steps
-            ) | {"warmup_steps": self.warmup_steps, "hold_offset": self.hold_offset}
+            ) | {
+                "warmup_steps": self.warmup_steps,
+                "hold_offset": self.hold_offset,
+                "barrier": barrier_details,
+            }
         rendered_ns = self.control_core.clock_ns()
         self.interval_phases["observation_render_ms"] = (
             rendered_ns - self.interval_started_ns

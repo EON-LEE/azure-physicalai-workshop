@@ -5,7 +5,17 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from math import isfinite
-from numbers import Integral
+from numbers import Integral, Real
+
+
+def sensor_launch_config() -> dict:
+    return {
+        "headless": True,
+        "width": 320,
+        "height": 320,
+        "renderer": "RaytracedLighting",
+        "disable_viewport_updates": True,
+    }
 
 
 def _integer(value, *, positive=False) -> int:
@@ -43,6 +53,9 @@ def camera_evidence(world, cameras, *, physics_step: int) -> dict:
         rendering_time = frame.get("rendering_time")
         observations[name] = {
             "rendering_time": float(rendering_time) if rendering_time is not None else None,
+            "rendering_time_type": (
+                type(rendering_time).__module__ + "." + type(rendering_time).__name__
+            ),
             "rendering_frame": identity,
         }
     return {
@@ -63,47 +76,65 @@ def observation_barrier(
     deadline_ns: int,
     published_ns: int | None = None,
     previous_identities: dict[str, tuple[int, int]] | None = None,
+    diagnostics: dict | None = None,
 ) -> int:
     if set(cameras) != {"inspection", "overview"}:
         raise ValueError("Both actual observation cameras are required.")
     start_time = float(world.current_time)
     start_step = int(world.current_time_step_index)
+    details = diagnostics if diagnostics is not None else {}
+    details.update(
+        before=camera_evidence(world, cameras, physics_step=physics_step),
+        previous_identities=previous_identities,
+        reused_published_frame=False,
+        render_calls=0,
+    )
 
-    def synchronized_and_new() -> bool:
+    def synchronized_and_new(reasons: dict | None = None) -> bool:
         synchronized = True
         for name, sensor in cameras.items():
             sample = sensor.get_current_frame()
             rendering_time = sample.get("rendering_time")
             identity = render_identity(sample.get("rendering_frame"))
             previous = (previous_identities or {}).get(name)
+            rejected = []
             if previous is not None:
                 if identity[1] != previous[1] or identity[0] < previous[0]:
                     raise ValueError("Native camera identity rewound or changed its timebase.")
                 if identity[0] == previous[0]:
                     synchronized = False
+                    rejected.append("native_frame_repeated")
             if (
                 isinstance(rendering_time, bool)
-                or not isinstance(rendering_time, (float, int))
+                or not isinstance(rendering_time, Real)
                 or not isfinite(rendering_time)
                 or abs(rendering_time - start_time) > dt / 2
             ):
                 synchronized = False
+                rejected.append("rendering_time_type_or_alignment")
+            if reasons is not None:
+                reasons[name] = rejected
         return synchronized
 
     now = clock_ns()
+    details["published_age_ns"] = now - published_ns if published_ns is not None else None
+    details["before_eligibility"] = {}
+    ready = synchronized_and_new(details["before_eligibility"])
     if now >= deadline_ns:
         raise RuntimeError("Camera observation exhausted the existing control budget.")
     if (
         published_ns is not None
         and 0 < published_ns <= now
         and now - published_ns <= 200_000_000
-        and synchronized_and_new()
+        and ready
     ):
+        details["reused_published_frame"] = True
         return published_ns
     for _ in range(2):
         if clock_ns() >= deadline_ns:
             raise RuntimeError("Camera observation exhausted the existing control budget.")
         world.render()
+        details["render_calls"] += 1
         stamp = clock_ns()
         if (
             float(world.current_time) != start_time
@@ -111,6 +142,7 @@ def observation_barrier(
         ):
             raise RuntimeError("The observational render barrier advanced physics.")
         evidence = camera_evidence(world, cameras, physics_step=physics_step)
+        details["after"] = evidence
         if stamp >= deadline_ns:
             raise RuntimeError(
                 "Camera observation exhausted the existing control budget: "

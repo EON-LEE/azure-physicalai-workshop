@@ -1,10 +1,11 @@
 """CPU sensor-ordering doubles; actual camera timing must still pass on the GPU."""
 
+from fractions import Fraction
 from types import SimpleNamespace
 
 import pytest
 
-from simulation.camera_observation import observation_barrier, render_identity
+from simulation.camera_observation import observation_barrier, render_identity, sensor_launch_config
 
 
 def test_real_isaac6_fabric_identity_is_not_fabricated_as_a_local_counter():
@@ -211,3 +212,40 @@ def test_a_repeated_native_identity_is_not_accepted_as_an_already_fresh_frame():
             previous_identities={name: (1000, 1000) for name in cameras},
         )
     assert len(renders) <= 2
+
+
+def test_real_numeric_sdk_time_keeps_exact_tolerance_and_explains_freshness():
+    cameras = {name: camera(1.0) for name in ("overview", "inspection")}
+    for sensor in cameras.values():
+        sensor.frame["rendering_time"] = Fraction(1, 1)
+    calls = []
+    world = SimpleNamespace(
+        current_time=1.0, current_time_step_index=60, render=lambda: calls.append(True)
+    )
+    diagnostics = {}
+    stamp = observation_barrier(
+        world,
+        cameras,
+        dt=1 / 60,
+        physics_step=60,
+        clock_ns=lambda: 1_000_000_000,
+        deadline_ns=1_100_000_000,
+        published_ns=950_000_000,
+        previous_identities={name: (900, 1000) for name in cameras},
+        diagnostics=diagnostics,
+    )
+    assert stamp == 950_000_000 and not calls
+    assert diagnostics["reused_published_frame"] is True
+    assert diagnostics["published_age_ns"] == 50_000_000
+    assert (
+        diagnostics["before"]["cameras"]["inspection"]["rendering_time_type"]
+        == "fractions.Fraction"
+    )
+
+
+def test_control_launch_disables_only_unused_viewport_and_uses_real_rtx_sensor_rendering():
+    config = sensor_launch_config()
+    assert config["headless"] is True
+    assert config["disable_viewport_updates"] is True
+    assert config["renderer"] == "RaytracedLighting"
+    assert (config["width"], config["height"]) == (320, 320)

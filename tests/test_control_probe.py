@@ -1,5 +1,6 @@
 import subprocess
 import sys
+from types import ModuleType, SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -105,3 +106,51 @@ def test_a_mechanics_fixture_never_becomes_a_task_or_model_learning_success():
     assert not receipt["physical_task_success"]
     assert not receipt["model_weights_loaded"]
     assert not receipt["production_ready"]
+
+
+@pytest.mark.parametrize("sensor_only", [False, True])
+def test_isaac_launch_preserves_reference_defaults_and_explicitly_selects_control_profile(
+    monkeypatch, sensor_only
+):
+    from simulation.run_isaac import create_simulation_app
+
+    configs = []
+    isaac = ModuleType("isaacsim")
+
+    class Application:
+        def __init__(self, config):
+            configs.append(config)
+
+        def close(self):
+            pass
+
+    isaac.SimulationApp = Application
+    omni = ModuleType("omni")
+    kit = ModuleType("omni.kit")
+    app = ModuleType("omni.kit.app")
+    manager = SimpleNamespace(
+        set_extension_enabled_immediate=lambda *args: None,
+        is_extension_enabled=lambda name: True,
+    )
+    app.get_app = lambda: SimpleNamespace(get_extension_manager=lambda: manager)
+    omni.kit, kit.app = kit, app
+    for name, module in (
+        ("isaacsim", isaac),
+        ("omni", omni),
+        ("omni.kit", kit),
+        ("omni.kit.app", app),
+    ):
+        monkeypatch.setitem(sys.modules, name, module)
+    create_simulation_app(sensor_only=sensor_only)
+    if sensor_only:
+        assert configs == [
+            {
+                "headless": True,
+                "width": 320,
+                "height": 320,
+                "renderer": "RaytracedLighting",
+                "disable_viewport_updates": True,
+            }
+        ]
+    else:
+        assert configs == [{"headless": True, "width": 1280, "height": 720}]

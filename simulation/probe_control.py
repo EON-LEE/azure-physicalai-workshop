@@ -21,6 +21,7 @@ from learning.common import canonical, digest, read_json, require
 from learning.contract import ControlProfile, DemonstrationSource, Scope
 from learning.inference import GuardedPolicyAdapter
 from simulation.assets import configure_asset_environment
+from simulation.camera_observation import sensor_launch_config
 from simulation.core import SimulationCore
 from simulation.demonstrations import Demonstration
 from simulation.extensions import SceneRegistry
@@ -198,7 +199,7 @@ def run_probe(args) -> dict:
     try:
         initialize_probe_assets()
         phase = "application_initialization"
-        application = create_simulation_app()
+        application = create_simulation_app(sensor_only=True)
         from simulation.isaac_adapter import IsaacWorkcell
 
         phase = "hardware_initialization"
@@ -393,6 +394,7 @@ def run_probe(args) -> dict:
             "revision": environment.revision,
             "initial_state": initial,
             "control_profile_sha256": profile.sha256,
+            "sensor_render_profile": sensor_launch_config(),
             "control_intervals": getattr(hardware, "control_timings", []),
             "camera_observation": getattr(hardware, "camera_observation_metadata", None),
             "probe_completed": (
