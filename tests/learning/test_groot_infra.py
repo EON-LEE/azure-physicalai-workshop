@@ -49,3 +49,46 @@ def test_private_single_node_learning_infrastructure_exists():
     assert "listKeys(" not in template
     assert "adminUserPassword" not in template
     assert "userAccountCredentials" not in template
+
+
+def test_associated_dependencies_do_not_duplicate_auto_generated_outbound_rules():
+    path = Path(__file__).resolve().parents[2] / "infra" / "learning.bicep"
+    template = path.read_text()
+    assert "outboundRules:" not in template
+    assert "storageAccount: storageAccountId" in template
+    assert "keyVault: keyVaultId" in template
+    assert "containerRegistry: containerRegistryId" in template
+    assert "isolationMode: 'AllowOnlyApprovedOutbound'" in template
+
+
+def test_postdeploy_network_verification_requires_actual_active_dependency_endpoints():
+    from learning.azure import validate_managed_network_dependencies
+
+    rules = []
+    workspace = SimpleNamespace(
+        storage_account="/storage",
+        key_vault="/vault",
+        container_registry="/registry",
+        managed_network=SimpleNamespace(
+            isolation_mode="AllowOnlyApprovedOutbound",
+            outbound_rules=rules,
+        ),
+    )
+    for resource, subresource in (
+        ("/storage", "blob"),
+        ("/storage", "file"),
+        ("/vault", "vault"),
+        ("/registry", "registry"),
+    ):
+        rules.append(
+            SimpleNamespace(
+                type="private_endpoint",
+                status="Active",
+                service_resource_id=resource,
+                subresource_target=subresource,
+            )
+        )
+    validate_managed_network_dependencies(workspace)
+    rules[0].status = "Inactive"
+    with pytest.raises(ContractError, match="private endpoint"):
+        validate_managed_network_dependencies(workspace)

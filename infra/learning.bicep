@@ -49,40 +49,6 @@ resource workspace 'Microsoft.MachineLearningServices/workspaces@2025-06-01' = {
     v1LegacyMode: false
     managedNetwork: {
       isolationMode: 'AllowOnlyApprovedOutbound'
-      outboundRules: {
-        approvedBlob: {
-          type: 'PrivateEndpoint'
-          category: 'UserDefined'
-          destination: {
-            serviceResourceId: storageAccountId
-            subresourceTarget: 'blob'
-          }
-        }
-        approvedFile: {
-          type: 'PrivateEndpoint'
-          category: 'UserDefined'
-          destination: {
-            serviceResourceId: storageAccountId
-            subresourceTarget: 'file'
-          }
-        }
-        approvedKeyVault: {
-          type: 'PrivateEndpoint'
-          category: 'UserDefined'
-          destination: {
-            serviceResourceId: keyVaultId
-            subresourceTarget: 'vault'
-          }
-        }
-        approvedRegistry: {
-          type: 'PrivateEndpoint'
-          category: 'UserDefined'
-          destination: {
-            serviceResourceId: containerRegistryId
-            subresourceTarget: 'registry'
-          }
-        }
-      }
     }
   }
 }

@@ -394,6 +394,13 @@ The workspace uses API **2025-06-01**, whose published schema supports
 expose that setting. Existing Application Insights is bound by resource ID,
 not silently created. Registry Private Link requires an approved supporting
 ACR SKU (Premium); this template does not upgrade it or relax any firewall.
+Associated Blob/file/Key Vault/ACR outbound private-endpoint rules are generated
+by the workspace provider. The template deliberately does not duplicate them as
+user-defined rules: the real service rejects duplicate destinations even when
+ARM validation passes. After managed-network provisioning, the deployment/worker
+must call `validate_managed_network_dependencies(workspace)` and verify the
+actual bound dependency destinations are active/approved. A missing endpoint is
+an explicit blocker, never permission to switch to Internet outbound.
 
 `learning.azure` generates real Azure ML v2 pipeline job JSON (also valid YAML)
 and a deterministic source snapshot. The training graph is **convert -> train**.

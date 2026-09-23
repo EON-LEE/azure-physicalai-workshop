@@ -460,6 +460,40 @@ def validate_compute(compute, config: dict) -> None:
         )
 
 
+def validate_managed_network_dependencies(workspace) -> None:
+    network = workspace.managed_network
+    mode = getattr(network, "isolation_mode", None)
+    mode = getattr(mode, "value", mode)
+    require(
+        isinstance(mode, str) and mode.replace("_", "").lower() == "allowonlyapprovedoutbound",
+        "Approved-outbound-only managed network is required",
+    )
+    rules = network.outbound_rules
+    require(isinstance(rules, list), "Managed private endpoint rules have not been provisioned")
+    expected = {
+        (workspace.storage_account.lower(), "blob"),
+        (workspace.storage_account.lower(), "file"),
+        (workspace.key_vault.lower(), "vault"),
+        (workspace.container_registry.lower(), "registry"),
+    }
+    active = set()
+    for rule in rules:
+        kind = getattr(rule.type, "value", rule.type)
+        status = getattr(rule.status, "value", rule.status)
+        if isinstance(kind, str) and kind.replace("_", "").lower() == "privateendpoint":
+            if isinstance(status, str) and status.lower() == "active":
+                active.add(
+                    (
+                        rule.service_resource_id.lower(),
+                        rule.subresource_target.lower(),
+                    )
+                )
+    require(
+        expected.issubset(active),
+        "Associated dependency private endpoints are missing, inactive or unapproved",
+    )
+
+
 def preflight(client, config: dict) -> None:
     account = _az_json(["account", "show", "--subscription", config["subscription_id"]])
     require(
@@ -471,7 +505,8 @@ def preflight(client, config: dict) -> None:
     workspace = client.workspaces.get(config["workspace"])
     require(
         workspace.managed_network is not None
-        and workspace.managed_network.isolation_mode == "allow_only_approved_outbound",
+        and workspace.managed_network.isolation_mode.replace("_", "").lower()
+        == "allowonlyapprovedoutbound",
         "Production learning requires approved-outbound-only Azure ML networking",
     )
     compute = client.compute.get(config["compute"])
