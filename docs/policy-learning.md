@@ -276,6 +276,46 @@ approved 48 GB-or-larger training GPU, not a guarantee of minimum memory.
 The A10 renderer's available memory/latency for concurrent inference is not
 assumed. No model weights were downloaded or license accepted by these checks.
 
+The GPU build recipe is `learning/gr00t/Dockerfile`: digest-pinned
+`pytorch/pytorch:2.5.1-cuda12.4-cudnn9-devel`, frozen isolated runtime/Azure extras,
+FlashAttention 2.7.4.post1 compiled from its locked source distribution, and the
+exact upstream checkout at `/opt/isaac-gr00t`. It targets Ampere A100/A10
+(architectures 8.0/8.6); do not assume Blackwell compatibility. The image contains
+no model weights and accepts no license. An authorized Azure builder may build
+it with `-f learning/gr00t/Dockerfile` and then pin the resulting ACR digest.
+Local dependency resolution is not a completed GPU image build or GPU proof.
+
+After the operator reviews the pinned NVIDIA model license and acquires its
+exact three shards plus metadata into approved private Azure storage,
+`python -m learning.gr00t.prepare --source LOCAL_VENDOR_FILES --output NEW_BUNDLE
+--binding APPROVED_BINDING_JSON --acknowledge-license-review` checks the
+published immutable shard SHA-256s and metadata Git blob IDs before copying them
+into a scope/task/profile-bound **train-only** artifact. Binding JSON contains
+`scope`, `control_profile` and `task`. This importer performs no download,
+upload, token lookup or license acceptance itself.
+
+On the explicitly allocated Azure GPU, the bounded G0 command is:
+
+```bash
+python -m learning.gr00t.probe \
+  --dataset APPROVED_V21_EXPORT --export-sha256 EXPORT_MANIFEST_SHA256 \
+  --model-root APPROVED_VENDOR_BUNDLE --model-sha256 MODEL_MANIFEST_SHA256 \
+  --source-root /opt/isaac-gr00t --binding APPROVED_BINDING_JSON --output NEW_REPORT_DIR
+```
+
+Wrap this command in an approved one-node AML command job with a finite timeout
+(for example 600 seconds) and explicit private mounted inputs/output. It requires
+actual Azure-origin v2 observations, not generated model inputs; no valid capture
+means the full probe remains blocked. It loads the real pinned vendor weights,
+records driver/CUDA/GPU/peak memory, and makes six actual model calls on real
+camera/joint observations (one cold, five warm). The probe temporarily uses
+the real dataset normalization to measure the **unadapted** vendor model; it is
+not a trained Franka P0. `probe.json` always says zero optimizer steps,
+`ready_for_live_execution: false` and `learning_quality_verified: false`.
+Latency excludes IPC and is only a necessary sub-budget measurement; exceeding
+80 ms exits nonzero. No actuator is called, even when predicted joints happen
+to fall inside reference bounds.
+
 ### Auxiliary ACT path
 
 The isolated `learning/pyproject.toml` and `learning/uv.lock` pin
