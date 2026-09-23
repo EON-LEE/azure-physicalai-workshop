@@ -134,6 +134,14 @@ def hardware(teaching, monkeypatch):
     class World:
         def __init__(self):
             self.playing = True
+            self.physics_dt = 1 / 60
+            self.rendering_dt = 1 / 60
+            self.fabric_flags = []
+            self.current_time = 0.0
+            self.current_time_step_index = 0
+
+        def set_simulation_dt(self, *, physics_dt, rendering_dt):
+            self.physics_dt, self.rendering_dt = physics_dt, rendering_dt
 
         def is_playing(self):
             return self.playing
@@ -147,7 +155,10 @@ def hardware(teaching, monkeypatch):
         def render(self):
             pass
 
-        def step(self, *, render):
+        def step(self, *, render, update_fabric=False):
+            self.fabric_flags.append(update_fabric)
+            self.current_time += self.physics_dt
+            self.current_time_step_index += 1
             clock[1] += 5_000_000
 
     cell.robot = Robot()
@@ -441,9 +452,9 @@ def test_profile_publishes_sensor_state_on_the_sixth_actual_physics_tick(hardwar
     original = cell.world.step
     rendered = []
 
-    def step(*, render):
+    def step(*, render, **kwargs):
         rendered.append(render)
-        original(render=render)
+        original(render=render, **kwargs)
 
     cell.world.step = step
     for _ in range(6):
@@ -486,3 +497,26 @@ def test_control_trace_measures_render_observation_planning_and_six_physics_tick
     assert timing["physics_and_publish_ms"] == 30
     assert timing["capture_queue_ms"] == 0
     assert timing["control_cycle_ms"] == 39
+
+
+def test_profile_uses_explicit_physics_clock_and_publishes_fabric_for_every_tick(hardware):
+    cell, core, request, _ = hardware
+    begin(core, request)
+    cell.start_teaching(request, core, Recorder())
+    for _ in range(6):
+        cell.advance()
+    assert cell.world.physics_dt == 1 / 60
+    assert cell.world.rendering_dt == 0
+    assert cell.world.fabric_flags == [True] * 6
+
+
+def test_fixed_unarmed_warmup_is_bounded_and_never_claims_control_intervals(hardware):
+    cell, core, _, _ = hardware
+    assert core.active_command is None
+    cell.prime_control_profile()
+    assert cell.steps == 60
+    assert len(cell.control_warmup_timings) == 60
+    assert not getattr(cell, "control_timings", [])
+    assert cell.controller is None
+    assert cell.recording is None
+    assert all(tuple(action.joint_velocities) == (0.0,) * 9 for action in cell.robot.actions)

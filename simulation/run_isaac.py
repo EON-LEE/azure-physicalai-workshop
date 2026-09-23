@@ -199,6 +199,8 @@ class SimulatorRuntime:
             if isinstance(action, LoadScene):
                 self.active_epoch = action.epoch
                 self.hardware.load(action.spec)
+                if self.core.control_profile is not None:
+                    self.hardware.prime_control_profile()
             elif isinstance(action, StopMotion) and self.core.should_stop(action.command_id):
                 self.binding = self.core.binding(action.command_id)
                 self.hardware.stop()

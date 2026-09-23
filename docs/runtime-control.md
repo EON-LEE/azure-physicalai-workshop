@@ -107,6 +107,21 @@ its existing defaults. These settings are source/profile hashed and require
 new measured timing evidence; the probe receipt records the selected profile.
 They are not a synthetic image path or a change to motion/freshness thresholds.
 
+The reviewed control profile selects a 60 Hz physics clock and zero automatic
+rendering timestep so each SDK call takes the documented explicit physics-step
+path, not an unrestricted Kit application update. Every recorded tick requests
+`update_fabric=True` and verifies the real physics index advances exactly one
+and simulation time advances exactly 1/60 s (floating-point tolerance only).
+The sixth tick publishes the resulting sensor state. Reference mode restores
+its original timestep settings.
+
+Before any command admission, the same production/probe scene load performs
+exactly 60 unarmed neutral-hold render ticks, bounded to ten seconds. The full
+warm-up timings are retained separately; they are not control intervals,
+demonstrations or training evidence. Warm-up never repeats until passing and
+does not discard a later armed budget violation. The initial part pose is
+rechecked against the unchanged 1 mm pinned scene tolerance afterward.
+
 * One synchronized observation and nine absolute targets per six actual 60 Hz
   physics ticks; no intermediate targets are dropped or resampled.
 * The identical targets and explicit zero velocity targets are passed to

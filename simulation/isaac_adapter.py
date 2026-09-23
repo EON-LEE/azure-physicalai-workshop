@@ -99,6 +99,7 @@ class IsaacWorkcell:
         self.articulation_kinematics = None
         self.camera_timebases = {}
         self.camera_observation_metadata = None
+        self.control_warmup_timings = []
 
     def load(self, spec: SceneSpec) -> None:
         self._validate_asset_bundle()
@@ -235,6 +236,7 @@ class IsaacWorkcell:
         self.control_mode = "reference"
         self.control_done = True
         self.actuation_guard = None
+        self.world.set_simulation_dt(physics_dt=self.dt, rendering_dt=self.dt)
         self._configure_cameras()
         self._place_part_at_reset()
         self.defect.GetVisibilityAttr().Set(
@@ -301,6 +303,7 @@ class IsaacWorkcell:
         self.control_done = True
         self.policy_executor = None
         self.hold_capture = None
+        self.world.set_simulation_dt(physics_dt=self.dt, rendering_dt=self.dt)
         self._configure_cameras()
         self.target = target_id
         self.phase = 0
@@ -355,6 +358,7 @@ class IsaacWorkcell:
         self.control_binding = core.binding(command.command_id)
         self.control_profile = core.control_profile
         self.control_profile.validate()
+        self.world.set_simulation_dt(physics_dt=self.dt, rendering_dt=0.0)
         self.target = command.target_station_id
         self.route = None
         self.controller = None
@@ -389,6 +393,55 @@ class IsaacWorkcell:
         self.control_next_ns = core.clock_ns()
         self.control_timings = []
         self.world.play()
+
+    def _step_control_physics(self, *, render: bool) -> None:
+        before_index = int(self.world.current_time_step_index)
+        before_time = float(self.world.current_time)
+        self.world.step(render=render, update_fabric=True)
+        if (
+            int(self.world.current_time_step_index) != before_index + 1
+            or abs(float(self.world.current_time) - before_time - self.dt) > 1e-6
+        ):
+            raise RuntimeError("The control tick did not advance exactly one 60 Hz physics step.")
+
+    def prime_control_profile(self) -> None:
+        if self.controller is not None or not self.control_done or self.recording is not None:
+            raise RuntimeError("Control renderer warm-up must occur before motion admission.")
+        previous_mode = self.control_mode
+        self.control_mode = "human_teaching"
+        self.world.set_simulation_dt(physics_dt=self.dt, rendering_dt=0.0)
+        self._configure_cameras()
+        self.control_warmup_timings = []
+        targets = tuple(float(value) for value in self.robot.get_joint_positions())
+        started = time.monotonic()
+        self.world.play()
+        try:
+            for index in range(60):
+                if time.monotonic() - started > 10:
+                    raise RuntimeError(
+                        "Fixed unarmed renderer warm-up exceeded its ten-second bound."
+                    )
+                tick = time.monotonic_ns()
+                self._compensate_gravity()
+                self._issue_command(targets, (0.0,) * 9)
+                self._step_control_physics(render=True)
+                self.steps += 1
+                self.render_monotonic_ns = time.monotonic_ns()
+                self.control_warmup_timings.append(
+                    {
+                        "index": index,
+                        "physics_step": self.steps,
+                        "duration_ms": (self.render_monotonic_ns - tick) / 1_000_000,
+                    }
+                )
+            self.reset_initial_position = self.position()
+            if (
+                self.spec.initial_part_position is not None
+                and dist(self.reset_initial_position, self.spec.part_position) > 0.001
+            ):
+                raise RuntimeError("Unarmed warm-up changed the pinned initial part pose.")
+        finally:
+            self.control_mode = previous_mode
 
     def start_teaching(self, request: TeachingStart, core: SimulationCore, recording=None) -> None:
         self._start_control("human_teaching", request, core, recording)
@@ -558,7 +611,7 @@ class IsaacWorkcell:
                 self._issue_command(self.robot.get_joint_positions(), (0.0,) * 9)
 
             core.apply_guarded(self.control_binding, prepare_cameras)
-            self.world.step(render=True)
+            self._step_control_physics(render=True)
             self.render_monotonic_ns = core.clock_ns()
             self.steps += 1
             self.warmup_steps -= 1
@@ -592,7 +645,7 @@ class IsaacWorkcell:
         physics_ns = core.clock_ns()
         self.interval_phases["actuator_submission_ms"] += (physics_ns - submitted_ns) / 1_000_000
         render = self.hold_offset + 1 == self.control_profile.hold_steps
-        self.world.step(render=render)
+        self._step_control_physics(render=render)
         if render:
             self.render_monotonic_ns = core.clock_ns()
         completed_ns = core.clock_ns()
