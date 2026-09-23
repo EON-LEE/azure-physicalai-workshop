@@ -50,6 +50,22 @@ throughput improvement, new-product inspection certification or real PLC/MES
 connection. Assess those with representative customer inputs and explicit
 baseline measurements.
 
+### Observed reference experiment
+
+On 2026-09-23, four JSON documents downloaded from the deployed public planner
+(baseline/relocated layout, each with normal/defect input) were executed with
+actual Foundry inspection and Isaac Sim on the Azure A10 host. All four completed
+their configured physical targets. For the defect sample, the baseline target
+X=0.22 m produced measured X=0.220234 m; the relocated target X=0.32 m produced
+measured X=0.321228 m, a measured shift of 0.100994 m. The normal route retained
+its original target. Physical execution durations were 11.86-12.63 seconds.
+
+The durable run records, exact downloaded-document revisions, original Blob
+image checksums, model response IDs and measured positions were independently
+checked. This is four concrete reference experiments, not statistical reliability
+evidence or a guarantee for arbitrary customer layouts. The existing recorded
+inspection-mismatch case remains visible; these successes do not erase it.
+
 ## Author a configuration
 
 Start with `examples/inspection-cell.json`. `examples/customer-cell.json` shows
