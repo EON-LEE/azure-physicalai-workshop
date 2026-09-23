@@ -436,6 +436,38 @@ def validate_frame(
             )
 
 
+def verify_episode_images(
+    root: Path,
+    images: dict,
+    *,
+    episode_id: str,
+    index: int,
+    paths: set[str],
+    image_size: tuple[int, int] | None,
+) -> tuple[tuple[int, int], dict[str, bytes]]:
+    payloads = {}
+    for camera, image in images.items():
+        require(
+            isinstance(image, dict) and {"path", "sha256", "width", "height"}.issubset(image),
+            "Missing actual image path/checksum/shape metadata",
+        )
+        expected_path = f"episodes/{episode_id}/{camera}/{index:08d}.png"
+        require(image["path"] == expected_path, "Unexpected/cross-episode image path")
+        image_path = safe_path(root, image["path"])
+        require(image["path"] not in paths, "Reused image path")
+        paths.add(image["path"])
+        require(image_path.stat().st_size <= MAX_PNG_BYTES, "Oversized PNG")
+        data = image_path.read_bytes()
+        require(digest(data) == sha256(image["sha256"]), "Image checksum mismatch")
+        dimensions = png_dimensions(data)
+        require(dimensions == (image["width"], image["height"]), "Image shape mismatch")
+        image_size = image_size or dimensions
+        require(dimensions == image_size, "Camera shapes differ across dataset")
+        payloads[camera] = data
+    require(image_size is not None, "Missing actual camera images")
+    return image_size, payloads
+
+
 def validate_dataset(
     root: Path,
     *,
@@ -542,19 +574,14 @@ def validate_dataset(
                     control_interval_steps=interval,
                     control_profile=profile,
                 )
-                for camera, image in frame["images"].items():
-                    expected_path = f"episodes/{spec.episode_id}/{camera}/{index:08d}.png"
-                    require(image["path"] == expected_path, "Unexpected/cross-episode image path")
-                    image_path = safe_path(root, image["path"])
-                    require(image["path"] not in paths, "Reused image path")
-                    paths.add(image["path"])
-                    require(image_path.stat().st_size <= MAX_PNG_BYTES, "Oversized PNG")
-                    data = image_path.read_bytes()
-                    require(digest(data) == image["sha256"], "Image checksum mismatch")
-                    dimensions = png_dimensions(data)
-                    require(dimensions == (image["width"], image["height"]), "Image shape mismatch")
-                    image_size = image_size or dimensions
-                    require(dimensions == image_size, "Camera shapes differ across dataset")
+                image_size, _ = verify_episode_images(
+                    root,
+                    frame["images"],
+                    episode_id=spec.episode_id,
+                    index=index,
+                    paths=paths,
+                    image_size=image_size,
+                )
                 frames.append(frame)
         require(len(frames) == count, "Missing frames")
         require(frames[-1]["terminated"] or frames[-1]["truncated"], "Unfinished episode")

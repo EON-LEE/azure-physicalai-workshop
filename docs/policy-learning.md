@@ -267,10 +267,31 @@ timeline pause/play/reset and timestamp reminting are not freeze mechanisms.
 The new namespaces are raw/conversion v3, Smol checkpoint/IPC v2,
 paired/bootstrap plan v2, results v3, reports v2 and rollout grant/recording v2.
 They cannot be admitted by the old real-time data/model/IPC/report catalogues.
-The initial shared-types milestone does not by itself implement capture storage,
-model execution, or physical evaluation. Subsequent producers/consumers must
-explicitly wire these contracts; real-time 80/100 ms gates remain blocked, and
-no paused-mode training or quality result is implied by the contract tests.
+`learning.paused.capture.PausedEpisodeWriter` implements the separate raw-v3
+producer. It accepts the real `PausedFrameSample` on its creating simulator
+thread and publishes `manifest.json` **last**, after revalidating all files.
+Frames go to `episodes/<episode_id>/frames.jsonl`; original PNGs go to
+`episodes/<episode_id>/{inspection,overview}/<frame_index>.png`. The manifest
+binds the new profile, frozen criteria/conditions-plan hashes, explicit capture
+purpose and original `PausedEpisodeBudget`. The dataset records simulation-time
+10 Hz cadence separately from variable original UTC/monotonic timestamps.
+Reference demonstrations have null policy timings, not invented zero-latency
+neural calls. Every complete frame has exactly six real controls; failed append
+attempts fault the writer rather than permit retry-until-success.
+
+The matching `validate_dataset` and `assemble_dataset` retain scope, checksum,
+safe-path, image, count and seed/episode split checks. They reject schema/profile/
+criteria/plan/purpose mixtures and extra ground-truth artifacts. Integration
+captures are explicitly TEST-only, reserved integration seeds cannot become
+demonstrations, and `require_demonstrations=True` rejects integration/evaluation
+purposes and truncated episodes. Incomplete streams remain unpublished evidence,
+not usable datasets. Both v1/v2 and v3 reuse the same checked PNG/path verifier;
+the old validator still refuses paused v3.
+
+Capture storage does not by itself execute a model or establish physical quality.
+Subsequent model/IPC/evaluation producers must explicitly consume these contracts;
+real-time 80/100 ms gates remain blocked, and no actual paused training or quality
+result is implied by contract or storage tests.
 
 Preflight reads **the actual separate outbound-rule endpoint** through
 `client.workspace_outbound_rules.list(workspace_name=...)`. The default workspace
