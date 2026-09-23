@@ -1,0 +1,24 @@
+.learning-studio { display: grid; gap: 20px; }
+.learning-boundary { display: flex; align-items: flex-start; gap: 12px; background: #eaf2ff; border: 1px solid #c9ddf6; padding: 19px; border-radius: 8px; color: #345d90; }
+.learning-boundary > div { min-width: 0; flex: 1; }.learning-boundary strong { font-size: 14px; line-height: 1.8; }.learning-boundary p { font-size: 11px; line-height: 1.9; margin-top: 8px; }
+.learning-studio > .panel > .button { margin: 0 20px 20px; }
+.learning-panel-body { padding: 0 20px 20px; min-width: 0; }.learning-panel-body > p, .learning-panel-body > form > p { font-size: 12px; color: #4f698b; line-height: 1.9; margin: 10px 0; }
+.learning-panel-body > label { margin-top: 14px; }.learning-panel-body > select { width: 100%; margin-bottom: 12px; }.learning-panel-body > .button { margin: 10px 0; }
+.learning-workflow-grid, .teaching-cameras { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 18px; }
+.learning-workflow-grid > section { min-width: 0; }.learning-workflow-grid h2 { font-size: 14px; line-height: 1.8; }
+.learning-metadata { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 18px 0; }.learning-metadata > div { min-width: 0; }
+.learning-metadata dd, .learning-panel-body code { overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.learning-project-form { padding-bottom: 20px; }.learning-project-form > .button, .learning-project-form > .form-hint, .learning-project-form > .error-notice { margin-inline: 20px; }
+.learning-form-grid { padding: 0 20px; display: grid; grid-template-columns: 1fr 1fr; gap: 13px; }.learning-form-grid label { min-width: 0; line-height: 1.8; color: #4b6382; font-size: 11px; }.learning-form-grid .wide-field { grid-column: span 2; }
+.learning-form-grid input, .learning-form-grid select { width: 100%; padding: 9px; margin-top: 7px; min-height: 37px; border: 1px solid #c8d5e6; border-radius: 5px; background: #fff; color: #244166; font-size: 12px; }
+.teaching-controls { border: 1px solid #d2e0f1; border-radius: 6px; padding: 17px; margin: 17px 0; background: #f7faff; }.teaching-controls h3 { font-size: 13px; }.teaching-controls p { font-size: 11px; color: #526d8d; line-height: 1.9; margin-top: 9px; }
+.jog-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 15px 0; }.jog-grid .button { min-height: 44px; touch-action: none; user-select: none; }
+.teaching-controls > .small-text { display: block; margin-top: 10px; }.teaching-list > div { padding: 12px 0; border-bottom: 1px solid #e1e8f3; }.teaching-list code { font-size: 10px; }.teaching-list .text-button { margin-left: 8px; }
+.teaching-cameras { margin-top: 15px; }.teaching-cameras .camera-container { min-width: 0; }.teaching-cameras .camera-viewport { aspect-ratio: 4/3; }.teaching-cameras .camera-caption { display: none; }
+.policy-comparison caption { padding: 13px 0; text-align: left; color: #3b5b84; font-size: 12px; }.policy-comparison td { font-variant-numeric: tabular-nums; }.policy-comparison tr { content-visibility: auto; contain-intrinsic-size: auto 50px; }
+.learning-job h3 { font-size: 14px; }.learning-record-row { display: flex; gap: 15px; align-items: center; padding: 12px 0; border-bottom: 1px solid #e5ebf4; font-size: 11px; }.learning-record-row > span:first-child { min-width: 0; flex: 1; }.learning-record-row code, .learning-record-row small { display: block; margin-top: 5px; color: #536d8f; }
+.learning-coach textarea { margin-bottom: 13px; }.learning-studio h2, .learning-studio h3 { scroll-margin-top: 25px; text-wrap: balance; }
+#run-policy-release { width: 100%; min-height: 38px; padding: 8px 10px; border: 1px solid #c8d5e6; border-radius: 5px; color: #29496f; background: #fff; font-size: 12px; }
+@media (max-width: 780px) { .sidebar nav { flex-wrap: wrap; }.sidebar nav .nav-item { flex: 1 1 calc(50% - 4px); min-width: 0; } }
+@media (max-width: 900px) { .learning-workflow-grid { grid-template-columns: 1fr; }.learning-metadata { grid-template-columns: 1fr; } }
+@media (max-width: 560px) { .learning-form-grid, .teaching-cameras { grid-template-columns: 1fr; }.learning-form-grid .wide-field { grid-column: auto; }.learning-boundary { padding: 15px; flex-wrap: wrap; }.learning-boundary .badge { margin-left: 32px; }.jog-grid { grid-template-columns: repeat(2, 1fr); }.learning-panel-body { padding-inline: 15px; }.learning-studio .panel-heading { flex-wrap: wrap; }.learning-record-row { flex-wrap: wrap; } }

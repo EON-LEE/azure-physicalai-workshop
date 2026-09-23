@@ -249,7 +249,43 @@ and styles, without `unsafe-eval` or inline-style allowances.
 Test outputs and the separate `.fixture-dist/` are ignored and must never be
 packaged into the API image.
 
-## Deliberate limits
+## Teaching Studio and versioned policy learning
+
+The protected `/operator?view=learning` view uses the owner-scoped
+[`learning API`](../../docs/learning-api.md). It starts with a capability read;
+disabled, missing license/hardware approval or unconfigured worker dependencies
+produce visible blocked states, not example projects, fake loss or ready models.
+SmolVLA is an explicit model choice. Unapproved GR00T requests are not redirected
+to it; ACT remains separately labeled auxiliary tooling.
+
+The workflow captures actual human versus reference-controller provenance,
+waits for async upload verification, seals immutable datasets, requests
+human-approved paid jobs and shows real Azure job IDs/nullable measured metrics.
+The 20+ case comparison retains every failure and retry, pins environment
+revisions/poses, and distinguishes improvement from completed optimizer work.
+First-P0 bootstrap is visible only to configured bootstrap operators and is a
+reference-controller quality/safety gate, not a fake learned P0/P1 comparison.
+Prepared model dates, model family/source/revision and recorded outcomes remain
+distinct from today's training and LIVE observations.
+
+Teaching controls obtain a short-lived server grant before a held input. They
+do not send browser wall-clock expiry or raw joints. Release/blur/hidden-tab/
+unmount issues a zero-motion hold with a forward sequence, and a late arm
+response cannot issue a movement after release. One held press is one bounded
+5 mm input, not a browser-operated servo loop.
+
+Policy review requires the exact evaluation ETag and passing evidence. Selecting
+the resulting release on Factory Live creates a new plan; it does not
+auto-approve, change a model URL or fall back to reference control. Run details
+show the immutable expected policy and actual applied model/action counters.
+
+The optional public learning disclosure fetches only `GET /api/demo/learning`
+when expanded. Only a deployment-pinned project/evaluation is projected; model
+paths, tenant/owner identity and arbitrary private job history are not published.
+It labels all comparison data as recorded, not LIVE. No trained-policy
+production-readiness claim is made by CPU or fixture browser tests.
+
+### Remaining limits
 
 The HTTP contract does not specify `execution.final_position`'s representation,
 so the console renders that optional value as literal JSON instead of inventing

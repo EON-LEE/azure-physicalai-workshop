@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowUpRight, Blocks, ChevronRight, CircleHelp, Clock3, FileJson2, LayoutDashboard, LogOut, Radio, ShieldCheck } from 'lucide-react';
+import { ArrowUpRight, Blocks, BookOpen, ChevronRight, CircleHelp, Clock3, FileJson2, LayoutDashboard, LogOut, Radio, ShieldCheck } from 'lucide-react';
 import { isTerminal, matchesRuntime, type ConsoleApi, type EnvironmentRecord, type RunRecord } from './api/contracts';
 import { isAbort } from './api/errors';
 import type { SignedInAccount } from './auth/types';
@@ -15,19 +15,24 @@ import { EnvironmentStudio } from './views/EnvironmentStudio';
 import { FactoryLive, type RunDraft } from './views/FactoryLive';
 import { History } from './views/History';
 import type { ActivationState } from './views/RuntimePanel';
+import { TeachingStudio } from './learning/TeachingStudio';
 
-type View = 'live' | 'studio' | 'history';
+type View = 'live' | 'studio' | 'history' | 'learning';
 
 const pages = {
   live: { title: 'Factory Live', subtitle: '물리 시뮬레이터의 관측부터 승인 기반 실행까지.', label: '라이브 운영', icon: LayoutDashboard, number: '01' },
   studio: { title: 'Environment Studio', subtitle: '고객 환경을 JSON으로 구성하고 저장 버전을 관리합니다.', label: '환경 스튜디오', icon: FileJson2, number: '02' },
   history: { title: 'Run History', subtitle: '실제 요청, 에이전트 계획과 물리 실행의 증거를 확인합니다.', label: '실행 기록', icon: Clock3, number: '03' },
+  learning: { title: 'Teaching Studio', subtitle: '직접 시연, 정확한 모델 버전의 실제 학습과 같은 조건의 정책 비교를 연결합니다.', label: '작업 가르치기', icon: BookOpen, number: '04' },
 };
 
 export function ConsoleApp({ api, account, sessionExpired = false }: {
   api: ConsoleApi; account: SignedInAccount; sessionExpired?: boolean;
 }) {
-  const [view, setView] = useState<View>(() => new URLSearchParams(window.location.search).get('view') === 'studio' ? 'studio' : 'live');
+  const [view, setView] = useState<View>(() => {
+    const requested = new URLSearchParams(window.location.search).get('view');
+    return requested === 'studio' || requested === 'history' || requested === 'learning' ? requested : 'live';
+  });
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [studioDraft, setStudioDraft] = useState<StudioDraft | null>(() => {
     if (!new URLSearchParams(window.location.search).has('experiment')) return null;
@@ -37,7 +42,10 @@ export function ConsoleApp({ api, account, sessionExpired = false }: {
       savedText: '', base: null, source: '공개 페이지에서 전달한 고객 공정 실험 초안',
     };
   });
-  const [runDraft, setRunDraft] = useState<RunDraft>(() => ({ instruction: studioDraft ? inspectionTask : '', attempt: null }));
+  const [runDraft, setRunDraft] = useState<RunDraft>(() => ({
+    instruction: studioDraft ? inspectionTask : '', attempt: null,
+    policyReleaseId: new URLSearchParams(window.location.search).get('policy_release_id') ?? '',
+  }));
   const [focusedRun, setFocusedRun] = useState<RunRecord | null>(null);
   const [activation, setActivation] = useState<ActivationState>({ submitting: false, receipt: null, error: null, timedOut: false });
   const [clock, setClock] = useState(Date.now);
@@ -90,6 +98,9 @@ export function ConsoleApp({ api, account, sessionExpired = false }: {
   const navigate = (next: View) => {
     if (next === view) return;
     setView(next);
+    const url = new URL(window.location.href);
+    url.searchParams.set('view', next);
+    window.history.replaceState(null, '', url);
     requestAnimationFrame(() => titleRef.current?.focus());
   };
 
@@ -170,7 +181,7 @@ export function ConsoleApp({ api, account, sessionExpired = false }: {
         {helpOpen && <section className="console-help panel" id="console-help" aria-label="콘솔 사용 안내">
           <strong>환경 저장 → 씬 활성화 → 작업 계획 → 명시적 승인 → 실행 결과 확인</strong>
           <p>Environment Studio에서 참조 템플릿 또는 고객 JSON을 검토하고 저장하세요. LIVE 씬의 버전이 런타임과 일치하면 실제 관측을 요청할 수 있습니다. 승인 전에는 이동하지 않으며, 명령 접수와 취소 요청을 완료로 표시하지 않습니다.</p>
-          <p>라이브 이미지는 Isaac Sim의 인증된 합성 카메라 출력입니다. 재생 대체 모드, 임의 Python 실행, 정책 학습 기능은 제공하지 않습니다. 미저장 JSON은 화면 이동 중 유지되지만 새로고침이나 로그아웃 전에 별도로 보관해야 합니다.</p>
+          <p>라이브 이미지는 Isaac Sim의 인증된 합성 카메라 출력입니다. 임의 Python 실행과 재생 대체 모드는 제공하지 않습니다. Teaching Studio는 별도 통합 검증 후 활성화됩니다. 미저장 JSON은 새로고침이나 로그아웃 전에 보관하세요.</p>
         </section>}
         <ErrorNotice error={environments.error} title="저장된 환경 목록을 확인할 수 없습니다" retry={environments.refresh} />
         {view === 'live' && <ErrorNotice error={runs.error} title="기존 실행 기록을 확인할 수 없습니다" retry={runs.refresh} />}
@@ -182,6 +193,9 @@ export function ConsoleApp({ api, account, sessionExpired = false }: {
           draft={studioDraft} setDraft={setStudioDraft} onSaved={onSaved} />}
         {view === 'history' && <History api={api} runs={runs.data} loading={runs.loading} error={runs.error} refresh={runs.refresh} environments={records}
           runtime={runtime.data} runtimeFresh={runtimeFresh} onRunChange={onRunChange} />}
+        {view === 'learning' && (api.learning && !sessionExpired
+          ? <TeachingStudio api={api.learning} environments={records} consoleApi={api} />
+          : <section className="panel"><p className="inline-note">인증된 학습 API가 연결되지 않았습니다. 익명 학습이나 대체 실행을 사용하지 않습니다.</p></section>)}
         <footer className="page-footer"><span><ShieldCheck size={13} aria-hidden="true" />구성 저장 ≠ 시뮬레이터 검증 ≠ Azure 배포 검증</span>
           <span>런타임 응답 수신: {formatDate(runtime.lastReceivedAt)}{runtime.paused ? ' · 폴링 일시 중지' : ''}</span></footer>
       </main>

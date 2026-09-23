@@ -5,6 +5,7 @@ import type { ConsoleApi, EnvironmentRecord, RunRecord, RuntimeInfo } from '../.
 import { account, environment, environmentSchema, fixtureDocument, FIXTURE_MARKER, pendingRun, runtime } from '../fixtures/data';
 import '../../src/styles.css';
 import './fixture.css';
+import { browserLearning, type LearningTrace } from './learning-fixture';
 
 interface FixtureTrace {
   marker: string;
@@ -16,12 +17,15 @@ interface FixtureTrace {
 declare global {
   interface Window {
     __factoryFixture: FixtureTrace;
+    __learningFixture: LearningTrace;
   }
 }
 
 const trace: FixtureTrace = { marker: FIXTURE_MARKER, calls: [], saves: [], approvals: [] };
 window.__factoryFixture = trace;
 const scenario = new URLSearchParams(window.location.search).get('scenario') ?? 'ready';
+const learningTrace: LearningTrace = { calls: [], inputs: [] };
+window.__learningFixture = learningTrace;
 let activeRuntime: RuntimeInfo = scenario === 'unavailable'
   ? { ...runtime, simulation: { ...runtime.simulation, status: 'unavailable', epoch: null, physics_steps: null, message: 'TEST ONLY: Azure/GPU 런타임에 연결하지 않은 테스트입니다.' } }
   : structuredClone(runtime);
@@ -66,6 +70,7 @@ function call(name: string, signal?: AbortSignal) {
 }
 
 const api: ConsoleApi = {
+  learning: scenario.startsWith('learning') ? browserLearning(learningTrace, scenario !== 'learning-off') : undefined,
   async getRuntime(signal) {
     call('runtime', signal);
     if (activeRuntime.simulation.status === 'loading' && ++activationPolls >= 2) {

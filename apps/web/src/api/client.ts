@@ -5,6 +5,7 @@ import {
   type Camera, type ConsoleApi, type CreateRunInput, type FrameImage, type PublicConfig,
 } from './contracts';
 import { ApiError, AuthenticationRequiredError, isAbort } from './errors';
+import { LearningClient } from '../learning/client';
 
 export type FetchTransport = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 export type TokenProvider = () => Promise<string>;
@@ -99,13 +100,19 @@ async function readPng(response: Response): Promise<Blob> {
 }
 
 export class ApiClient implements ConsoleApi {
+  readonly learning: LearningClient;
   constructor(
     private readonly token: TokenProvider,
     private readonly transport: FetchTransport = fetchTransport,
     private readonly onUnauthorized?: () => void,
-  ) {}
+  ) {
+    this.learning = new LearningClient((path, schema, options = {}) => this.request(
+      path, (response) => decode(response, schema), options.signal, options.body,
+      options.method ?? 'GET', 'application/json', options.etag,
+    ));
+  }
 
-  private async request<T>(path: string, consume: (response: Response) => Promise<T>, signal?: AbortSignal, body?: unknown, method = 'GET', accept = 'application/json'): Promise<T> {
+  private async request<T>(path: string, consume: (response: Response) => Promise<T>, signal?: AbortSignal, body?: unknown, method = 'GET', accept = 'application/json', etag?: string): Promise<T> {
     signal?.throwIfAborted();
     const accessToken = await this.token();
     signal?.throwIfAborted();
@@ -116,6 +123,7 @@ export class ApiClient implements ConsoleApi {
         Accept: accept,
         Authorization: `Bearer ${accessToken}`,
         ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+        ...(etag === undefined ? {} : { 'If-Match': etag }),
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     }, (response) => {

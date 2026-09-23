@@ -15,6 +15,7 @@ import { RuntimePanel, type RuntimeControlsProps } from './RuntimePanel';
 export interface RunDraft {
   instruction: string;
   attempt: CreateRunInput | null;
+  policyReleaseId?: string;
 }
 
 export interface FactoryLiveProps extends RuntimeControlsProps {
@@ -99,11 +100,12 @@ function RunComposer({ api, environment, ready, currentRun, onRunChange, draft, 
     const previous = draft.attempt;
     const input: CreateRunInput = previous &&
       previous.environment_id === environment.environment_id && previous.revision === environment.revision &&
-      previous.instruction === draft.instruction ? previous : {
+      previous.instruction === draft.instruction && previous.policy_release_id === (draft.policyReleaseId?.trim() || undefined) ? previous : {
         request_id: crypto.randomUUID(),
         environment_id: environment.environment_id,
         revision: environment.revision,
         instruction: draft.instruction,
+        ...(draft.policyReleaseId?.trim() ? { policy_release_id: draft.policyReleaseId.trim() } : {}),
       };
     setDraft((value) => ({ ...value, attempt: input }));
     setSubmitting(true);
@@ -131,6 +133,12 @@ function RunComposer({ api, environment, ready, currentRun, onRunChange, draft, 
     <div className="composer-footer"><p id="run-instruction-help"><ShieldCheck size={15} aria-hidden="true" />요청은 계획만 생성합니다. 로봇 이동은 승인 후 시작됩니다.</p>
       <button type="submit" className="button" disabled={!ready || !draft.instruction.trim() || submitting || Boolean(activeRun)}><Send size={15} aria-hidden="true" />{submitting ? '관측·계획 요청 중…' : error && draft.attempt ? '동일 요청 다시 확인' : '관측하고 계획 요청'}</button>
     </div>
+    <details className="trace-details"><summary>검토된 학습 정책 선택 (선택 사항)</summary>
+      <label htmlFor="run-policy-release">정책 release ID · 비우면 기존 reference 제어</label>
+      <input id="run-policy-release" name="policy-release" autoComplete="off" spellCheck={false} disabled={submitting || Boolean(activeRun)} value={draft.policyReleaseId ?? ''}
+        onChange={(event) => { const policyReleaseId = event.target.value; setDraft((value) => ({ ...value, policyReleaseId })); }} />
+      <p className="small-text muted">서버가 소유자·환경·작업·게시된 SHA를 검증합니다. 모델 경로나 미게시 후보를 입력할 수 없고, 실패 시 기존 제어기로 대체하지 않습니다.</p>
+    </details>
     {!ready && <p className="form-hint">LIVE 씬의 저장 버전이 런타임과 일치하고 Foundry 설정이 확인되어야 요청할 수 있습니다.</p>}
     {activeRun && <p className="form-hint">진행 중인 실행이 있습니다. 기존 계획을 검토하거나 취소를 확인한 뒤 새 작업을 요청하세요.</p>}
     {submitting && <div className="inline-note" role="status"><strong>계획 응답을 기다리고 있습니다 · 로봇 이동 없음</strong><p>실행 ID가 수신되면 취소할 수 있습니다. 화면을 나가도 서버에 접수된 요청이 취소되는 것은 아닙니다.</p></div>}

@@ -86,6 +86,17 @@ export function RunDetail({ api, initialRun, runtime, runtimeFresh, environment,
     <div className="run-request"><span className="eyebrow">CUSTOMER INSTRUCTION</span><p>{run.instruction}</p>
       <small>{run.environment_id} · {formatDate(run.created_at)}</small>
     </div>
+    {run.policy && <div className="plan-summary"><strong>검토된 학습 정책 · {run.policy.policy_type}</strong>
+      <dl className="trace-list"><FieldValue label="policy release"><code>{run.policy.policy_release_id}</code></FieldValue>
+        <FieldValue label="승인된 model SHA"><code>{run.policy.model_sha256}</code></FieldValue>
+        <FieldValue label="고정된 운동 작업"><span>{run.policy.instruction}</span></FieldValue></dl>
+      <p className="small-text muted">Foundry는 검사 계획을 제안하며 이 운동 정책을 학습시키거나 대신 제어하지 않습니다.</p>
+    </div>}
+    {run.execution?.policy_runtime && <dl className="execution-receipt">
+      <FieldValue label="실제 적용 model SHA"><code>{run.execution.policy_runtime.applied_model_sha ?? '아직 실제 action 적용 없음'}</code></FieldValue>
+      <FieldValue label="정책 예측 / 적용 action 수">{run.execution.policy_runtime.policy_predict_calls} / {run.execution.policy_runtime.applied_action_count}</FieldValue>
+      <FieldValue label="Reference route 호출 수">{run.execution.policy_runtime.reference_route_calls}</FieldValue>
+    </dl>}
     <ErrorNotice error={resource.error} title="실행 상태 갱신 실패 · 마지막 응답 표시 중" retry={resource.refresh} compact />
     {run.status === 'planning' && <div className="inline-note"><Loading>실제 관측을 바탕으로 Foundry 계획 생성 중…</Loading><p>계획 단계에서는 로봇을 움직이지 않습니다.</p></div>}
     {run.plan && <div className="plan-summary">

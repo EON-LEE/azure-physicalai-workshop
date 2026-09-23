@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { LearningApi } from '../learning/contracts';
 
 // Decode API responses without runtime code generation under the production CSP.
 z.config({ jitless: true });
@@ -73,6 +74,11 @@ export const runSchema = z.object({
   environment_id: id,
   revision: id,
   instruction: z.string(),
+  policy: z.object({
+    policy_release_id: z.uuid(), policy_type: z.enum(['gr00t_n1_5', 'gr00t_n1_7', 'smolvla']),
+    model_sha256: id, processor_sha256: id, manifest_sha256: id,
+    control_profile_id: id, task_id: id, goal_station_id: id, instruction: z.string(),
+  }).nullable().optional(),
   status: runStatusSchema,
   created_at: timestamp,
   updated_at: timestamp,
@@ -92,6 +98,13 @@ export const runSchema = z.object({
     // The HTTP contract does not yet constrain the final_position representation.
     final_position: z.unknown().optional(),
     completed_at: timestamp.nullable().optional(),
+    policy_runtime: z.object({
+      execution_mode: z.literal('learned'), policy_release_id: z.uuid(),
+      policy_type: z.enum(['smolvla', 'gr00t_n1_5', 'gr00t_n1_7']),
+      applied_model_sha: id.nullable(), control_profile_id: id.nullable(),
+      policy_predict_calls: z.number().int().nonnegative(),
+      applied_action_count: z.number().int().nonnegative(), reference_route_calls: z.literal(0),
+    }).nullable().optional(),
   }).nullable(),
   error: z.object({
     code: id,
@@ -120,6 +133,7 @@ export interface CreateRunInput {
   environment_id: string;
   revision: string;
   instruction: string;
+  policy_release_id?: string;
 }
 
 export interface FrameImage {
@@ -130,6 +144,7 @@ export interface FrameImage {
 }
 
 export interface ConsoleApi {
+  readonly learning?: LearningApi;
   getRuntime(signal?: AbortSignal): Promise<RuntimeInfo>;
   getEnvironments(signal?: AbortSignal): Promise<Environments>;
   getEnvironmentSchema(signal?: AbortSignal): Promise<EnvironmentJsonSchema>;

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { ApiError, isAbort } from '../api/errors';
+import { publicLearningSchema } from './learning-contract';
 
 z.config({ jitless: true });
 const timestamp = z.iso.datetime({ offset: true });
@@ -223,9 +224,24 @@ export async function getDemo(signal: AbortSignal): Promise<DemoSnapshot> {
       if (isAbort(error)) throw error;
       throw new ApiError('invalid_snapshot', '공개 시연 정보 형식이 올바르지 않습니다. 다시 확인해 주세요.');
     }
+
     const parsed = demoSchema.safeParse(body);
     if (!parsed.success) throw new ApiError('invalid_snapshot', '공개 시연 정보가 API 계약과 일치하지 않습니다. 다시 확인해 주세요.');
     return parsed.data;
+  });
+}
+
+export async function getPublicLearning(signal: AbortSignal) {
+  return publicRequest('/api/demo/learning', signal, false, async (response) => {
+    let body: unknown;
+    try { body = await response.json(); }
+    catch (error) {
+      if (isAbort(error)) throw error;
+      throw new ApiError('invalid_learning_publication', '게시된 학습 기록 형식이 올바르지 않습니다.');
+    }
+    const result = publicLearningSchema.safeParse(body);
+    if (!result.success) throw new ApiError('invalid_learning_publication', '검증된 학습 기록을 확인할 수 없습니다.');
+    return result.data;
   });
 }
 

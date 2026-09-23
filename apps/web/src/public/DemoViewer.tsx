@@ -9,6 +9,7 @@ import { CameraUnavailable, PublicLiveCamera } from './Media';
 import { DecisionPanel, PhysicalOutcome, PresentationProgress, PublishedCounts } from './PresentationPanels';
 import { formatCount, formatTime, presentationKey, presentationLabels } from './presentation';
 import { CustomerValue, RecordedCases } from './CustomerStory';
+import { LearningPublication } from './LearningPublication';
 import './demo.css';
 
 function initiallyPaused() {
@@ -148,6 +149,7 @@ export function DemoViewer({ loadSnapshot = getDemo }: {
 
       <RecordedCases presentationId={data?.recorded_cases_presentation_id ?? presentation?.id ?? null} />
       <CustomerScenarioPlanner />
+      <LearningPublication />
       <details className="public-verification" id="demo-verification">
         <summary><ShieldCheck size={18} aria-hidden="true" /><span>무엇이 검증되었고, 무엇이 아닌가요?</span><ChevronDown size={17} aria-hidden="true" /></summary>
         <div className="verification-content">
