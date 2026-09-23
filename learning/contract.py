@@ -30,6 +30,7 @@ JOINT_NAMES = tuple(f"panda_joint{i}" for i in range(1, 8)) + (
     "panda_finger_joint2",
 )
 JOINT_UNITS = ("rad",) * 7 + ("m",) * 2
+DEFAULT_JOINT_VELOCITY_LIMITS = (0.5,) * 7 + (0.04, 0.04)
 JOINT_LOWER = (-2.8973, -1.7628, -2.8973, -3.0718, -2.8973, -0.0175, -2.8973, 0.0, 0.0)
 JOINT_UPPER = (2.8973, 1.7628, 2.8973, -0.0698, 2.8973, 3.7525, 2.8973, 0.04, 0.04)
 CAMERAS = ("inspection", "overview")
@@ -256,6 +257,30 @@ def bounded_joints(values: object, label: str) -> tuple[float, ...]:
     return joints
 
 
+def validate_joint_tracking(
+    targets: object,
+    measured: object,
+    previous: object | None,
+    *,
+    fps: int,
+    velocity_limits: tuple[float, ...] = DEFAULT_JOINT_VELOCITY_LIMITS,
+) -> None:
+    requested = bounded_joints(targets, "commanded targets")
+    limits = vector(velocity_limits, 9, "joint velocity limits")
+    for label, reference in (("tracking", measured), ("slew", previous)):
+        if reference is not None:
+            for target, actual, limit in zip(
+                requested,
+                bounded_joints(reference, label),
+                limits,
+                strict=True,
+            ):
+                require(
+                    abs(target - actual) <= limit / fps + 1e-8,
+                    f"Target exceeds the declared {fps}Hz joint {label} limit",
+                )
+
+
 def png_dimensions(data: bytes) -> tuple[int, int]:
     require(isinstance(data, bytes) and len(data) <= MAX_PNG_BYTES, "Invalid/oversized PNG")
     require(data[:8] == b"\x89PNG\r\n\x1a\n", "Camera capture is not a PNG")
@@ -322,6 +347,12 @@ def validate_frame(
     bounded_joints(frame["commanded_joint_targets"], "issued joint targets")
     if control_profile is not None:
         control_profile.validate()
+        validate_joint_tracking(
+            frame["commanded_joint_targets"],
+            frame["joint_positions"],
+            previous["commanded_joint_targets"] if previous is not None else None,
+            fps=control_profile.control_hz,
+        )
         controls = frame["applied_controls"]
         require(
             isinstance(controls, list) and len(controls) == control_profile.hold_steps,

@@ -51,6 +51,17 @@ BINDINGS = {
 }
 
 
+def family_contract(policy_type: str) -> tuple[int, str, dict]:
+    if policy_type == POLICY_TYPE:
+        return ACTION_HORIZON, "gr00t", UPSTREAM
+    if policy_type == "smolvla":
+        from learning.smolvla import ACTION_HORIZON as horizon
+        from learning.smolvla import UPSTREAM as upstream
+
+        return horizon, "smolvla", upstream
+    raise ContractError("Unknown explicitly selected policy family; fallback is forbidden")
+
+
 def make_request(
     observation: PolicyObservation,
     context: ControlContext,
@@ -60,7 +71,9 @@ def make_request(
     task: DemonstrationSource,
     request_id: str,
     sequence: int,
+    policy_type: str = POLICY_TYPE,
 ) -> dict:
+    _, family, _ = family_contract(policy_type)
     token(request_id, "request ID")
     integer(sequence, "IPC sequence")
     sha256(model_sha256, "checkpoint")
@@ -76,8 +89,8 @@ def make_request(
         for name, image in observation.images.items()
     }
     result = {
-        "schema": REQUEST_SCHEMA,
-        "policy_type": POLICY_TYPE,
+        "schema": f"physicalai.{family}-request/v1",
+        "policy_type": policy_type,
         "request_id": request_id,
         "sequence": sequence,
         "model_sha256": model_sha256,
@@ -99,11 +112,13 @@ def validate_request(
     scope: Scope,
     profile: ControlProfile,
     task: DemonstrationSource,
+    policy_type: str = POLICY_TYPE,
 ) -> tuple[PolicyObservation, ControlContext]:
+    _, family, _ = family_contract(policy_type)
     keys(request, BINDINGS | {"schema", "policy_type", "context", "observation"}, "policy request")
     require(
-        request["schema"] == REQUEST_SCHEMA
-        and request["policy_type"] == POLICY_TYPE
+        request["schema"] == f"physicalai.{family}-request/v1"
+        and request["policy_type"] == policy_type
         and request["model_sha256"] == model_sha256
         and request["control_profile_sha256"] == profile.sha256
         and request["task_sha256"] == digest(canonical(task_contract(task))),
@@ -163,13 +178,14 @@ def validate_request(
 
 
 def make_response(request: dict, actions, *, inference_latency_ms: float) -> dict:
-    require(len(actions) == ACTION_HORIZON, "Wrong GR00T chunk length")
+    horizon, family, _ = family_contract(request["policy_type"])
+    require(len(actions) == horizon, "Wrong explicitly selected policy chunk length")
     chunk = [list(bounded_joints(action, "GR00T action")) for action in actions]
     latency = finite(inference_latency_ms, "inference latency")
     require(0 <= latency <= 80, "GR00T inference exceeded approved 80ms budget")
     return {
-        "schema": RESPONSE_SCHEMA,
-        "policy_type": POLICY_TYPE,
+        "schema": f"physicalai.{family}-response/v1",
+        "policy_type": request["policy_type"],
         **{name: request[name] for name in BINDINGS},
         "actions": chunk,
         "inference_latency_ms": latency,
@@ -177,14 +193,15 @@ def make_response(request: dict, actions, *, inference_latency_ms: float) -> dic
 
 
 def validate_response(response: dict, request: dict) -> tuple[tuple[float, ...], ...]:
+    _, family, _ = family_contract(request["policy_type"])
     keys(
         response,
         BINDINGS | {"schema", "policy_type", "actions", "inference_latency_ms"},
         "policy response",
     )
     require(
-        response["schema"] == RESPONSE_SCHEMA
-        and response["policy_type"] == POLICY_TYPE
+        response["schema"] == f"physicalai.{family}-response/v1"
+        and response["policy_type"] == request["policy_type"]
         and all(response[name] == request[name] for name in BINDINGS),
         "Swapped/replayed policy response",
     )
@@ -252,7 +269,10 @@ class SocketChunkPolicy:
         profile: ControlProfile,
         task: DemonstrationSource,
         expected_peer_uid: int | None = None,
+        policy_type: str = POLICY_TYPE,
     ) -> None:
+        self.chunk_size, _, upstream = family_contract(policy_type)
+        self.policy_type = policy_type
         require(
             socket_path.is_absolute()
             and not socket_path.is_symlink()
@@ -270,12 +290,12 @@ class SocketChunkPolicy:
         integer(self.expected_peer_uid, "deployment-approved server UID", 0, 2**32 - 1)
         self.call_deadline_ns: int | None = None
         self.metadata = {
-            "policy_type": POLICY_TYPE,
+            "policy_type": self.policy_type,
             "model_sha256": model_sha256,
             "scope": asdict(scope),
             "control_profile": asdict(profile),
             "task": task_contract(task),
-            "upstream": UPSTREAM,
+            "upstream": upstream,
         }
         self.context: ControlContext | None = None
         self.sequence = 0
@@ -303,6 +323,7 @@ class SocketChunkPolicy:
             task=self.task,
             request_id=str(uuid4()),
             sequence=self.sequence,
+            policy_type=self.policy_type,
         )
         self.sequence += 1
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:

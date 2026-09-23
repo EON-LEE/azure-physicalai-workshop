@@ -136,4 +136,24 @@ def test_gr00t_export_rejects_v1_instead_of_relabeling_60hz(make_capture):
         prepare_export(make_capture(), expected_scope=SCOPE, allow_test_fixture=True)
 
 
+@pytest.mark.parametrize("case", ["arm-tracking", "finger-contact", "target-slew"])
+def test_v2_labels_must_fit_the_same_ten_hz_tracking_and_slew_guard(tmp_path, case):
+    capture = writer(tmp_path / "unsafe-label")
+    value = sample(0)
+    if case == "target-slew":
+        capture.append(value)
+        value = sample(1, terminal=True)
+        targets = (0.1, *JOINTS[1:])
+        value = replace(value, joint_positions=targets)
+    elif case == "arm-tracking":
+        targets = (0.1, *JOINTS[1:])
+    else:
+        targets = (*JOINTS[:7], 0.0, 0.0)
+    controls = tuple(
+        replace(control, commanded_joint_targets=targets) for control in value.applied_controls
+    )
+    with pytest.raises(ContractError, match="tracking|slew"):
+        capture.append(replace(value, commanded_joint_targets=targets, applied_controls=controls))
+
+
 pytest_plugins = ("learning.checks.pytest_fixtures",)

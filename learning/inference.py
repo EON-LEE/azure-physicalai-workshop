@@ -25,6 +25,7 @@ from learning.common import (
 )
 from learning.contract import (
     CAMERAS,
+    DEFAULT_JOINT_VELOCITY_LIMITS,
     JOINT_NAMES,
     JOINT_UNITS,
     CameraSample,
@@ -32,6 +33,7 @@ from learning.contract import (
     bounded_joints,
     png_dimensions,
     timing,
+    validate_joint_tracking,
 )
 from learning.offline import require_lerobot
 from learning.train import MODEL_SCHEMA, TrainOptions
@@ -189,7 +191,7 @@ class ControlContext:
 
 @dataclass(frozen=True)
 class SafetyLimits:
-    max_joint_velocity: tuple[float, ...] = (0.5,) * 7 + (0.04, 0.04)
+    max_joint_velocity: tuple[float, ...] = DEFAULT_JOINT_VELOCITY_LIMITS
     max_observation_age_ms: float = 200.0
     max_inference_latency_ms: float = 80.0
     max_chunk_steps: int = 1
@@ -484,15 +486,13 @@ class GuardedPolicyAdapter:
             self.queue.extend(validated[: self.policy.n_action_steps])
             self.chunk_expires_ns = start + self.interval_ns * self.policy.n_action_steps
         target = self.queue.popleft()
-        for reference in (joints, self.previous_target):
-            if reference is not None:
-                for actual, requested, limit in zip(
-                    reference, target, self.limits.max_joint_velocity, strict=True
-                ):
-                    require(
-                        abs(requested - actual) <= limit / self.policy.fps + 1e-8,
-                        "Policy target exceeds per-tick joint slew/tracking limit",
-                    )
+        validate_joint_tracking(
+            target,
+            joints,
+            self.previous_target,
+            fps=self.policy.fps,
+            velocity_limits=self.limits.max_joint_velocity,
+        )
         end = self.clock_ns()
         latency_ms = (end - start) / 1e6
         require(
