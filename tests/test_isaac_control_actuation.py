@@ -432,3 +432,57 @@ def test_profile_camera_acquires_every_scheduled_render_without_a_second_frequen
     assert cell._configure_cameras()
     assert all(sensor.frequency == -1 for sensor in cell.cameras.values())
     assert not cell._configure_cameras()
+
+
+def test_profile_publishes_sensor_state_on_the_sixth_actual_physics_tick(hardware):
+    cell, core, request, _ = hardware
+    begin(core, request)
+    cell.start_teaching(request, core, Recorder())
+    original = cell.world.step
+    rendered = []
+
+    def step(*, render):
+        rendered.append(render)
+        original(render=render)
+
+    cell.world.step = step
+    for _ in range(6):
+        cell.advance()
+    assert cell.steps == 6
+    assert rendered == [False, False, False, False, False, True]
+
+
+def test_control_trace_measures_render_observation_planning_and_six_physics_ticks(
+    hardware, monkeypatch
+):
+    cell, core, request, clock = hardware
+    begin(core, request)
+    cell.start_teaching(request, core, Recorder())
+    module = sys.modules["simulation.isaac_adapter"]
+    sample = cell._sample_before_command
+    targets = cell._teaching_targets
+
+    def render(*args, **kwargs):
+        clock[1] += 2_000_000
+        return clock[1]
+
+    def observe(*args, **kwargs):
+        clock[1] += 3_000_000
+        return sample(*args, **kwargs)
+
+    def plan(*args, **kwargs):
+        clock[1] += 4_000_000
+        return targets(*args, **kwargs)
+
+    monkeypatch.setattr(module, "observation_barrier", render)
+    monkeypatch.setattr(cell, "_sample_before_command", observe)
+    monkeypatch.setattr(cell, "_teaching_targets", plan)
+    for _ in range(6):
+        cell.advance()
+    timing = cell.control_timings[-1]
+    assert timing["observation_render_ms"] == 2
+    assert timing["observation_read_ms"] == 3
+    assert timing["policy_or_teacher_ms"] == 4
+    assert timing["physics_and_publish_ms"] == 30
+    assert timing["capture_queue_ms"] == 0
+    assert timing["control_cycle_ms"] == 39

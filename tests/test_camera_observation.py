@@ -104,3 +104,70 @@ def test_barrier_cannot_spend_beyond_the_existing_control_budget():
             clock_ns=lambda: clock[0],
             deadline_ns=1_100_000_000,
         )
+
+
+@pytest.mark.parametrize("publish_on_sixth_tick", [False, True])
+def test_nonadvancing_render_cannot_publish_unrendered_physics_but_sixth_tick_can(
+    publish_on_sixth_tick,
+):
+    cameras = {name: camera(0.483333333) for name in ("overview", "inspection")}
+    for sensor in cameras.values():
+        sensor.frame["rendering_frame"] = {
+            "referenceTimeNumerator": 483333333,
+            "referenceTimeDenominator": 1_000_000_000,
+        }
+    clock = [1_000_000_000]
+
+    class World:
+        current_time = 0.483333333
+        current_time_step_index = 29
+
+        def render(self):
+            clock[0] += 1_000_000
+
+        def step(self, *, render):
+            self.current_time_step_index += 1
+            self.current_time += 1 / 60
+            clock[0] += 1_000_000
+            if render:
+                for sensor in cameras.values():
+                    sensor.frame.update(
+                        rendering_time=self.current_time,
+                        rendering_frame={
+                            "referenceTimeNumerator": round(self.current_time * 1_000_000_000),
+                            "referenceTimeDenominator": 1_000_000_000,
+                        },
+                    )
+
+    world = World()
+    observation_barrier(
+        world,
+        cameras,
+        dt=1 / 60,
+        physics_step=27,
+        clock_ns=lambda: clock[0],
+        deadline_ns=1_100_000_000,
+    )
+    for tick in range(6):
+        world.step(render=publish_on_sixth_tick and tick == 5)
+    assert world.current_time_step_index == 35
+    if publish_on_sixth_tick:
+        observation_barrier(
+            world,
+            cameras,
+            dt=1 / 60,
+            physics_step=33,
+            clock_ns=lambda: clock[0],
+            deadline_ns=1_100_000_000,
+        )
+    else:
+        with pytest.raises(ValueError, match="not synchronized"):
+            observation_barrier(
+                world,
+                cameras,
+                dt=1 / 60,
+                physics_step=33,
+                clock_ns=lambda: clock[0],
+                deadline_ns=1_100_000_000,
+            )
+    assert world.current_time_step_index == 35

@@ -114,8 +114,9 @@ from the reference controller:
 
 At each aligned observation boundary, a bounded `World.render()` barrier
 refreshes both sensors without advancing simulation time or the physics index.
-The six subsequent physics ticks do not render again; the next boundary
-produces the next actual observation. Profile cameras acquire every scheduled
+The sixth subsequent physics tick publishes its resulting state to the sensor
+pipeline with rendering enabled; no seventh physics tick is inserted. The next
+boundary verifies that exact state without advancing it. Profile cameras acquire every scheduled
 render rather than applying a second independent frequency decimator.
 The original `dt / 2` camera/physics-time check is unchanged. Barrier work is
 inside, not added to, the 100 ms budget.
@@ -291,6 +292,12 @@ Cartesian/gripper intents through the teaching lease. The explicit scripted
 source can request at most 0.1 m/s task-space goals (human jog goals remain
 0.05 m/s); the same position-hold servo, joint tracking/slew limits and 0.2 m/s
 physical watchdog remain mandatory. No expert joint command bypass exists.
+
+The actual interval trace separates observation rendering, camera/joint reads,
+teacher/model work, actuator submission, the six physics ticks including sensor
+publication, capture queue work and measurement guards. The whole-cycle budget
+remains below 100 ms; a standalone model latency below 80 ms is not sufficient
+when rendering, physics and observation work consume the remaining time.
 
 Receipts use `physicalai.reference-teaching-receipt/v1` and keep physical outcome,
 capture status, actual initial pose, immutable environment revision, task,

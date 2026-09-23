@@ -474,6 +474,15 @@ class IsaacWorkcell:
     def _next_control_interval(self) -> None:
         self.interval_started_ns = self.control_core.clock_ns()
         self.control_next_ns = self.interval_started_ns + 100_000_000
+        self.interval_phases = {
+            "observation_render_ms": 0.0,
+            "observation_read_ms": 0.0,
+            "policy_or_teacher_ms": 0.0,
+            "actuator_submission_ms": 0.0,
+            "physics_and_publish_ms": 0.0,
+            "capture_queue_ms": 0.0,
+            "measurement_guard_ms": 0.0,
+        }
         try:
             self.render_monotonic_ns = observation_barrier(
                 self.world,
@@ -487,8 +496,14 @@ class IsaacWorkcell:
             self.camera_observation_metadata = camera_evidence(
                 self.world, self.cameras, physics_step=self.steps
             ) | {"warmup_steps": self.warmup_steps, "hold_offset": self.hold_offset}
+        rendered_ns = self.control_core.clock_ns()
+        self.interval_phases["observation_render_ms"] = (
+            rendered_ns - self.interval_started_ns
+        ) / 1_000_000
         joints = tuple(float(value) for value in self.robot.get_joint_positions())
         observed = self._sample_before_command(joints)
+        observed_ns = self.control_core.clock_ns()
+        self.interval_phases["observation_read_ms"] = (observed_ns - rendered_ns) / 1_000_000
         if self.control_mode == "learned":
             context = self.control_core.policy_context(self.control_binding)
             observation = PolicyObservation(
@@ -511,9 +526,14 @@ class IsaacWorkcell:
         else:
             targets, self.held_sequence, self.held_expires_ns = self._teaching_targets(joints)
         self.held_targets = validate_position_target(joints, targets, self.issued_targets)
+        planned_ns = self.control_core.clock_ns()
+        self.interval_phases["policy_or_teacher_ms"] = (planned_ns - observed_ns) / 1_000_000
         self.hold_offset = 0
         if self.hold_capture is not None:
             self.hold_capture.begin(replace(observed, commanded_joint_targets=self.held_targets))
+        self.interval_phases["capture_queue_ms"] += (
+            self.control_core.clock_ns() - planned_ns
+        ) / 1_000_000
 
     def _advance_control(self) -> bool:
         core = self.control_core
@@ -550,19 +570,29 @@ class IsaacWorkcell:
             efforts = self._compensate_gravity()
             self._issue_command(targets, (0.0,) * 9)
 
+        submitted_ns = core.clock_ns()
         if self.control_mode == "learned":
             self.policy_executor.apply(
                 self.policy_command, physics_step=self.steps + 1, actuator=submit
             )
         else:
             core.apply_guarded(self.control_binding, lambda: submit(self.held_targets))
-        self.world.step(render=False)
+        physics_ns = core.clock_ns()
+        self.interval_phases["actuator_submission_ms"] += (physics_ns - submitted_ns) / 1_000_000
+        render = self.hold_offset + 1 == self.control_profile.hold_steps
+        self.world.step(render=render)
+        if render:
+            self.render_monotonic_ns = core.clock_ns()
+        completed_ns = core.clock_ns()
+        self.interval_phases["physics_and_publish_ms"] += (completed_ns - physics_ns) / 1_000_000
         self.steps += 1
         self.hold_offset += 1
         if self.hold_capture is not None:
             self.hold_capture.applied(
                 AppliedControl(self.steps, core.clock_ns(), self.held_targets, (0.0,) * 9, efforts)
             )
+        measured_ns = core.clock_ns()
+        self.interval_phases["capture_queue_ms"] += (measured_ns - completed_ns) / 1_000_000
         current = self._measured_tcp()
         joints = tuple(float(value) for value in self.robot.get_joint_positions())
         speed = check_measured_motion(
@@ -576,11 +606,13 @@ class IsaacWorkcell:
         self.last_effector_position = current
         complete = self.task_watchdog.observe(tcp=current, part=self.position(), joints=joints)
         self.grasp_verified = self.task_watchdog.grasp_verified
+        self.interval_phases["measurement_guard_ms"] += (core.clock_ns() - measured_ns) / 1_000_000
         if self.hold_offset == self.control_profile.hold_steps:
             self.control_timings.append(
                 {
                     "observation_step": self.steps - self.control_profile.hold_steps,
                     "completed_step": self.steps,
+                    **self.interval_phases,
                     "control_cycle_ms": (core.clock_ns() - self.interval_started_ns) / 1_000_000,
                     "inference_latency_ms": (
                         self.policy_command.inference_latency_ms
