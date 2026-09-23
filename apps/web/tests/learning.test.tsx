@@ -124,4 +124,13 @@ describe('truthful Korean learning experience', () => {
     expect(api.train).not.toHaveBeenCalled();
     expect(api.release).not.toHaveBeenCalled();
   });
+
+  it('restores only a project returned in the authenticated owner list from a deep link', async () => {
+    const fixture = learningFixture();
+    window.history.replaceState(null, '', `/operator?view=learning&learning_project=${fixture.project.item.id}`);
+    const api = learningApi();
+    render(<TeachingStudio api={api} environments={[]} />);
+    expect(await screen.findByRole('heading', { name: fixture.project.item.display_name })).toBeInTheDocument();
+    expect(screen.getByLabelText('학습 프로젝트', { exact: true })).toHaveValue(fixture.project.item.id);
+  });
 });

@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { BookOpen, Bot, Plus, RefreshCw, ShieldCheck, Upload } from 'lucide-react';
 import type { ConsoleApi, EnvironmentRecord } from '../api/contracts';
 import { usePolling } from '../hooks/usePolling';
@@ -23,6 +23,12 @@ export function TeachingStudio({ api, environments, consoleApi }: {
   const projects = usePolling(list, { active: capability.data?.enabled === true });
   const [selected, setSelected] = useState<Resource<Project> | null>(null);
   const [create, setCreate] = useState(false);
+  useEffect(() => {
+    if (selected || !projects.data) return;
+    const id = new URLSearchParams(window.location.search).get('learning_project');
+    const project = projects.data.items.find((entry) => entry.item.id === id);
+    if (project) setSelected(project);
+  }, [selected, projects.data]);
   return <div className="learning-studio">
     <div className="learning-boundary"><BookOpen size={21} aria-hidden="true" /><div><strong>작업 시연 → 고정 데이터 → 실제 정책 학습 → 같은 시험 → 검토된 정책</strong>
       <p>현재 상용 후보는 SmolVLA입니다. 라이선스가 미확인된 GR00T 요청을 다른 모델로 자동 대체하지 않습니다. 좌표 JSON 변경·Foundry 대화를 학습으로 부르지 않으며 ACT는 보조 경로입니다.</p></div><Badge>{capability.data?.enabled ? '승인된 API 연결' : '기본 비활성'}</Badge></div>
@@ -223,6 +229,8 @@ function ProjectWorkspace({ api, project, consoleApi, environments, coachConfigu
   </>;
 }
 
+const keepTeachingPolling = (value: Resource<Teaching>) => !['ready', 'invalid', 'cancelled', 'blocked'].includes(value.item.status);
+
 function TeachingSessionPanel({ api, session, onChange, consoleApi, environment }: {
   api: LearningApi; session: Resource<Teaching>; onChange(value: Resource<Teaching>): void;
   consoleApi?: ConsoleApi; environment?: EnvironmentRecord;
@@ -232,7 +240,7 @@ function TeachingSessionPanel({ api, session, onChange, consoleApi, environment 
     onChange(value);
     return value;
   }, [api, session.item.id, onChange]);
-  const state = usePolling(load, { intervalMs: 2000, initialData: session });
+  const state = usePolling(load, { intervalMs: 2000, initialData: session, continuePolling: keepTeachingPolling });
   const current = state.data && state.data.item.last_sequence >= session.item.last_sequence ? state.data : session;
   const [error, setError] = useState<unknown>(null);
   const [busy, setBusy] = useState(false);
