@@ -26,7 +26,7 @@ class BlobRegistry:
             raise Problem(
                 422, "invalid_registry_path", "Registry paths must remain owner-relative."
             )
-        return f"learning/{actor.owner_key}/{suffix}"
+        return f"tenants/{actor.tenant_id}/owners/{actor.owner_key}/learning/{suffix}"
 
     def get(self, actor: Principal, suffix: str):
         try:

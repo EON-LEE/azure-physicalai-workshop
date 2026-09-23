@@ -53,7 +53,9 @@ separate; model-use paths reject them rather than silently choosing SmolVLA.
 The installed package's exact `POLICY_TYPE` must match the project.
 
 Each owner has an immutable registered plan approval at
-`learning/<owner>/projects/<project-id>/<kind>-approval.json`. It includes:
+`tenants/<tenant>/owners/<opaque-owner>/learning/projects/<project-id>/<kind>-approval.json`.
+Artifact files use the same tenant/opaque-owner prefix, compatible with native
+identity-based Azure ML datastore scope checks. It includes:
 
 ```json
 {

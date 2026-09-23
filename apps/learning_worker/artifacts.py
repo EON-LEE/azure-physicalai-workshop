@@ -82,6 +82,21 @@ class VerifiedArtifacts:
             )
         now = utcnow()
         artifact_id = uuid5(NAMESPACE_URL, f"{actor.owner_key}:training-parent:{expected_sha}")
+        existing = self.registry.get(actor, f"training-parents/{artifact_id}.json")
+        if existing is not None:
+            original = TrainingParent.model_validate(existing)
+            if (
+                original.owner_key != actor.owner_key
+                or original.model_sha256 != expected_sha
+                or original.policy_type != model["policy_type"]
+                or original.processor_sha256 != model["processor_sha256"]
+            ):
+                raise Problem(
+                    409,
+                    "immutable_registry_conflict",
+                    "The original training-parent registration differs.",
+                )
+            return original
         self.registry.upload(
             actor,
             artifact_id,
@@ -205,10 +220,11 @@ class VerifiedArtifacts:
                 or source.get("task_id") != project.task_id
                 or source.get("instruction") != project.instruction
                 or source.get("goal_id") != project.goal_station_id
-                or profile.get("profile_id", profile.get("id")) != project.control_profile_id
+                or profile.get("profile_id") != project.control_profile_id
                 or episode.get("environment_id") != project.environment_id
                 or episode.get("revision") != project.revision
                 or episode.get("episode_id") != str(receipt.episode_id)
+                or episode.get("frame_count") != receipt.frame_count
             ):
                 raise Problem(
                     409,
