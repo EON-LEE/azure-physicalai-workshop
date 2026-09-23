@@ -44,6 +44,58 @@ The build intentionally has no mutable image defaults. `uv.lock` pins worker
 dependencies separately; no Torch/Isaac packages are mixed into the API runtime.
 This repository change does not deploy the service or assign identities.
 
+### Internal ACA deployment source
+
+[`infra/learning-worker.bicep`](../../infra/learning-worker.bicep) deploys only
+the worker app into an **existing** ACA environment. It consumes an **existing
+dedicated worker UAMI resource ID**, not the API identity that has simulator
+control permissions. The deployment operator must create/verify that separate
+identity before invoking this template. No role assignments, app registrations,
+storage containers, retention rules, AML jobs or GPU resources are created here.
+
+Required parameters are `appName`, `managedEnvironmentId`,
+`workerIdentityResourceId`, `apiPrincipalId` (the one approved API MI **object
+ID**, not its client ID), `entraTenantId`, `workerAudience`, `registryServer`,
+`workerImageRepository`, `workerImageSha256`, and the fixed registry/capture
+storage account URLs and containers. The worker client ID is resolved from
+the existing UAMI. Image assembly always includes `@sha256:`; no mutable tag
+default is provided.
+
+Ingress is internal HTTPS-only (ACA terminates TLS, container port 8080).
+`maxReplicas` is 1; `enabled=false` leaves `minReplicas=0`, while explicitly
+setting `enabled=true` keeps one warm process. This flag does **not** admit a
+model or mean training succeeded. Model and bootstrap lists default to empty
+even when the process is warm. `allowedPolicyTypes` admits only explicit
+`smolvla` values, and only after the separate real artifact/hardware gate.
+The configured caller list is always the singleton API MI principal.
+Startup/readiness/liveness use `/healthz` for **process health only**, not AML,
+Foundry, GPU, model readiness or policy quality.
+
+The parent deployment operator must grant the **worker** identity, at the
+narrowest approved scopes:
+
+| Scope | Required authorization |
+|---|---|
+| Approved AML workspace | AzureML Data Scientist |
+| Approved GPU compute/job UAMI | Managed Identity Operator |
+| Private capture container | Storage Blob Data Reader |
+| Private registry/output containers or approved prefixes | Storage Blob Data Contributor (or reviewed equivalent scoped permissions) |
+| Approved private ACR | AcrPull |
+
+Do not copy the API identity's simulator-control app role to the worker. Verify
+existing private DNS/network paths for AML, ACR and Blob separately. Existing
+raw/registry/output containers and the approved seven-day output-prefix retention
+policy remain parent-owned; this template neither widens nor recreates them.
+Serving a healthy internal endpoint is not evidence that these grants or paths
+work.
+
+Compile and test this source without authentication or resource creation:
+
+```bash
+bicep build infra/learning-worker.bicep --outfile /tmp/learning-worker.json
+python -m pytest tests/test_learning_worker_infra.py -q
+```
+
 ## Durable claims and SDK adapter
 
 `PolicyLearningWorker` wraps the learner-owned closed model registry:
