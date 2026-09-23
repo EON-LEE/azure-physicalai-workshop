@@ -127,6 +127,37 @@ has one active owner/scene at a time; busy or foreign-owned instances return 409
 Saving JSON is not the same as loading it into the physical simulator.
 Replay configurations cannot be activated by this live-runtime API.
 
+### Explicit non-real-time learning configuration
+
+Only the reviewed `inspection-cell-learning-v1` template may include the
+optional root `learning_execution` object:
+
+```json
+{
+  "schema": "physicalai.paused-simulation/v1",
+  "execution_timing": "paused_simulation",
+  "profile_id": "franka-position-hold-10hz-paused-v1",
+  "max_simulation_seconds": 30,
+  "max_wall_seconds": 600
+}
+```
+
+All five fields are required when this closed object is present. Simulation
+seconds must be an integer from 1 through 30 and wall seconds from 1 through
+600; lower explicit customer limits remain binding. No aliases, extra fields,
+implicit defaults, timing-gate overrides or real-time qualification are accepted.
+An absent object preserves the legacy contract and **never** authorizes paused
+execution. `validate_paused_learning_environment` additionally requires an
+explicit opt-in and live physics rather than replay.
+
+This is configuration-only authorization for a separately implemented
+`NON_REALTIME_SIMULATION` profile, not evidence of an activated scene, a trained
+model, successful motion or real-time capability. Existing
+`execution.max_step_seconds` retains its original **wall-time** meaning and
+does not become a 600-second limit. Existing reference/inspection commands and
+their server ceilings are unchanged. New cases use new IDs and content hashes;
+existing saved scenes and frozen evaluation plans are not silently rewritten.
+
 ## Inspection and sorting runs
 
 `POST /api/runs` accepts:

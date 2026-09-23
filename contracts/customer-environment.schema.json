@@ -80,6 +80,19 @@
         }
       }]
     },
+    "learning_execution": {
+      "description": "Explicit NON_REALTIME_SIMULATION opt-in. It does not change legacy execution wall-time limits or authorize a live runtime.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "execution_timing", "profile_id", "max_simulation_seconds", "max_wall_seconds"],
+      "properties": {
+        "schema": {"const": "physicalai.paused-simulation/v1"},
+        "execution_timing": {"const": "paused_simulation"},
+        "profile_id": {"const": "franka-position-hold-10hz-paused-v1"},
+        "max_simulation_seconds": {"type": "integer", "minimum": 1, "maximum": 30},
+        "max_wall_seconds": {"type": "integer", "minimum": 1, "maximum": 600}
+      }
+    },
     "limits": {
       "type": "object",
       "additionalProperties": false,
@@ -94,6 +107,21 @@
       }
     }
   },
+  "allOf": [{
+    "if": {
+      "required": ["learning_execution"],
+      "properties": {"learning_execution": {}}
+    },
+    "then": {
+      "properties": {
+        "scene": {
+          "type": "object",
+          "required": ["template_id"],
+          "properties": {"template_id": {"const": "inspection-cell-learning-v1"}}
+        }
+      }
+    }
+  }],
   "$defs": {
     "identifier": {
       "type": "string",

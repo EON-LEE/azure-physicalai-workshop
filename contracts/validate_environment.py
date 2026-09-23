@@ -135,6 +135,30 @@ def validate_environment(document: object) -> list[Issue]:
     return issues
 
 
+def validate_paused_learning_environment(document: object) -> list[Issue]:
+    issues = validate_environment(document)
+    if issues:
+        return issues
+    assert isinstance(document, dict)
+    if "learning_execution" not in document:
+        return [
+            Issue(
+                "/learning_execution",
+                "paused_execution_required",
+                "Explicit reviewed NON_REALTIME_SIMULATION budgets are required; no fallback.",
+            )
+        ]
+    if document["execution"]["mode"] != "live":
+        return [
+            Issue(
+                "/execution/mode",
+                "paused_live_required",
+                "Paused simulation requires actual live physics; replay is not authorized.",
+            )
+        ]
+    return []
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("environment", type=Path)

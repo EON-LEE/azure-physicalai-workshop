@@ -52,4 +52,38 @@ describe('customer JSON validation', () => {
     expect(expectedRevision(draft, { ...fixtureDocument, environment_id: 'new-customer' })).toBeNull();
     expect(expectedRevision({ ...draft, base: null }, fixtureDocument)).toBeNull();
   });
+
+  const learningExecution = {
+    schema: 'physicalai.paused-simulation/v1',
+    execution_timing: 'paused_simulation',
+    profile_id: 'franka-position-hold-10hz-paused-v1',
+    max_simulation_seconds: 30,
+    max_wall_seconds: 600,
+  };
+  const learningScene = {
+    ...fixtureDocument,
+    scene: { ...fixtureDocument.scene, template_id: 'inspection-cell-learning-v1' },
+  };
+  it('decodes explicit paused-simulation budgets without replacing the legacy wall cap', () => {
+    const raw = JSON.stringify({ ...learningScene, learning_execution: learningExecution }, null, 4);
+    const result = validateDocument(raw, validator);
+    expect(result.issues).toEqual([]);
+    expect(result.document?.learning_execution).toEqual(learningExecution);
+    expect(result.document?.execution).toEqual(fixtureDocument.execution);
+    expect(raw).toContain('"max_wall_seconds": 600');
+  });
+  it.each([
+    { ...learningExecution, max_wall_seconds: 601 },
+    { ...learningExecution, max_simulation_seconds: 31 },
+    { ...learningExecution, profile_id: 'franka-position-hold-10hz-v1' },
+    { ...learningExecution, timing_mode: 'paused_simulation' },
+    { ...learningExecution, real_time_admission: true },
+    { schema: learningExecution.schema },
+  ])('rejects incomplete or unsafe paused-simulation JSON: %j', (learning_execution) => {
+    expect(validateDocument(JSON.stringify({ ...learningScene, learning_execution }), validator).issues.length).toBeGreaterThan(0);
+  });
+  it('does not add a paused default and rejects an opt-in on the legacy reference template', () => {
+    expect(validateDocument(JSON.stringify(fixtureDocument), validator).document).not.toHaveProperty('learning_execution');
+    expect(validateDocument(JSON.stringify({ ...fixtureDocument, learning_execution: learningExecution }), validator).issues.length).toBeGreaterThan(0);
+  });
 });
