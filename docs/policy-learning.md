@@ -237,6 +237,41 @@ UI GET alone cannot ensure unattended cancellation. The pinned SDK's command
 execution timeout does not supply a queue TTL. No scheduler, role, network rule
 or paid job is created by this native change.
 
+### Separate paused-simulation contract
+
+The coordinator froze a new **NON_REALTIME_SIMULATION** regime before new
+collection or model selection. `learning.paused` contains its stdlib-only shared
+types and version constants. Its canonical fields are
+`execution_timing="paused_simulation"` and `real_time_admission=false`; it is not
+a renamed or relaxed real-time release. `PausedControlProfile` requires the new
+`franka-position-hold-10hz-paused-v1` servo fingerprint, actual 60 Hz physics,
+10 Hz **simulation-time** control and six actual held ticks. Frozen limits are
+2,000 ms each for observation, policy and held-tick phases, intersected with
+the **original** 5,000 ms whole interval and 600-second episode wall deadlines.
+The simulation budget is independently at most 1,800 physics steps / 30 seconds.
+Main-thread heartbeat gaps remain at most 2,000 ms; physical slew, tracking,
+0.2 m/s speed and 4 cm goal limits are not relaxed.
+
+`FrozenPolicyObservation` retains the original image/joint wall timestamps and
+native simulation-time numerator/denominator, plus a unique freeze ID, actual
+physics step, control tick, epoch, state revision and profile digest. Its digest
+binds actual PNG checksums and metadata, never evaluator seed/object pose/success
+features. `PausedControlContext` carries original episode, interval and operation
+monotonic deadlines and the simulation-step deadline. `PausedFrameSample`
+requires all six actual `AppliedControl` records, zero velocity targets and
+measured arm-only gravity effort; partial or expired holds are not training
+intervals. A single in-flight worker is necessary so the runtime main thread
+can keep checking cancellation/heartbeat while **withholding physics steps**;
+timeline pause/play/reset and timestamp reminting are not freeze mechanisms.
+
+The new namespaces are raw/conversion v3, Smol checkpoint/IPC v2,
+paired/bootstrap plan v2, results v3, reports v2 and rollout grant/recording v2.
+They cannot be admitted by the old real-time data/model/IPC/report catalogues.
+The initial shared-types milestone does not by itself implement capture storage,
+model execution, or physical evaluation. Subsequent producers/consumers must
+explicitly wire these contracts; real-time 80/100 ms gates remain blocked, and
+no paused-mode training or quality result is implied by the contract tests.
+
 Preflight reads **the actual separate outbound-rule endpoint** through
 `client.workspace_outbound_rules.list(workspace_name=...)`. The default workspace
 GET projection is insufficient. Inactive/missing approved private endpoints
