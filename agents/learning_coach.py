@@ -12,7 +12,7 @@ from openai import OpenAIError
 from pydantic import Field, ValidationError
 
 from apps.api.errors import Problem, unavailable
-from apps.api.learning_models import Frozen
+from apps.api.learning_models import CoachProposal, Frozen
 
 log = logging.getLogger(__name__)
 TOOL_NAME = "propose_learning_step"
@@ -45,21 +45,6 @@ class CoachContext(Frozen):
     dataset_id: UUID | None
     evaluation_conclusion: Literal["improved", "not_improved", "inconclusive"] | None
     approved_release_ids: tuple[UUID, ...]
-
-
-class CoachProposal(Frozen):
-    project_id: UUID
-    action: Literal[
-        "define_task",
-        "review_demonstrations",
-        "propose_training",
-        "explain_evaluation",
-        "select_release",
-    ]
-    summary: str = Field(min_length=1, max_length=2000, pattern=r"\S")
-    dataset_id: UUID | None
-    optimizer_steps: int | None = Field(ge=1, le=100000)
-    selected_release_id: UUID | None
 
 
 def agent_definition(model: str) -> PromptAgentDefinition:

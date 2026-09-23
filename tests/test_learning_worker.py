@@ -1,3 +1,4 @@
+from datetime import timedelta
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -9,6 +10,7 @@ from apps.api.errors import Problem
 from apps.api.learning_gateway import ManagedLearningGateway
 from apps.api.learning_ports import JobSpecification
 from apps.api.learning_service import LearningService
+from apps.api.models import utcnow
 from apps.learning_worker.backend import PolicyLearningWorker
 from apps.learning_worker.main import WorkerSettings, create_worker
 from tests.learning_api_support import learning_setup, seed_project_and_dataset
@@ -140,3 +142,30 @@ def test_worker_specification_rejects_a_different_actor_scope():
     with pytest.raises(Problem) as failure:
         worker._authorize_specification(ACTOR, altered)
     assert failure.value.status == 403
+
+
+def test_registered_worker_plan_cannot_exceed_the_original_authorized_runtime():
+    spec, _ = specification()
+    approval = {
+        "expires_at": (utcnow() + timedelta(hours=2)).isoformat(),
+        "maximum_cost_usd": "10.00",
+        "gpu_hourly_usd": "1.00",
+        "config": {
+            "tenant_id": str(ACTOR.tenant_id),
+            "owner_id": ACTOR.owner_key,
+            "specification_sha256": spec.run.specification_sha256,
+            "inputs": {
+                "demonstrations": {"sha256": spec.dataset.manifest_sha256},
+                "parent_model": {"sha256": spec.baseline.model_sha256},
+            },
+            "parameters": {
+                "max_steps": spec.run.optimizer_steps,
+                "timeout_seconds": spec.project.budget.training_seconds + 1,
+            },
+        },
+    }
+    registry = SimpleNamespace(approved_plan=lambda *_: approval)
+    worker = PolicyLearningWorker(registry, None, uuid4())
+    with pytest.raises(Problem) as failure:
+        worker._configuration(ACTOR, spec)
+    assert failure.value.code == "worker_time_budget"

@@ -14,6 +14,7 @@ from pydantic import BaseModel
 
 from apps.api.errors import Problem, unavailable
 from apps.api.learning_models import (
+    CoachRecord,
     ControlGrant,
     DatasetVersion,
     EvaluationRun,
@@ -43,6 +44,7 @@ LEARNING_MODELS = {
     "mutation": LearningMutation,
     "control_grant": ControlGrant,
     "training_parent": TrainingParent,
+    "coach": CoachRecord,
 }
 LEARNING_MUTABLE = {
     "teaching": {
@@ -76,6 +78,7 @@ LEARNING_MUTABLE = {
     },
     "mutation": {"updated_at", "status", "error_code"},
     "control_grant": {"updated_at", "consumed_by"},
+    "coach": {"updated_at", "status", "proposal", "model_response_id", "error_code", "message"},
 }
 
 
@@ -252,6 +255,10 @@ class CosmosStore:
                 )
             if record.kind == "control_grant" and current.value.consumed_by is not None and changed:
                 raise Problem(409, "teaching_grant_consumed", "A control grant cannot be reused.")
+            if record.kind == "coach" and current.value.status != "planning" and changed:
+                raise Problem(
+                    409, "immutable_learning_record", "A completed coach result cannot be replaced."
+                )
         return self._write(
             owner, f"learning:{record.kind}:{record.id}", f"learning:{record.kind}", record, etag
         )

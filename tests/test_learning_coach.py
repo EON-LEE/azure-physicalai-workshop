@@ -97,3 +97,36 @@ def test_coach_requires_one_actual_response_id_and_one_registered_tool():
     invalid.id = None
     with pytest.raises(Problem):
         extract_proposal(invalid, owner)
+
+
+def test_retried_coach_request_does_not_repeat_a_paid_model_call():
+    from apps.api.learning_models import CoachRequest
+    from apps.api.learning_service import LearningService
+    from tests.learning_api_support import learning_setup, seed_project_and_dataset
+    from tests.runtime_support import ACTOR
+
+    factory, store, jobs, artifacts, catalog, request = learning_setup()
+    project, dataset, _ = seed_project_and_dataset(store, request)
+
+    class Coach:
+        def __init__(self):
+            self.calls = 0
+
+        def propose(self, instruction, context):
+            self.calls += 1
+            return CoachProposal(
+                project_id=context.project_id,
+                action="review_demonstrations",
+                summary="테스트 전용 제안",
+                dataset_id=context.dataset_id,
+                optimizer_steps=None,
+                selected_release_id=None,
+            ), "test-only-response-id"
+
+    coach = Coach()
+    service = LearningService(factory, store, jobs, artifacts, catalog, enabled=True, coach=coach)
+    body = CoachRequest(request_id=uuid4(), instruction="자료를 검토하세요", dataset_id=dataset.id)
+    first = service.coach_proposal(ACTOR, project.value.id, body)
+    retry = service.coach_proposal(ACTOR, project.value.id, body)
+    assert first == retry
+    assert coach.calls == 1

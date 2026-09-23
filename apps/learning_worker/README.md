@@ -72,6 +72,9 @@ input assets, source/model revisions, owner, compute/identity and budget.
 Configuration is registered by an authorized deployment workflow, never uploaded
 by a public browser. Expired/absent approval, missing assets/SDK, unapproved
 license or capacity returns an error before submission.
+The registered complete-job timeout must fit both the project budget and the
+remaining original job authorization; leave time for admission and submission.
+An oversized timeout is rejected, never silently extended or rewritten.
 
 The API's conditional Cosmos claim and the worker's create-only Blob claim
 precede paid submission. An ambiguous request is reconciled by the existing

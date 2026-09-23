@@ -94,6 +94,18 @@ class PolicyLearningWorker:
                 "Approved compute time exceeds the explicit USD ceiling.",
             )
         config = copy.deepcopy(approval["config"])
+        timeout = config.get("parameters", {}).get("timeout_seconds")
+        maximum_duration = (
+            specification.project.budget.training_seconds
+            if specification.run.kind == "training"
+            else specification.project.budget.evaluation_seconds
+        )
+        if type(timeout) is not int or not 0 < timeout <= min(maximum_duration, remaining):
+            raise Problem(
+                422,
+                "worker_time_budget",
+                "The complete Azure job timeout must fit the original remaining authorization.",
+            )
         if (
             config.get("tenant_id") != str(actor.tenant_id)
             or config.get("owner_id") != actor.owner_key

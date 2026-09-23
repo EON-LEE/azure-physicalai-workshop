@@ -576,6 +576,31 @@ class CoachRequest(Approval):
     evaluation_run_id: UUID | None = None
 
 
+class CoachProposal(Frozen):
+    project_id: UUID
+    action: Literal[
+        "define_task",
+        "review_demonstrations",
+        "propose_training",
+        "explain_evaluation",
+        "select_release",
+    ]
+    summary: str = Field(min_length=1, max_length=2000, pattern=r"\S")
+    dataset_id: UUID | None
+    optimizer_steps: int | None = Field(ge=1, le=100000)
+    selected_release_id: UUID | None
+
+
+class CoachRecord(OwnedRecord):
+    kind: Literal["coach"] = "coach"
+    project_id: UUID
+    status: Literal["planning", "recorded", "failed"]
+    model_response_id: str | None = None
+    proposal: CoachProposal | None = None
+    error_code: str | None = None
+    message: str | None = None
+
+
 class PolicyRelease(OwnedRecord):
     kind: Literal["release"] = "release"
     project_id: UUID
@@ -609,6 +634,7 @@ LearningRecord = (
     | LearningMutation
     | ControlGrant
     | TrainingParent
+    | CoachRecord
 )
 
 _TRANSITIONS = {

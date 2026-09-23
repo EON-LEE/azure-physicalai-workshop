@@ -12,6 +12,7 @@ from apps.api.learning_models import (
     TEACHING_TERMINAL,
     ArmTeaching,
     BootstrapReport,
+    CoachRecord,
     ControlGrant,
     CreateDataset,
     CreateProject,
@@ -162,6 +163,10 @@ class LearningService:
     def coach_proposal(self, actor, project_id, body):
         from agents.learning_coach import CoachContext
 
+        digest = operation_hash(project_id, "coach", body)
+        existing = self._existing(actor, "coach", body.request_id, digest)
+        if existing:
+            return self._coach_response(actor, existing)
         project = self.get(actor, "project", project_id).value
         dataset = self.get(actor, "dataset", body.dataset_id).value if body.dataset_id else None
         evaluation = (
@@ -188,14 +193,50 @@ class LearningService:
             else None,
             approved_release_ids=tuple(item.value.id for item in releases),
         )
-        proposal, response_id = self._dependency(
-            self.coach, "Separate Foundry learning coach"
-        ).propose(body.instruction, context)
+        coach = self._dependency(self.coach, "Separate Foundry learning coach")
+        claim = CoachRecord(
+            **metadata(actor, body.request_id, digest),
+            project_id=project_id,
+            status="planning",
+        )
+        stored, first = self._claim(actor, claim)
+        if not first:
+            return self._coach_response(actor, stored)
+        try:
+            proposal, response_id = coach.propose(body.instruction, context)
+        except Problem as exc:
+            self._save(actor, stored, status="failed", error_code=exc.code, message=exc.message)
+            raise
+        recorded = self._save(
+            actor,
+            stored,
+            status="recorded",
+            proposal=proposal,
+            model_response_id=response_id,
+        )
+        return self._coach_response(actor, recorded)
+
+    def _coach_response(self, actor, stored):
+        record = stored.value
+        if record.status == "planning" and (utcnow() - record.created_at).total_seconds() > 150:
+            record = self._save(
+                actor,
+                stored,
+                status="failed",
+                error_code="coach_unconfirmed",
+                message="The original model response was not confirmed; it was not resubmitted.",
+            ).value
+        if record.status != "recorded" or record.proposal is None or not record.model_response_id:
+            raise Problem(
+                409 if record.status == "planning" else 503,
+                record.error_code or "coach_in_progress",
+                record.message or "The original coach request is still awaiting its response.",
+            )
         return {
-            "request_id": str(body.request_id),
-            "model_response_id": response_id,
+            "request_id": str(record.id),
+            "model_response_id": record.model_response_id,
             "authority": "proposal_only",
-            "proposal": proposal.model_dump(mode="json"),
+            "proposal": record.proposal.model_dump(mode="json"),
         }
 
     def _dependency(self, component, name: str):

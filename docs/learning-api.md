@@ -117,6 +117,10 @@ before/after trial and retry, including failures; no post-hoc favorable subset.
 - Release is a separate, explicit human review after artifact and paired-gate
   verification. Foundry can propose/select an already released skill but cannot
   publish its own model, increase limits or approve motion/cost.
+- The learning coach also claims a request durably before its paid Foundry
+  call. Exact retries return the original recorded proposal/response ID.
+  Interrupted responses expire as unconfirmed instead of silently repeating
+  model inference. Its stored proposal remains advice, never approval.
 
 ## Empty-store first-policy bootstrap
 
