@@ -10,6 +10,8 @@ from math import isfinite
 from numbers import Integral, Real
 from pathlib import Path
 
+from simulation.physics_scheduling import CONTROL_PHYSICS_THREADS, PHYSICS_THREAD_SETTING
+
 CONTROL_EXPERIENCE = "isaacsim.exp.base.zero_delay.kit"
 CONTROL_EXPERIENCE_SHA256 = "776a905289b9029d760fdc0d9b9d6e6cb96b20a4a5f00763f8f120ea9f7e0b88"
 
@@ -35,6 +37,7 @@ def sensor_launch_config() -> dict:
         "height": 320,
         "renderer": "RaytracedLighting",
         "disable_viewport_updates": True,
+        "extra_args": [f"--{PHYSICS_THREAD_SETTING}={CONTROL_PHYSICS_THREADS}"],
     }
 
 

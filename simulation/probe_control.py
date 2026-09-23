@@ -405,6 +405,7 @@ def run_probe(args) -> dict:
             },
             "control_intervals": getattr(hardware, "control_timings", []),
             "unarmed_warmup": getattr(hardware, "control_warmup_timings", []),
+            "physics_scheduling": getattr(hardware, "physics_scheduling", {}),
             "camera_observation": getattr(hardware, "camera_observation_metadata", None),
             "probe_completed": (
                 not collecting
@@ -453,6 +454,9 @@ def run_probe(args) -> dict:
                         getattr(hardware, "control_warmup_timings", [])
                         if hardware is not None
                         else []
+                    ),
+                    "physics_scheduling": (
+                        getattr(hardware, "physics_scheduling", {}) if hardware is not None else {}
                     ),
                     "camera_observation": (
                         getattr(hardware, "camera_observation_metadata", None)

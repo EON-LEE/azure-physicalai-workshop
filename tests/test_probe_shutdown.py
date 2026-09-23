@@ -66,6 +66,17 @@ def probe(monkeypatch, tmp_path):
             "observed_initial_pose_m": (0.35, 0.25, 0.2),
             "scene_builder_sha256": "b" * 64,
         },
+        physics_scheduling={
+            "scene_ready": {
+                "schema": "physicalai.cpu-physics-scheduling/v1",
+                "phase": "scene_ready",
+                "setting": "/persistent/physics/numThreads",
+                "requested_num_threads": 0,
+                "observed_num_threads": 0,
+                "physics_device": "cpu",
+                "gpu_dynamics_enabled": False,
+            }
+        },
     )
     module = ModuleType("simulation.isaac_adapter")
     module.IsaacWorkcell = lambda: hardware
@@ -104,6 +115,7 @@ def test_failure_receipt_is_durable_before_close_and_system_exit_cannot_mask_err
     assert at_close[0]["failure_type"] == type(error).__name__
     assert at_close[0]["probe_completed"] is False
     assert at_close[0]["model_weights_loaded"] is False
+    assert at_close[0]["physics_scheduling"]["scene_ready"]["observed_num_threads"] == 0
     assert events.index("fsync") < events.index("close")
 
 
@@ -164,6 +176,7 @@ def test_completed_receipt_is_synced_before_system_exit_and_returns_actual_evide
     assert at_close[0] == json.loads(json.dumps(result))
     assert result["probe_completed"] is True
     assert result["physical_task_success"] is False
+    assert result["physics_scheduling"]["scene_ready"]["physics_device"] == "cpu"
     assert events.index("fsync") < events.index("close")
 
 

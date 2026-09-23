@@ -53,6 +53,7 @@ from simulation.motion import (
     move_toward,
     rotate_toward,
 )
+from simulation.physics_scheduling import physics_scheduling_readback, require_control_scheduling
 from simulation.policy_executor import PolicyExecutor
 from simulation.runtime_contracts import PolicyCommand, TeachingStart
 
@@ -100,6 +101,7 @@ class IsaacWorkcell:
         self.camera_timebases = {}
         self.camera_observation_metadata = None
         self.control_warmup_timings = []
+        self.physics_scheduling = {}
 
     def load(self, spec: SceneSpec) -> None:
         self._validate_asset_bundle()
@@ -352,6 +354,7 @@ class IsaacWorkcell:
     def _start_control(self, mode, command, core: SimulationCore, recording) -> None:
         if core.control_profile is None:
             raise RuntimeError("The aligned control profile has not been enabled.")
+        self._check_control_scheduling("command_start")
         self.control_mode, self.control_done = mode, False
         self.control_succeeded = False
         self.control_core = core
@@ -395,6 +398,7 @@ class IsaacWorkcell:
         self.world.play()
 
     def _step_control_physics(self, *, render: bool) -> None:
+        self._check_control_scheduling("before_physics_tick")
         before_index = int(self.world.current_time_step_index)
         before_time = float(self.world.current_time)
         self.world.step(render=render, update_fabric=True)
@@ -404,9 +408,19 @@ class IsaacWorkcell:
         ):
             raise RuntimeError("The control tick did not advance exactly one 60 Hz physics step.")
 
+    def _check_control_scheduling(self, phase: str) -> None:
+        import carb
+
+        observed = physics_scheduling_readback(
+            carb.settings.get_settings(), phase=phase, context=self.world.get_physics_context()
+        )
+        self.physics_scheduling[phase] = observed
+        require_control_scheduling(observed)
+
     def prime_control_profile(self) -> None:
         if self.controller is not None or not self.control_done or self.recording is not None:
             raise RuntimeError("Control renderer warm-up must occur before motion admission.")
+        self._check_control_scheduling("scene_ready")
         previous_mode = self.control_mode
         self.control_mode = "human_teaching"
         self.world.set_simulation_dt(physics_dt=self.dt, rendering_dt=0.0)
@@ -440,6 +454,7 @@ class IsaacWorkcell:
                 and dist(self.reset_initial_position, self.spec.part_position) > 0.001
             ):
                 raise RuntimeError("Unarmed warm-up changed the pinned initial part pose.")
+            self._check_control_scheduling("warmup_complete")
         finally:
             self.control_mode = previous_mode
 
@@ -524,8 +539,8 @@ class IsaacWorkcell:
             targets[7:] = move_toward(tuple(joints[7:]), fingers, 0.025 / profile.control_hz)
         return tuple(targets), intent.sequence, intent.expires_at_monotonic_ns
 
-    def _next_control_interval(self) -> None:
-        self.interval_started_ns = self.control_core.clock_ns()
+    def _next_control_interval(self, *, started_ns: int) -> None:
+        self.interval_started_ns = started_ns
         self.control_next_ns = self.interval_started_ns + 100_000_000
         self.interval_phases = {
             "observation_render_ms": 0.0,
@@ -604,6 +619,8 @@ class IsaacWorkcell:
         core = self.control_core
         if not core.actuation_allowed(self.control_binding):
             raise RuntimeError("The control command is no longer active.")
+        tick_started_ns = core.clock_ns()
+        self._check_control_scheduling("before_control_tick")
         if self.warmup_steps:
 
             def prepare_cameras():
@@ -621,7 +638,7 @@ class IsaacWorkcell:
                 return False
             if len(self.control_timings) >= 3000:
                 raise RuntimeError("The bounded control-interval retention budget was exhausted.")
-            self._next_control_interval()
+            self._next_control_interval(started_ns=tick_started_ns)
         efforts = None
 
         def submit(targets):

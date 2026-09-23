@@ -110,8 +110,9 @@ def test_a_mechanics_fixture_never_becomes_a_task_or_model_learning_success():
 
 
 @pytest.mark.parametrize("sensor_only", [False, True])
+@pytest.mark.parametrize("observed_threads", [0, 8])
 def test_isaac_launch_preserves_reference_defaults_and_explicitly_selects_control_profile(
-    monkeypatch, sensor_only
+    monkeypatch, sensor_only, observed_threads, caplog
 ):
     from simulation import run_isaac
 
@@ -119,6 +120,17 @@ def test_isaac_launch_preserves_reference_defaults_and_explicitly_selects_contro
 
     configs = []
     experiences = []
+    setting_reads = []
+    closed = []
+
+    def read_setting(path):
+        setting_reads.append(path)
+        assert path == "/persistent/physics/numThreads"
+        return observed_threads
+
+    carb = ModuleType("carb")
+    carb.settings = SimpleNamespace(get_settings=lambda: SimpleNamespace(get=read_setting))
+    monkeypatch.setitem(sys.modules, "carb", carb)
     monkeypatch.setattr(
         run_isaac,
         "control_experience_path",
@@ -133,7 +145,8 @@ def test_isaac_launch_preserves_reference_defaults_and_explicitly_selects_contro
             experiences.append(experience)
 
         def close(self):
-            pass
+            closed.append(True)
+            raise SystemExit(0)
 
     isaac.SimulationApp = Application
     omni = ModuleType("omni")
@@ -152,8 +165,16 @@ def test_isaac_launch_preserves_reference_defaults_and_explicitly_selects_contro
         ("omni.kit.app", app),
     ):
         monkeypatch.setitem(sys.modules, name, module)
+    if sensor_only and observed_threads != 0:
+        with pytest.raises(RuntimeError, match="numThreads"):
+            create_simulation_app(sensor_only=True)
+        assert closed == [True]
+        assert "numThreads" in caplog.text
+        return
     create_simulation_app(sensor_only=sensor_only)
+    assert closed == []
     if sensor_only:
+        assert setting_reads == ["/persistent/physics/numThreads"]
         assert experiences == ["/reviewed/isaacsim.exp.base.zero_delay.kit"]
         assert configs == [
             {
@@ -162,8 +183,10 @@ def test_isaac_launch_preserves_reference_defaults_and_explicitly_selects_contro
                 "height": 320,
                 "renderer": "RaytracedLighting",
                 "disable_viewport_updates": True,
+                "extra_args": ["--/persistent/physics/numThreads=0"],
             }
         ]
     else:
+        assert setting_reads == []
         assert experiences == [None]
         assert configs == [{"headless": True, "width": 1280, "height": 720}]

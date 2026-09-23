@@ -15,6 +15,7 @@ from test_teaching_runtime import teaching as teaching
 
 from learning.contract import CameraSample, FrameSample, Scope
 from learning.inference import ControlContext, GuardedPolicyAdapter, PolicyObservation
+from simulation.physics_scheduling import PHYSICS_THREAD_SETTING
 from simulation.policy_executor import PolicyExecutor
 
 
@@ -40,6 +41,7 @@ class Action:
 @pytest.fixture
 def hardware(teaching, monkeypatch):
     core, request, clock = teaching
+    settings_values = {PHYSICS_THREAD_SETTING: 0}
 
     class RMP:
         def __init__(self, **kwargs):
@@ -63,6 +65,11 @@ def hardware(teaching, monkeypatch):
             return Array([0.35, 0.25, 0.3]), [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
 
     modules = {
+        "carb": {
+            "settings": SimpleNamespace(
+                get_settings=lambda: SimpleNamespace(get=settings_values.get)
+            ),
+        },
         "numpy": {
             "array": Array,
             "zeros": lambda size: Array([0.0] * size),
@@ -106,6 +113,7 @@ def hardware(teaching, monkeypatch):
         },
     )
     cell = adapter.IsaacWorkcell()
+    cell.test_settings_values = settings_values
     joints = Array([0.0, 0.0, 0.0, -1.57, 0.0, 1.57, 0.0, 0.02, 0.02])
 
     class Robot:
@@ -142,6 +150,9 @@ def hardware(teaching, monkeypatch):
 
         def set_simulation_dt(self, *, physics_dt, rendering_dt):
             self.physics_dt, self.rendering_dt = physics_dt, rendering_dt
+
+        def get_physics_context(self):
+            return SimpleNamespace(device="cpu", is_gpu_dynamics_enabled=lambda: False)
 
         def is_playing(self):
             return self.playing
@@ -520,3 +531,47 @@ def test_fixed_unarmed_warmup_is_bounded_and_never_claims_control_intervals(hard
     assert cell.controller is None
     assert cell.recording is None
     assert all(tuple(action.joint_velocities) == (0.0,) * 9 for action in cell.robot.actions)
+
+
+def test_world_override_of_control_thread_count_fails_before_unarmed_or_armed_actuation(hardware):
+    cell, core, request, _ = hardware
+    cell.test_settings_values[PHYSICS_THREAD_SETTING] = 8
+    with pytest.raises(RuntimeError, match="numThreads"):
+        cell.prime_control_profile()
+    assert cell.robot.actions == []
+    assert cell.world.fabric_flags == []
+    assert cell.physics_scheduling["scene_ready"]["observed_num_threads"] == 8
+    begin(core, request)
+    with pytest.raises(RuntimeError, match="numThreads"):
+        cell.start_teaching(request, core, Recorder())
+    assert cell.robot.actions == []
+
+
+def test_thread_setting_drift_is_detected_before_the_next_control_tick(hardware):
+    cell, core, request, _ = hardware
+    begin(core, request)
+    cell.start_teaching(request, core, Recorder())
+    cell.advance()
+    count = len(cell.robot.actions)
+    cell.test_settings_values[PHYSICS_THREAD_SETTING] = 8
+    with pytest.raises(RuntimeError, match="numThreads"):
+        cell.advance()
+    assert len(cell.robot.actions) == count
+    assert cell.steps == 1
+
+
+def test_scheduling_readback_time_remains_inside_the_original_control_budget(hardware, monkeypatch):
+    cell, core, request, clock = hardware
+    begin(core, request)
+    cell.start_teaching(request, core, Recorder())
+    check = cell._check_control_scheduling
+
+    def observed(phase):
+        if phase == "before_control_tick":
+            clock[1] += 10_000_000
+        check(phase)
+
+    monkeypatch.setattr(cell, "_check_control_scheduling", observed)
+    for _ in range(6):
+        cell.advance()
+    assert cell.control_timings[-1]["control_cycle_ms"] == 90

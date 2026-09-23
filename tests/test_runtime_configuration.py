@@ -82,6 +82,24 @@ def test_model_specific_timing_cannot_be_replaced_by_servo_only_proof(evidence):
         configuration.load_control_profile(path, file_digest(path), expected_model_sha256="b" * 64)
 
 
+def test_actual_cpu_scheduling_implementation_is_part_of_the_immutable_servo_digest(monkeypatch):
+    files = []
+
+    def file_digest(path):
+        files.append(path.name)
+        return "a" * 64
+
+    monkeypatch.setattr(configuration, "file_digest", file_digest)
+    before = configuration.servo_profile_sha256()
+    assert "physics_scheduling.py" in files
+    monkeypatch.setattr(
+        configuration,
+        "file_digest",
+        lambda path: ("b" if path.name == "physics_scheduling.py" else "a") * 64,
+    )
+    assert configuration.servo_profile_sha256() != before
+
+
 def test_release_catalogue_binds_model_task_owner_and_explicit_environment_cases(
     evidence, teaching
 ):

@@ -1,5 +1,6 @@
 """Azure GPU entry point. CPU tests never import or emulate the Isaac SDK here."""
 
+import json
 import logging
 import os
 import threading
@@ -28,6 +29,7 @@ from simulation.demonstrations import Demonstration
 from simulation.extensions import SceneRegistry
 from simulation.health import HEARTBEAT
 from simulation.http import BridgeSettings, create_bridge_app
+from simulation.physics_scheduling import physics_scheduling_readback, require_control_scheduling
 from simulation.policy_executor import PolicyExecutor
 from simulation.runtime_configuration import load_deployment
 from simulation.runtime_contracts import CaptureBinding, CommandBinding
@@ -291,8 +293,20 @@ def create_simulation_app(*, sensor_only: bool = False):
             manager.set_extension_enabled_immediate(extension, True)
             if not manager.is_extension_enabled(extension):
                 raise RuntimeError(f"Required simulator extension did not load: {extension}")
+        if sensor_only:
+            import carb
+
+            observed = physics_scheduling_readback(
+                carb.settings.get_settings(), phase="application_ready"
+            )
+            log.info("PHYSICALAI_CPU_PHYSICS_STARTUP %s", json.dumps(observed, sort_keys=True))
+            require_control_scheduling(observed)
     except RuntimeError:
-        simulation_app.close()
+        log.exception("Isaac startup failed before control admission")
+        try:
+            simulation_app.close()
+        except SystemExit:
+            log.error("Isaac cleanup requested process exit after a rejected startup")
         raise
     return simulation_app
 

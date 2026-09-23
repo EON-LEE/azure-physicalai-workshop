@@ -133,6 +133,66 @@ demonstrations or training evidence. Warm-up never repeats until passing and
 does not discard a later armed budget violation. The initial part pose is
 rechecked against the unchanged 1 mm pinned scene tolerance afterward.
 
+### CPU scheduling candidate (not GPU-validated)
+
+The Isaac **6.0** Performance Optimization Handbook, Physics Simulation
+Optimizations item 5, documents a default PhysX worker count of eight and
+`--/persistent/physics/numThreads=0` as synchronous execution on the main thread
+for simple **CPU** scenes. This is distinct from the application-wide
+`limit_cpu_threads`/Carbonite/TBB limits; those are not changed here.
+
+The existing workcell calls `World(...)` without a device or `sim_params`
+override. The official v6.0.0 `SimulationContext` defaults select the NumPy/CPU
+path, and `PhysicsContext` does not override the thread count unless a
+`worker_thread_count` is provided. No earlier repository launch supplied that
+setting. **The historical live thread count was not recorded**, so the
+documented default is not proof that failed attempt 09 actually used eight
+threads. Its maximum 124.622 ms whole cycle remains a failure, dominated in
+the observed trace by render work; no scheduling speedup is established.
+
+The unexecuted candidate adds only this launch argument to the existing
+control-only sensor configuration:
+
+```python
+extra_args = ["--/persistent/physics/numThreads=0"]
+```
+
+The normal reference-only launch remains unchanged. No solver, physics device,
+timestep, collider, gravity, speed, sensor, OS governor or safety setting is
+modified. Both production control and the isolated probe use the same launch.
+If the actual scene is not CPU physics, the candidate is rejected rather than
+switching devices or GPU dynamics to make it apply.
+
+`physics_scheduling.py` reads the actual Carbonite value after app startup and
+again with the actual `World.get_physics_context()` at scene readiness,
+before unarmed warm-up, at command start and before control/physics ticks.
+Unknown values, `8`, booleans, string/float zeroes, non-CPU devices or enabled
+GPU dynamics fail explicitly; there is no assumed-zero fallback or live
+repair of an ignored launch option. A bounded latest-per-phase
+`physics_scheduling` map is retained in success **and failure** probe receipts,
+including the requested value, observed value, CPU device and GPU-dynamics
+readback. The scheduling source is included in `servo_profile_sha256`, so
+prior failed captures, timing attestations and models cannot qualify this
+new profile. Readback/guard work stays inside the original whole-cycle timer;
+it is not subtracted to improve reported latency. A rejected startup is logged
+and cannot be turned into success by a teardown-only `SystemExit(0)`.
+
+Only a separately authorized immutable-image GPU run can establish whether
+this default-path candidate improves scheduling jitter. It must still pass
+the complete 100-interval, two-camera, six-actual-tick, under-100-ms control
+gate and the existing 80 ms inference budget; a configuration/readback test
+does not meet those gates. If retained or future evidence shows the previous
+process already used zero, this is not a new optimization and must not be
+represented as one.
+
+Primary references:
+
+* [Isaac 6.0 Performance Optimization Handbook](https://docs.isaacsim.omniverse.nvidia.com/6.0.0/reference_material/sim_performance_optimization_handbook.html#physics-simulation-optimizations)
+* [Omni Physics CPU thread-count guidance](https://docs.omniverse.nvidia.com/kit/docs/omni_physics/latest/dev_guide/guides/physics-performance.html#physics-thread-count)
+* [Isaac v6.0.0 SimulationContext defaults](https://github.com/isaac-sim/IsaacSim/blob/v6.0.0/source/deprecated/isaacsim.core.api/python/impl/simulation_context/simulation_context.py)
+* [Isaac v6.0.0 PhysicsContext CPU and thread-setting behavior](https://github.com/isaac-sim/IsaacSim/blob/v6.0.0/source/deprecated/isaacsim.core.api/python/impl/physics_context/physics_context.py)
+* [Isaac v6.0.0 SimulationApp `extra_args` handling](https://github.com/isaac-sim/IsaacSim/blob/v6.0.0/source/extensions/isaacsim.simulation_app/isaacsim/simulation_app/simulation_app.py)
+
 * One synchronized observation and nine absolute targets per six actual 60 Hz
   physics ticks; no intermediate targets are dropped or resampled.
 * The identical targets and explicit zero velocity targets are passed to

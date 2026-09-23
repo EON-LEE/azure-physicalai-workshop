@@ -34,6 +34,7 @@ def servo_profile_sha256() -> str:
                 for name in (
                     "isaac_adapter.py",
                     "camera_observation.py",
+                    "physics_scheduling.py",
                     "control.py",
                     "motion.py",
                     "policy_executor.py",
