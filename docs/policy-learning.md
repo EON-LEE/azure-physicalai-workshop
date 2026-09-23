@@ -270,6 +270,93 @@ an explicit failure proof and exit nonzero. Even a fast successful diagnostic
 cannot authorize model training, physical execution or latency admission; the
 real-profile/data and complete control-cycle gates are unchanged.
 
+The single authorized run `policy-smol-vendor-compat-20260923-01` completed on
+the existing A100 compute. Its independently retrieved **5,973-byte** private
+proof has SHA-256
+`87a4f617cc1f4ef3f31f2eef94d41feb6dc5cd702b6df1e8021b988794f6c92f`.
+The dependency/code image digest is `8a8cd51f...`, while the separately supplied,
+checksum-verified diagnostic harness is
+`bd13b2f25508dede8c8063bce0e00669e2382fc9fa28495fc79b4de4401d5f0e`
+from commit `c45693d`; the proof records both identities rather than claiming the
+harness was baked into the image.
+
+| Actual vendor-only measurement | Result |
+| --- | --- |
+| Device / runtime | A100 80GB PCIe, driver 580.95.05, PyTorch 2.7.1+cu126, CUDA 12.6 |
+| Real parameters loaded | 450,046,176 |
+| Model load | 6.335 seconds |
+| Peak allocated / reserved CUDA bytes | 972,632,576 / 1,004,535,808 |
+| Three finite native output shapes | `[1, 50, 6]` |
+| Cold / two warm end-to-end native calls | 544.000 / 247.963 / 247.832 ms |
+| Optimizer / actuator calls | 0 / 0 |
+
+This is a **vendor-weight/runtime compatibility pass and a prospective synchronous
+performance blocker**, not an 80 ms admission pass. Three timing samples do not
+establish a latency distribution. The measured interval includes preprocessing,
+native forward, unnormalization and synchronization, but excludes real cameras,
+PNG decoding, IPC, Isaac physics and common watchdogs. It cannot be divided by
+the 50 predicted actions to claim a valid one-action-per-fresh-observation
+controller rate.
+
+#### Pinned-code latency analysis; no optimization is enabled
+
+The actual published configuration uses ten denoising steps, a 50-action horizon,
+three input cameras resized internally to 512 x 512, prefix caching enabled,
+`use_amp=false`, and compile/RTC disabled. In the pinned
+[`VLAFlowMatching.sample_actions`](https://github.com/huggingface/lerobot/blob/8fff0fde7c79f23a93d845d1a50e985de01f8b8a/src/lerobot/policies/smolvla/modeling_smolvla.py),
+vision/language/state prefix processing and its KV cache occur once per call,
+followed by ten sequential action-expert denoising passes.
+[`SmolVLMWithExpertModel`](https://github.com/huggingface/lerobot/blob/8fff0fde7c79f23a93d845d1a50e985de01f8b8a/src/lerobot/policies/smolvla/smolvlm_with_expert.py)
+selects custom eager attention and explicitly computes its Q/K attention and
+softmax in float32. Merely enabling a generic SDPA/FlashAttention setting does
+not replace that custom attention implementation.
+
+The constructor loads the VLM with bfloat16, while other modules and explicit
+casts may use other dtypes. The diagnostic proof does not contain a per-module
+dtype histogram, stage timings or a CUDA kernel timeline: it would be incorrect
+to assert that all weights executed in one dtype, that preprocessing dominated,
+or that kernel-launch overhead explains the measured 248 ms.
+
+The first optimization candidate is a separately approved **same-precision**
+`torch.compile(..., mode="reduce-overhead")` experiment on the native sampling
+call, with the exact same weights, inputs, denoising count, horizon, camera
+count/resolution and precision flags. PyTorch documents potential Python/CUDA
+launch-overhead reductions via CUDA graphs, but not guaranteed speedups;
+static-shape/memory and graph-break constraints must be measured. The upstream
+`compile_model=True` convenience path also calls
+`torch.set_float32_matmul_precision("high")`, so it is **not** a pure unchanged-
+precision switch. Do not silently enable it and attribute any change only to
+compilation. BF16 autocast, TF32/high matmul precision and alternative attention
+kernels are separately declared numerical changes requiring fixed-noise output
+comparisons and eventual real policy/safety evaluation.
+
+One proposed follow-up diagnostic (not authorized or run by this documentation)
+keeps one existing GPU, at most 600 execution seconds, a 1,800-second allocation
+deadline and no retry. It would collect actual parameter/activation dtypes and
+precision flags, a bounded CPU/CUDA profiler trace with separate preprocessing,
+image encoding, prefix-cache, ten expert steps and postprocessing regions, and
+uninstrumented baseline versus same-precision compiled calls. Compile time is
+bounded and reported separately; graph breaks, eager fallback and capture failures
+remain explicit. Fixed input/noise comparisons must retain finite `[1,50,6]`
+outputs and disclose max/mean error before any speedup is considered. A speedup
+would still not admit the real nine-DOF/two-camera/Isaac controller.
+
+Official [asynchronous inference](https://github.com/huggingface/lerobot/blob/8fff0fde7c79f23a93d845d1a50e985de01f8b8a/docs/source/async.mdx)
+and [real-time chunking](https://github.com/huggingface/lerobot/blob/8fff0fde7c79f23a93d845d1a50e985de01f8b8a/docs/source/rtc.mdx)
+do exist. They are **different control semantics**, not an escape from the
+current one-action freshness/deadline rules. Adopting them requires a new
+versioned control profile and operator authority covering queue horizon,
+observation age, predicted/consumed step alignment, cancellation/scene/owner
+invalidation, underflow/late-result handling, per-tick safety and any RTC guidance.
+It also requires explicit data/profile compatibility review and new complete
+held-out physical evaluation. Existing manifests, timing attestations or releases
+cannot be relabeled; the current 80 ms inference and 100 ms cycle guards remain.
+
+References: [PyTorch 2.7 compile modes](https://docs.pytorch.org/docs/2.7/generated/torch.compile.html),
+[CUDA graph constraints](https://docs.pytorch.org/docs/2.7/torch.compiler_cudagraph_trees.html),
+[profiler measurement overhead](https://docs.pytorch.org/docs/2.7/profiler.html),
+and [float32 matmul precision](https://docs.pytorch.org/docs/2.7/generated/torch.set_float32_matmul_precision.html).
+
 ### Physical evidence producer: runtime execution, not an AML gate job
 
 `learning.smolvla.components compare/bootstrap` **does not execute physics**.
