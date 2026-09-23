@@ -20,6 +20,8 @@ from apps.api.models import (
     PresentationMotion,
     PresentationRecord,
     Principal,
+    PublicDemoCase,
+    PublicDemoCases,
     PublicPresentation,
     RunRecord,
     SimulationStatus,
@@ -56,18 +58,20 @@ class PublicDemo:
 
     def _scope(
         self,
+        settings: Settings | None = None,
     ) -> tuple[Principal, list[EnvironmentRecord], PresentationRecord | None, RunRecord | None]:
-        paired = self.settings.public_demo_presentation_id is not None
-        actor, environments = publication(self.settings, self.service, paired=paired)
+        settings = self.settings if settings is None else settings
+        paired = settings.public_demo_presentation_id is not None
+        actor, environments = publication(settings, self.service, paired=paired)
         record = None
         run = None
         if paired:
             stored = self.service.store.get_presentation(
-                actor.owner_key, self.settings.public_demo_presentation_id
+                actor.owner_key, settings.public_demo_presentation_id
             )
             if stored is not None:
                 record = PresentationRecord.model_validate(stored.value.model_dump())
-                validate_record(record, self.settings, actor)
+                validate_record(record, settings, actor)
                 if record.run_id is not None:
                     saved_run = self.service.store.get_run(actor.owner_key, record.run_id)
                     # A preparing/inspecting record can precede the first run write.
@@ -93,6 +97,150 @@ class PublicDemo:
         if record is None:
             return None
         return record.id, record.cycle, record.scene_epoch, record.run_id
+
+    def _recorded_cases(
+        self,
+    ) -> tuple[Principal, PresentationRecord | None, list[tuple[PublicDemoCase, RunRecord]]]:
+        settings = self.settings
+        if settings.public_demo_cases_presentation_id:
+            settings = settings.model_copy(
+                update={"public_demo_presentation_id": settings.public_demo_cases_presentation_id}
+            )
+        actor, environments, record, _ = self._scope(settings)
+        cases: list[tuple[PublicDemoCase, RunRecord]] = []
+        if record is None:
+            return actor, record, cases
+        selected = set()
+        for outcome in record.outcomes:
+            if outcome.result.status == "succeeded":
+                kind = "normal_route" if outcome.cycle % 2 else "defect_route"
+            elif outcome.result.message == (
+                "Inspection disagreed with the reference evaluation; motion was not authorized."
+            ):
+                kind = "withheld"
+            else:
+                continue
+            if kind in selected:
+                continue
+            saved = self.service.store.get_run(actor.owner_key, outcome.run_id)
+            if saved is None or saved.value.plan is None or saved.value.evidence is None:
+                raise Problem(503, "public_case_missing", "Recorded reference evidence is missing.")
+            run = saved.value
+            # Outcomes bind exact run IDs; historical validation must not use today's cycle/epoch.
+            historical = record.model_copy(
+                update={
+                    "cycle": outcome.cycle,
+                    "run_id": outcome.run_id,
+                    "scene_epoch": run.evidence.epoch,
+                }
+            )
+            environment = environments[(outcome.cycle - 1) % 2]
+            validate_run(historical, run, environment)
+            if result_for(historical, run) != outcome.result:
+                raise Problem(
+                    503, "public_case_changed", "Recorded result does not match its evidence."
+                )
+            approvals = [event for event in run.events if event.kind == "approved"]
+            authorized = bool(approvals)
+            duration = None
+            if kind == "withheld":
+                if authorized or run.execution is not None:
+                    raise Problem(
+                        503, "public_case_changed", "Withheld motion evidence is inconsistent."
+                    )
+            else:
+                if len(approvals) != 1 or run.execution is None:
+                    raise Problem(
+                        503, "public_case_changed", "Recorded motion authorization is missing."
+                    )
+                duration = (outcome.result.completed_at - approvals[0].at).total_seconds()
+            target = next(
+                station["position_m"]
+                for station in environment.document["stations"]
+                if station["id"] == run.plan.target_station_id
+            )
+            cases.append(
+                (
+                    PublicDemoCase(
+                        kind=kind,
+                        cycle=outcome.cycle,
+                        scenario=slot(record, outcome.cycle)[2],
+                        classification=run.plan.classification,
+                        summary=run.plan.summary,
+                        target_station_id=run.plan.target_station_id,
+                        target_position_m=target,
+                        observation_id=run.evidence.observation_id,
+                        captured_at=run.evidence.captured_at,
+                        motion_authorized=authorized,
+                        physical_duration_seconds=duration,
+                        result=outcome.result,
+                    ),
+                    run,
+                )
+            )
+            selected.add(kind)
+            if len(cases) == 3:
+                break
+        return actor, record, cases
+
+    def cases(self) -> dict:
+        with self._lock:
+            if not self.settings.public_demo_publish_live or not (
+                self.settings.public_demo_presentation_id
+            ):
+                return PublicDemoCases(presentation_id=None).model_dump(mode="json")
+            try:
+                _, record, cases = self._recorded_cases()
+                return PublicDemoCases(
+                    presentation_id=record.id if record else None,
+                    cases=[case for case, _ in cases],
+                ).model_dump(mode="json")
+            except (Problem, ValidationError) as exc:
+                raise Problem(
+                    503, "public_cases_unavailable", "Recorded reference cases are unavailable."
+                ) from exc
+
+    def case_evidence(self, presentation_id: str, observation_id: UUID) -> tuple[bytes, RunRecord]:
+        with self._lock:
+            selected_id = (
+                self.settings.public_demo_cases_presentation_id
+                or self.settings.public_demo_presentation_id
+            )
+            if presentation_id != selected_id:
+                raise Problem(409, "public_case_changed", "The reference publication changed.")
+            try:
+                actor, record, cases = self._recorded_cases()
+                match = next(
+                    ((case, run) for case, run in cases if case.observation_id == observation_id),
+                    None,
+                )
+                if record is None or match is None:
+                    raise Problem(
+                        409, "public_case_changed", "That reference case is not published."
+                    )
+                case, run = match
+                image = self.service.evidence(actor, run.id)
+                _, latest_record, latest_cases = self._recorded_cases()
+                if (
+                    latest_record is None
+                    or latest_record.id != presentation_id
+                    or not any(
+                        latest_case == case and latest_run.evidence == run.evidence
+                        for latest_case, latest_run in latest_cases
+                    )
+                ):
+                    raise Problem(409, "public_case_changed", "The recorded case changed.")
+                return image, run
+            except (Problem, ValidationError) as exc:
+                if (
+                    isinstance(exc, Problem)
+                    and exc.code == "public_case_changed"
+                    and exc.status == 409
+                ):
+                    raise
+                raise Problem(
+                    503, "public_cases_unavailable", "Recorded reference evidence is unavailable."
+                ) from exc
 
     def _current(
         self,
@@ -385,6 +533,12 @@ class PublicDemo:
                 },
                 "simulation": simulation,
                 "presentation": presentation,
+                "recorded_cases_presentation_id": (
+                    self.settings.public_demo_cases_presentation_id
+                    or self.settings.public_demo_presentation_id
+                )
+                if self.settings.public_demo_publish_live
+                else None,
                 "agent": {
                     "provider": "microsoft_foundry",
                     "connectivity": "verified" if verified_at is not None else "configured",

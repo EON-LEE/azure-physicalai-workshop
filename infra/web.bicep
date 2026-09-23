@@ -16,6 +16,7 @@ param publicDemoRevision string = ''
 param publicDemoDefectEnvironmentId string = ''
 param publicDemoDefectRevision string = ''
 param publicDemoPresentationId string = ''
+param publicDemoCasesPresentationId string = ''
 
 resource web 'Microsoft.App/containerApps@2025-07-01' = {
   name: appName
@@ -60,6 +61,9 @@ resource web 'Microsoft.App/containerApps@2025-07-01' = {
             { name: 'PUBLIC_DEMO_DEFECT_ENVIRONMENT_ID', value: publicDemoDefectEnvironmentId }
             { name: 'PUBLIC_DEMO_DEFECT_REVISION', value: publicDemoDefectRevision }
             { name: 'PUBLIC_DEMO_PRESENTATION_ID', value: publicDemoPresentationId }
+          ] : [])
+          ...(publicDemoPublishLive && !empty(publicDemoCasesPresentationId) ? [
+            { name: 'PUBLIC_DEMO_CASES_PRESENTATION_ID', value: publicDemoCasesPresentationId }
           ] : [])
         ]
         probes: [

@@ -3,7 +3,52 @@
 The current contract describes **one inspection-and-sorting cell**, not an
 arbitrary factory. JSON validation, the browser editor, and reviewed Python
 scene-builder interfaces are implemented. Actual Azure/GPU execution is not
-verified yet.
+implied by a valid configuration: the deployed reference cell has actual
+Azure/Isaac/Foundry evidence, but a new customer layout still needs its own
+physical run.
+
+## Guided customer experiment
+
+The public page's **내 공정 실험** section authors a local, downloadable configuration,
+without calling an operator API. It has two bounded experiments:
+
+- **Inspection and sorting:** use the reference layout and select a uniform green
+  part or the explicit surface-defect fixture.
+- **Relocate quarantine:** change only the rejected station's X coordinate from
+  0.22 m to 0.32 m. Other station coordinates, workflow roles, 0.2 m/s maximum
+  requested speed, 30-second task deadline and 2000 ms observation-age bound remain
+  unchanged.
+
+The sample selector configures the synthetic scene's seed (42 or 43), not the
+model's answer. Foundry still receives the actual image and generic inspection
+task, never the expected label or seed.
+
+**운영자에게 이 실험 전달** navigates to
+`/operator?view=studio&experiment=relocate-quarantine&sample=surface_defect`.
+Only these known experiment/sample values survive the MSAL login round trip.
+The authenticated console opens the same unsaved JSON draft and supplies an
+editable inspection task. It does not save, activate, plan or approve on navigation.
+An unknown experiment is an explicit error, not permission to execute another task.
+
+The operator then:
+
+1. Reviews the JSON, checks or changes its customer environment ID, and saves it.
+2. Activates that exact saved revision after coordinating the shared simulator.
+3. Requests an actual image-based plan and reviews its original image, reason and
+   target. A wrong plan must not be approved.
+4. Explicitly approves the plan, then checks the measured final position and
+   execution result against the requested target.
+
+Generated IDs are separate from the published reference anchors. Reusing an
+existing ID encounters the normal optimistic-concurrency guard; it does not
+overwrite a previous configuration unconditionally. The planner inside
+Environment Studio also asks before replacing unsaved JSON.
+
+This is a way to test a line-layout assumption before moving a real tray, not a
+claim that any customer geometry is reachable. The demo has no automatic ROI,
+throughput improvement, new-product inspection certification or real PLC/MES
+connection. Assess those with representative customer inputs and explicit
+baseline measurements.
 
 ## Author a configuration
 

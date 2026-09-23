@@ -351,6 +351,29 @@ class PublicPresentation(Model):
     counts: PresentationCounts
 
 
+class PublicDemoCase(Model):
+    kind: Literal["normal_route", "defect_route", "withheld"]
+    cycle: int = Field(ge=1, le=1000)
+    scenario: Literal["normal", "surface_defect"]
+    classification: Literal["accepted", "rejected"]
+    summary: str
+    target_station_id: Identifier
+    target_position_m: Position
+    observation_id: UUID
+    captured_at: AwareDatetime
+    image_url: Literal["/api/demo/cases/evidence"] = "/api/demo/cases/evidence"
+    motion_authorized: bool
+    physical_duration_seconds: float | None = Field(default=None, ge=0, le=30)
+    result: PresentationResult
+
+
+class PublicDemoCases(Model):
+    api_version: Literal["public-demo-cases-v1"] = "public-demo-cases-v1"
+    source: Literal["recorded_reference_runs"] = "recorded_reference_runs"
+    presentation_id: Identifier | None
+    cases: list[PublicDemoCase] = Field(default_factory=list, max_length=3)
+
+
 class MotionCommand(Model):
     command_id: UUID
     environment_id: Identifier

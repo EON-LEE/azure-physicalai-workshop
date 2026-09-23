@@ -11,6 +11,19 @@ async function flush() {
 }
 
 describe('approval and confirmed run transitions', () => {
+  it('exposes the configured goal and actual measured pose without adopting a different saved revision', async () => {
+    const run = { ...succeededRun, execution: { ...succeededRun.execution!, final_position: [0.22, -0.38, 0.2] } };
+    const api = makeApi({ getRun: vi.fn().mockResolvedValue(run) });
+    const { rerender } = render(<RunDetail api={api} initialRun={run} runtime={runtime} runtimeFresh environment={environment} />);
+    await flush();
+    const comparison = within(screen.getByRole('region', { name: '고객 공정 실험 위치 비교' }));
+    expect(comparison.getByText('시뮬레이터의 최종 측정 좌표')).toBeInTheDocument();
+    expect(comparison.getAllByText('(0.22, -0.38, 0.2) m').length).toBeGreaterThan(0);
+    rerender(<RunDetail api={api} initialRun={run} runtime={runtime} runtimeFresh environment={{ ...environment, revision: 'different-revision' }} />);
+    expect(comparison.getByText('실행 시점의 저장 버전·목표 좌표 확인 필요')).toBeInTheDocument();
+    expect(api.approveRun).not.toHaveBeenCalled();
+  });
+
   it('shows a pending plan without auto-approving or fabricating completion', async () => {
     vi.useFakeTimers();
     const api = makeApi({ getRun: vi.fn().mockResolvedValue(pendingRun) });

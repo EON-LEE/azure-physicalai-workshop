@@ -1,11 +1,13 @@
 import { expect, test, type Page } from '@playwright/test';
+import { readFile } from 'node:fs/promises';
 import type { DemoSnapshot } from '../../src/public/api';
-import { epoch, makePresentation, makeSnapshot, nextEpoch, referenceSnapshot } from '../fixtures/public';
+import { epoch, makePresentation, makeSnapshot, nextEpoch, recordedCases, referenceSnapshot } from '../fixtures/public';
 
 async function fixturePage(page: Page, readSnapshot: () => DemoSnapshot, options: { wrongEpoch?: boolean; wrongEvidence?: boolean } = {}) {
   const requests: Array<{ method: string; path: string; authorization?: string }> = [];
   const errors: string[] = [];
   let servedSnapshot = readSnapshot();
+  const records = recordedCases();
   const png = await page.evaluate(() => {
     const canvas = document.createElement('canvas');
     canvas.width = 1280;
@@ -61,6 +63,17 @@ async function fixturePage(page: Page, readSnapshot: () => DemoSnapshot, options
       servedSnapshot = readSnapshot();
       return route.fulfill({ json: servedSnapshot, headers: { 'Cache-Control': 'no-store' } });
     }
+    if (url.pathname === '/api/demo/cases') return route.fulfill({ json: records });
+    if (url.pathname === '/api/demo/cases/evidence') {
+      const item = records.cases.find(value => value.observation_id === url.searchParams.get('observation_id'));
+      if (!item || !records.presentation_id || url.searchParams.get('presentation_id') !== records.presentation_id) {
+        return route.fulfill({ status: 409, json: { error: { code: 'public_case_changed', message: 'TEST ONLY: different publication' } } });
+      }
+      return route.fulfill({
+        body: Buffer.from(png, 'base64'), contentType: 'image/png',
+        headers: { 'X-Frame-Id': item.observation_id, 'X-Captured-At': item.captured_at, 'X-Presentation-Id': records.presentation_id },
+      });
+    }
     const decision = servedSnapshot.presentation?.decision;
     if (url.pathname === '/api/demo/frame') {
       const now = new Date().toISOString();
@@ -106,6 +119,33 @@ test('production public entry shows same-cycle evidence and live state without a
   expect(requests.some((item) => /msal-|OperatorEntry-/.test(item.path))).toBe(false);
   expect(errors).toEqual([]);
   await page.screenshot({ path: 'test-results/public-moving-TEST-FIXTURE-not-azure.png', fullPage: true });
+});
+
+test('customer can compare recorded business outcomes and download a real experiment without controlling the robot', async ({ page }) => {
+  const { requests, errors } = await fixturePage(page, () => makeSnapshot({ presentation: makePresentation({ status: 'failed' }) }));
+  await page.goto('/?viewing=paused');
+  await expect(page.getByRole('heading', { name: '알림이 아니라 작업 완료' })).toBeVisible();
+  await page.getByRole('button', { name: '실제 실행 기록 3가지 비교' }).click();
+  await expect(page.getByText('정상 트레이 도착 측정됨')).toBeVisible();
+  await expect(page.getByText('격리 트레이 도착 측정됨')).toBeVisible();
+  await expect(page.getByText('검사 불일치 · 이동 승인 및 실행 없음')).toBeVisible();
+  await expect(page.getByText('LIVE · 실제 카메라 수신')).toHaveCount(0);
+  await page.getByRole('radio', { name: /격리 트레이를 10 cm/ }).check();
+  await page.getByRole('radio', { name: /표면 결함 표식/ }).check();
+  const downloadPromise = page.waitForEvent('download');
+  await page.getByRole('link', { name: '환경 JSON 다운로드' }).click();
+  const download = await downloadPromise;
+  const path = await download.path();
+  if (!path) throw new Error('The local JSON download did not complete');
+  const document = JSON.parse(await readFile(path, 'utf8'));
+  expect(document.stations.find((station: { role: string }) => station.role === 'rejected').position_m).toEqual([0.32, -0.38, 0.2]);
+  expect(document.scene.seed).toBe(43);
+  expect(document.execution.max_step_seconds).toBe(30);
+  await expect(page.getByRole('link', { name: '운영자에게 이 실험 전달' })).toHaveAttribute('href', '/operator?view=studio&experiment=relocate-quarantine&sample=surface_defect');
+  expect(requests.filter(item => item.path.startsWith('/api/')).every(item => item.method === 'GET' && !item.authorization)).toBe(true);
+  expect(errors).toEqual([]);
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
 
 test('pause is keyboard accessible and stops viewing requests, not a robot command', async ({ page }) => {

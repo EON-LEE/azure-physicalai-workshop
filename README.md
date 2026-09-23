@@ -39,6 +39,34 @@ read-only public demonstration. `/operator` retains authenticated editing,
 approval, motion and private data. This is not an anonymous authentication bypass.
 There is no memory-store fallback, stock camera frame, or automatic replay mode.
 
+## What a customer can do with this demo
+
+The customer problem is **inspection followed by physical sorting**, not simply
+"make a robot move" or "ask an image model whether a part looks defective."
+The reference connects an inspection decision to a bounded robot action and then
+checks whether the part actually reached the configured destination.
+
+| Customer question | What to do | What constitutes evidence |
+|---|---|---|
+| Can visual inspection change the physical handling of a part? | Watch the normal and marked-defect cases; compare their original images and actual Foundry reasons. | Different planned trays and measured final positions, not a generated explanation or dispatch acknowledgment. |
+| What changes when my quarantine location moves? | In **내 공정 실험**, select the 10 cm quarantine-location experiment and a synthetic sample; download the resulting JSON or hand it to the operator. | After authenticated save, activation, planning and approval, compare the new target with the measured destination. Draft generation alone is not a successful experiment. |
+| What happens when the model's decision is wrong? | Open **실제 실행 기록 3가지 비교** and inspect a withheld case, when one exists. | The original image, mismatched classification and absence of approved motion. The reference uses known synthetic ground truth; it is not a universal production fault detector. |
+
+Visitors can prepare configurations without login; they cannot save server data,
+call Foundry or dispatch motion. The operator link opens the exact unsaved draft
+in Environment Studio after Entra login. Existing drafts require confirmation
+before replacement, and saving never automatically activates or approves a run.
+The public presentation and operator experiments share a GPU and must be scheduled
+by the operator; no parallel simulator capacity is implied.
+
+The comparison cards read at most three curated outcomes from the explicitly
+published presentation. They remain labeled **recorded evidence, not LIVE** when
+the live run has ended; a missing case stays missing. Real customer defect
+distributions, camera/lighting variation, cycle-time baselines, throughput,
+escape/false-reject rates, MES/PLC integration and physical safety require a
+separate customer PoC. No ROI, trained-policy performance, arbitrary robot task
+support or always-on availability is claimed.
+
 ## What exists
 
 ```text

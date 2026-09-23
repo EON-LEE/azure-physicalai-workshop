@@ -31,6 +31,7 @@ const account = {
 };
 
 beforeEach(() => {
+  window.history.replaceState(null, '', '/operator');
   sdk.initialize.mockResolvedValue(undefined);
   sdk.handleRedirectPromise.mockResolvedValue(null);
   sdk.getAllAccounts.mockReturnValue([account]);
@@ -42,6 +43,25 @@ beforeEach(() => {
 });
 
 describe('small MSAL redirect adapter', () => {
+  it('preserves only the bounded customer experiment through the login round trip', async () => {
+    window.history.replaceState(null, '', '/operator?view=studio&experiment=relocate-quarantine&sample=surface_defect&return=https://untrusted.invalid');
+    await createMsalAuth(config).signIn();
+    const request = sdk.loginRedirect.mock.calls[0]?.[0];
+    expect(request.state).toBe('physicalai-experiment:experiment=relocate-quarantine&sample=surface_defect');
+    window.history.replaceState(null, '', '/operator');
+    sdk.handleRedirectPromise.mockResolvedValue({ account, state: request.state });
+    await createMsalAuth(config).initialize();
+    expect(window.location.pathname).toBe('/operator');
+    expect(window.location.search).toBe('?view=studio&experiment=relocate-quarantine&sample=surface_defect');
+    expect(sdk.acquireTokenSilent).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unsupported experiment instead of redirecting to an arbitrary target', async () => {
+    sdk.handleRedirectPromise.mockResolvedValue({ account, state: 'physicalai-experiment:experiment=https://untrusted.invalid' });
+    await expect(createMsalAuth(config).initialize()).rejects.toThrow('지원하지 않는 실험 링크');
+    expect(window.location.pathname).toBe('/operator');
+  });
+
   it('uses only tenant/client/scope from bootstrap and a same-origin redirect URI', async () => {
     const adapter = createMsalAuth(config);
     await adapter.initialize();

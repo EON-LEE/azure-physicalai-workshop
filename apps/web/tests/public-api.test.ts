@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { demoSchema, getDemo, getDemoEvidence, getDemoFrame } from '../src/public/api';
-import { epoch, makePresentation, makeSnapshot, nextEpoch, observationId, referenceSnapshot } from './fixtures/public';
+import { demoSchema, getDemo, getDemoCaseEvidence, getDemoEvidence, getDemoFrame } from '../src/public/api';
+import { epoch, makePresentation, makeSnapshot, nextEpoch, observationId, recordedCases, referenceSnapshot } from './fixtures/public';
 import { pngBytes } from './fixtures/data';
 
 afterEach(() => vi.unstubAllGlobals());
@@ -52,6 +52,22 @@ describe('frozen public presentation contract', () => {
 });
 
 describe('anonymous same-cycle public images', () => {
+  it('binds recorded PNGs to the publication, observation and original timestamp without live-age substitution', async () => {
+    const data = recordedCases();
+    const item = data.cases[0]!;
+    const headers = {
+      'Content-Type': 'image/png', 'X-Frame-Id': item.observation_id,
+      'X-Captured-At': item.captured_at, 'X-Presentation-Id': data.presentation_id!,
+    };
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(new Response(pngBytes, { headers }))
+      .mockResolvedValueOnce(new Response(pngBytes, { headers: { ...headers, 'X-Presentation-Id': 'wrong-presentation' } }));
+    vi.stubGlobal('fetch', fetch);
+    await expect(getDemoCaseEvidence(data.presentation_id!, item, signal())).resolves.toMatchObject({ capturedAt: item.captured_at });
+    expect(fetch.mock.calls[0]?.[1]).toMatchObject({ method: 'GET', credentials: 'omit', cache: 'no-store', redirect: 'error' });
+    await expect(getDemoCaseEvidence(data.presentation_id!, item, signal())).rejects.toMatchObject({ code: 'evidence_changed', status: 409 });
+  });
+
   it('fetches only the allowlisted live URL with the snapshot epoch and validates real metadata', async () => {
     const fetch = vi.fn().mockResolvedValue(new Response(pngBytes, { headers: imageHeaders() }));
     vi.stubGlobal('fetch', fetch);

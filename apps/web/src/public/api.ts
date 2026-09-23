@@ -18,6 +18,14 @@ const decisionSchema = z.object({
   captured_at: timestamp,
   image_url: z.literal('/api/demo/evidence'),
 });
+const resultSchema = z.object({
+  status: z.enum(['succeeded', 'failed', 'cancelled', 'timed_out']),
+  physical_success: z.boolean(),
+  inspection_correct: z.boolean().nullable(),
+  final_position_m: point.nullable(),
+  completed_at: timestamp,
+  message: z.string(),
+});
 export const presentationSchema = z.object({
   id: z.string().min(1),
   status: z.enum(['preparing', 'inspecting', 'awaiting_motion', 'moving', 'completed', 'stopped', 'failed']),
@@ -36,14 +44,7 @@ export const presentationSchema = z.object({
     part_position_m: point.nullable(),
     target_position_m: point,
   }).nullable(),
-  result: z.object({
-    status: z.enum(['succeeded', 'failed', 'cancelled', 'timed_out']),
-    physical_success: z.boolean(),
-    inspection_correct: z.boolean().nullable(),
-    final_position_m: point.nullable(),
-    completed_at: timestamp,
-    message: z.string(),
-  }).nullable(),
+  result: resultSchema.nullable(),
   counts: z.object({
     attempted: counter,
     succeeded: counter,
@@ -92,6 +93,7 @@ export const demoSchema = z.object({
     public_live_video: z.boolean(),
   }),
   presentation: presentationSchema.nullable().optional(),
+  recorded_cases_presentation_id: z.string().min(1).nullable().optional(),
 }).superRefine((value, context) => {
   if (value.simulation.live_available &&
     (value.mode !== 'live' || value.simulation.status !== 'ready' || !value.simulation.frame_url || !value.capabilities.public_live_video)) {
@@ -106,7 +108,52 @@ export const demoSchema = z.object({
   }
 });
 
+const recordedCaseSchema = z.object({
+  kind: z.enum(['normal_route', 'defect_route', 'withheld']),
+  cycle: counter.min(1).max(1000),
+  scenario: z.enum(['normal', 'surface_defect']),
+  classification: z.enum(['accepted', 'rejected']),
+  summary: z.string(),
+  target_station_id: z.string().min(1),
+  target_position_m: point,
+  observation_id: z.uuid(),
+  captured_at: timestamp,
+  image_url: z.literal('/api/demo/cases/evidence'),
+  motion_authorized: z.boolean(),
+  physical_duration_seconds: z.number().finite().min(0).max(30).nullable(),
+  result: resultSchema,
+}).superRefine((value, context) => {
+  const passed = value.result.status === 'succeeded' && value.result.physical_success &&
+    value.result.inspection_correct === true && value.result.final_position_m !== null;
+  const withheld = value.kind === 'withheld';
+  if (withheld ? value.motion_authorized || value.physical_duration_seconds !== null ||
+    value.result.status !== 'failed' || value.result.physical_success ||
+    value.result.final_position_m !== null || value.result.inspection_correct !== false ||
+    (value.classification === 'accepted') === (value.scenario === 'normal')
+    : !passed || !value.motion_authorized || value.physical_duration_seconds === null) {
+    context.addIssue({ code: 'custom', message: 'Recorded action and measured result disagree.' });
+  }
+  if (!withheld && ((value.kind === 'normal_route') !== (value.scenario === 'normal') ||
+    (value.kind === 'normal_route') !== (value.classification === 'accepted'))) {
+    context.addIssue({ code: 'custom', message: 'Recorded inspection and case category disagree.' });
+  }
+});
+export const demoCasesSchema = z.object({
+  api_version: z.literal('public-demo-cases-v1'),
+  source: z.literal('recorded_reference_runs'),
+  presentation_id: z.string().min(1).nullable(),
+  cases: z.array(recordedCaseSchema).max(3),
+}).superRefine((value, context) => {
+  if ((value.cases.length && !value.presentation_id) ||
+    new Set(value.cases.map(item => item.kind)).size !== value.cases.length ||
+    new Set(value.cases.map(item => item.observation_id)).size !== value.cases.length) {
+    context.addIssue({ code: 'custom', message: 'Recorded cases need a single publication and unique evidence.' });
+  }
+});
+
 export type DemoSnapshot = z.infer<typeof demoSchema>;
+export type DemoCases = z.infer<typeof demoCasesSchema>;
+export type RecordedCase = z.infer<typeof recordedCaseSchema>;
 export type Presentation = z.infer<typeof presentationSchema>;
 export type PublicDecision = z.infer<typeof decisionSchema>;
 export type DemoStation = DemoSnapshot['scene']['stations'][number];
@@ -178,6 +225,21 @@ export async function getDemo(signal: AbortSignal): Promise<DemoSnapshot> {
     }
     const parsed = demoSchema.safeParse(body);
     if (!parsed.success) throw new ApiError('invalid_snapshot', '공개 시연 정보가 API 계약과 일치하지 않습니다. 다시 확인해 주세요.');
+    return parsed.data;
+  });
+}
+
+export async function getDemoCases(signal: AbortSignal): Promise<DemoCases> {
+  return publicRequest('/api/demo/cases', signal, false, async (response) => {
+    let body: unknown;
+    try {
+      body = await response.json();
+    } catch (error) {
+      if (isAbort(error)) throw error;
+      throw new ApiError('invalid_cases', '실행 기록 응답이 JSON 형식이 아닙니다. 기록을 다시 확인해 주세요.');
+    }
+    const parsed = demoCasesSchema.safeParse(body);
+    if (!parsed.success) throw new ApiError('invalid_cases', '실행 기록의 판단·이동 근거가 계약과 일치하지 않습니다. 기록을 다시 확인해 주세요.');
     return parsed.data;
   });
 }
@@ -263,6 +325,23 @@ export async function getDemoEvidence(decision: PublicDecision, signal: AbortSig
     if (image.frameId.toLowerCase() !== decision.observation_id.toLowerCase() ||
       Date.parse(image.capturedAt) !== Date.parse(decision.captured_at)) {
       throw new ApiError('evidence_changed', '현재 판단과 다른 입력 이미지입니다. 시연 정보를 다시 확인합니다.', 409);
+    }
+    return image;
+  });
+}
+
+export async function getDemoCaseEvidence(presentationId: string, item: RecordedCase, signal: AbortSignal): Promise<PublicEvidence> {
+  if (!presentationId || item.image_url !== '/api/demo/cases/evidence' || !z.uuid().safeParse(item.observation_id).success) {
+    throw new ApiError('invalid_evidence_reference', '게시된 실행 기록의 이미지 경로를 확인할 수 없습니다.');
+  }
+  const query = new URLSearchParams({ presentation_id: presentationId, observation_id: item.observation_id });
+  return publicRequest(`/api/demo/cases/evidence?${query}`, signal, true, async (response) => {
+    const image = await readImage(response, signal);
+    if (response.headers.get('X-Presentation-Id') !== presentationId ||
+      image.frameId.toLowerCase() !== item.observation_id.toLowerCase() ||
+      Date.parse(image.capturedAt) + timestampRemainderMs(image.capturedAt) !==
+        Date.parse(item.captured_at) + timestampRemainderMs(item.captured_at)) {
+      throw new ApiError('evidence_changed', '선택한 실행 기록과 다른 이미지입니다. 기록을 다시 확인해 주세요.', 409);
     }
     return image;
   });

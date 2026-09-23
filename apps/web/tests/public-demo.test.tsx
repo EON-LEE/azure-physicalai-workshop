@@ -119,7 +119,12 @@ describe('no-login audience presentation', () => {
     render(<DemoViewer loadSnapshot={async () => makeSnapshot({ presentation })} />);
     await flush();
     expect(screen.getByText('불량으로 판단')).toBeInTheDocument();
-    const oldUrls = vi.mocked(URL.createObjectURL).mock.results.map((entry) => entry.value);
+    const created = vi.mocked(URL.createObjectURL).mock;
+    const oldUrls = created.results.filter((_, index) => {
+      const source = created.calls[index]?.[0];
+      return source instanceof Blob && source.type === 'image/png';
+    }).map(entry => entry.value);
+    expect(oldUrls).toHaveLength(2);
     presentation = makePresentation({ cycle: 2, scene_epoch: nextEpoch, scenario: 'normal', status: 'inspecting', decision: null, motion: null });
     await act(async () => vi.advanceTimersByTimeAsync(2000));
     expect(screen.queryByText('불량으로 판단')).not.toBeInTheDocument();

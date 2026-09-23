@@ -2,12 +2,13 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Check, ChevronDown, CircleStop, FileImage, Fingerprint, Play, ShieldCheck } from 'lucide-react';
 import { isTerminal, matchesRuntime, type ConsoleApi, type EnvironmentRecord, type RunRecord, type RuntimeInfo } from '../api/contracts';
 import { ApiError, isAbort } from '../api/errors';
-import { workflowTarget } from '../environment/validation';
+import { isPosition, stationPosition, workflowTarget } from '../environment/validation';
 import { usePolling } from '../hooks/usePolling';
 import { useProtectedImage } from '../hooks/useProtectedImage';
 import { useRequestScope } from '../hooks/useRequestScope';
 import { Badge, ErrorNotice, FieldValue, Loading, RunBadge, StepLabel } from '../ui/common';
 import { formatDate } from '../ui/format';
+import { formatPosition } from '../public/presentation';
 
 const continueRunPolling = (run: RunRecord) => !isTerminal(run.status);
 
@@ -25,6 +26,9 @@ export function RunDetail({ api, initialRun, runtime, runtimeFresh, environment,
   const [rejectedPlanId, setRejectedPlanId] = useState<string | null>(null);
   const actionSequence = useRef(0);
   const startRequest = useRequestScope();
+  const targetPosition = environment?.revision === run.revision && run.plan
+    ? stationPosition(environment, run.plan.target_station_id) : null;
+  const finalPosition = run.execution?.final_position;
 
   useEffect(() => { onChange?.(run); }, [run, onChange]);
   useEffect(() => { setConfirmed(false); }, [run.plan?.model_response_id, run.status]);
@@ -115,6 +119,15 @@ export function RunDetail({ api, initialRun, runtime, runtimeFresh, environment,
       <FieldValue label="command_id"><code>{run.execution.command_id}</code></FieldValue>
       <FieldValue label="명령 상태 (서버 응답)"><code>{run.execution.status}</code></FieldValue>
     </dl>}
+    {run.plan && <div className="inline-note" role="region" aria-label="고객 공정 실험 위치 비교">
+      <strong>내 라인 실험 · 목표와 실제 도착 위치</strong>
+      <dl className="plan-targets">
+        <FieldValue label="이 실행 버전의 목표 좌표">{targetPosition ? formatPosition(targetPosition) : '실행 시점의 저장 버전·목표 좌표 확인 필요'}</FieldValue>
+        <FieldValue label="시뮬레이터의 최종 측정 좌표">{finalPosition === undefined || finalPosition === null ? '최종 측정값 미수신'
+          : isPosition(finalPosition) ? formatPosition(finalPosition) : '측정 좌표 형식 확인 필요'}</FieldValue>
+      </dl>
+      <p>환경의 위치를 바꿨다면 두 값을 비교하세요. 계획 좌표는 측정값이 아니며, 명령 접수는 실제 도착을 뜻하지 않습니다.</p>
+    </div>}
     {['failed', 'timed_out'].includes(run.status) && !run.error && <div className="inline-note warning" role="alert"><strong>{run.status === 'timed_out' ? '실행 시간 초과' : '실행 실패'}</strong><p>서버가 상세 오류를 제공하지 않았습니다. 이벤트와 런타임 상태를 확인하세요.</p></div>}
     {run.error && <div className="error-notice" role="alert"><div className="error-content"><strong>{run.error.code}</strong><p>{run.error.message}</p><small>{run.error.retryable ? '원인을 해결한 후 새 계획을 요청할 수 있습니다.' : '이 실행을 자동으로 재시도하지 않습니다.'}</small></div></div>}
     <ErrorNotice error={actionError} title="작업 요청 결과 확인 필요" compact />

@@ -45,6 +45,9 @@ class Settings(BaseSettings):
     public_demo_presentation_id: str | None = Field(
         default=None, pattern=r"^[a-z][a-z0-9-]*$", max_length=64
     )
+    public_demo_cases_presentation_id: str | None = Field(
+        default=None, pattern=r"^[a-z][a-z0-9-]*$", max_length=64
+    )
 
     @model_validator(mode="after")
     def publication_is_explicit(self):
@@ -66,6 +69,8 @@ class Settings(BaseSettings):
             and self.public_demo_revision != self.public_demo_defect_revision
         ):
             raise ValueError("A presentation requires a complete, distinct pinned reference pair.")
+        if self.public_demo_cases_presentation_id and not all(paired):
+            raise ValueError("Recorded cases require an explicitly pinned reference pair.")
         return self
 
     @field_validator(

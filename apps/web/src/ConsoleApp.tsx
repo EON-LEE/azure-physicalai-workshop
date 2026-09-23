@@ -5,6 +5,7 @@ import { isAbort } from './api/errors';
 import type { SignedInAccount } from './auth/types';
 import { useSession } from './auth/context';
 import { isDraftDirty, type StudioDraft } from './environment/validation';
+import { buildCustomerExperiment, inspectionTask, readCustomerExperiment } from './environment/customerExperiment';
 import { usePageVisible } from './hooks/usePageVisible';
 import { usePolling } from './hooks/usePolling';
 import { useRequestScope } from './hooks/useRequestScope';
@@ -26,10 +27,17 @@ const pages = {
 export function ConsoleApp({ api, account, sessionExpired = false }: {
   api: ConsoleApi; account: SignedInAccount; sessionExpired?: boolean;
 }) {
-  const [view, setView] = useState<View>('live');
+  const [view, setView] = useState<View>(() => new URLSearchParams(window.location.search).get('view') === 'studio' ? 'studio' : 'live');
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [studioDraft, setStudioDraft] = useState<StudioDraft | null>(null);
-  const [runDraft, setRunDraft] = useState<RunDraft>({ instruction: '', attempt: null });
+  const [studioDraft, setStudioDraft] = useState<StudioDraft | null>(() => {
+    if (!new URLSearchParams(window.location.search).has('experiment')) return null;
+    const selection = readCustomerExperiment(window.location.search);
+    return selection.error ? null : {
+      text: JSON.stringify(buildCustomerExperiment(selection.value), null, 2),
+      savedText: '', base: null, source: '공개 페이지에서 전달한 고객 공정 실험 초안',
+    };
+  });
+  const [runDraft, setRunDraft] = useState<RunDraft>(() => ({ instruction: studioDraft ? inspectionTask : '', attempt: null }));
   const [focusedRun, setFocusedRun] = useState<RunRecord | null>(null);
   const [activation, setActivation] = useState<ActivationState>({ submitting: false, receipt: null, error: null, timedOut: false });
   const [clock, setClock] = useState(Date.now);

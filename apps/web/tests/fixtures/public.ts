@@ -1,4 +1,4 @@
-import type { DemoSnapshot, Presentation, PublicFrame, PublicEvidence } from '../../src/public/api';
+import type { DemoCases, DemoSnapshot, Presentation, PublicFrame, PublicEvidence, RecordedCase } from '../../src/public/api';
 import { fixtureDocument, fixturePng } from './data';
 
 export const epoch = '11000000-1111-4111-8111-111111111111';
@@ -73,4 +73,31 @@ export function frame(overrides: Partial<PublicFrame> = {}): PublicFrame {
 export function evidence(presentation: Presentation): PublicEvidence {
   if (!presentation.decision) throw new Error('This fixture requires a decision.');
   return { blob: fixturePng(), frameId: presentation.decision.observation_id, capturedAt: presentation.decision.captured_at };
+}
+
+export function recordedCases(): DemoCases {
+  const kinds: RecordedCase['kind'][] = ['normal_route', 'defect_route', 'withheld'];
+  const observations = [observationId, nextEpoch, runId];
+  return {
+    api_version: 'public-demo-cases-v1', source: 'recorded_reference_runs',
+    presentation_id: 'test-only-public-presentation',
+    cases: kinds.map((kind, index): RecordedCase => {
+      const blocked = kind === 'withheld';
+      const target: [number, number, number] = kind === 'normal_route' ? [0.42, -0.22, 0.2] : [0.22, -0.38, 0.2];
+      return {
+        kind, cycle: index + 1, scenario: kind === 'defect_route' ? 'surface_defect' : 'normal',
+        classification: kind === 'normal_route' ? 'accepted' : 'rejected',
+        summary: 'TEST-ONLY RECORDED CASE: 실제 모델·GPU 검증이 아닙니다.',
+        target_station_id: kind === 'normal_route' ? 'accepted' : 'rejected', target_position_m: target,
+        observation_id: observations[index]!, captured_at: new Date(Date.now() - 60_000).toISOString(),
+        image_url: '/api/demo/cases/evidence', motion_authorized: !blocked,
+        physical_duration_seconds: blocked ? null : 12,
+        result: {
+          status: blocked ? 'failed' : 'succeeded', physical_success: !blocked, inspection_correct: !blocked,
+          final_position_m: blocked ? null : target, completed_at: new Date(Date.now() - 45_000).toISOString(),
+          message: blocked ? 'Inspection disagreed with the reference evaluation; motion was not authorized.' : 'Inspection and physical sorting completed.',
+        },
+      };
+    }),
+  };
 }

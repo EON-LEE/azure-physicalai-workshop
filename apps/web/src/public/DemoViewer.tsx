@@ -3,10 +3,12 @@ import { ArrowUpRight, Camera, ChevronDown, Cloud, Code2, Cpu, Eye, Factory, Pau
 import { describeError } from '../api/errors';
 import { usePageVisible } from '../hooks/usePageVisible';
 import { usePolling } from '../hooks/usePolling';
+import { CustomerScenarioPlanner } from '../environment/CustomerScenarioPlanner';
 import { canShowCamera, getDemo, SNAPSHOT_MAX_AGE_MS, type DemoSnapshot } from './api';
 import { CameraUnavailable, PublicLiveCamera } from './Media';
 import { DecisionPanel, PhysicalOutcome, PresentationProgress, PublishedCounts } from './PresentationPanels';
 import { formatCount, formatTime, presentationKey, presentationLabels } from './presentation';
+import { CustomerValue, RecordedCases } from './CustomerStory';
 import './demo.css';
 
 function initiallyPaused() {
@@ -65,8 +67,9 @@ export function DemoViewer({ loadSnapshot = getDemo }: {
     presentation.status !== 'stopped' && presentation.status !== 'failed');
   const viewing = !paused && visible && !snapshot.error && !expired;
   const running = current && presentation !== null && ['inspecting', 'awaiting_motion', 'moving'].includes(presentation.status);
+  const terminated = presentation?.status === 'failed' || presentation?.status === 'stopped';
   const stateLabel = paused ? '관람 일시 정지' : integrityPending ? '회차 일치 확인 중' : snapshot.error ? '연결 확인 필요'
-    : expired ? '게시 시연 만료' : !presentation ? '게시된 자동 시연 없음'
+    : expired && !terminated ? '게시 시연 만료' : !presentation ? '게시된 자동 시연 없음'
       : !snapshotFresh ? '현재 상태 확인 중' : presentationLabels[presentation.status];
 
   let unavailableTitle = '게시된 자동 시연이 없습니다';
@@ -83,12 +86,12 @@ export function DemoViewer({ loadSnapshot = getDemo }: {
   } else if (snapshot.error || !snapshotFresh) {
     unavailableTitle = '현재 시연 연결을 확인할 수 없습니다';
     unavailableDescription = '마지막 수신 내용을 현재 실행처럼 표시하지 않습니다. 최신 상태를 다시 확인해 주세요.';
+  } else if (presentation?.status === 'stopped' || presentation?.status === 'failed') {
+    unavailableTitle = presentation.status === 'failed' ? '시연이 실패로 중단되었습니다' : '시연이 중지되었습니다';
+    unavailableDescription = '현재 자동 실행은 중단되어 있습니다. 아래의 실제 실행 기록에서 정상·격리·판단 불일치 결과를 비교할 수 있습니다. 기록을 LIVE 동작으로 대신 표시하지 않습니다.';
   } else if (expired) {
     unavailableTitle = '게시된 시연 시간이 끝났습니다';
     unavailableDescription = '마지막 결과는 아래에 남아 있지만 현재 실행 중이라는 뜻은 아닙니다.';
-  } else if (presentation?.status === 'stopped' || presentation?.status === 'failed') {
-    unavailableTitle = presentation.status === 'failed' ? '시연이 실패로 중단되었습니다' : '시연이 중지되었습니다';
-    unavailableDescription = '실제 서버 상태입니다. 관람 화면은 시연을 재시작하지 않습니다. 게시 상태만 다시 확인할 수 있습니다.';
   } else if (presentation && (data.simulation.status === 'loading' || presentation.status === 'preparing')) {
     unavailableTitle = '실제 시연을 준비하고 있습니다';
     unavailableDescription = '현재 회차의 씬과 카메라를 기다립니다. 준비 상태를 완료나 실제 동작으로 표시하지 않습니다.';
@@ -102,18 +105,21 @@ export function DemoViewer({ loadSnapshot = getDemo }: {
     <header className="demo-header">
       <a href="/" className="demo-brand" aria-label="Azure Physical AI 공개 시연 홈"><span><Factory size={23} aria-hidden="true" /></span>
         <span translate="no">Azure <b>Physical AI</b><small>INSPECTION TO ACTION</small></span></a>
-      <nav aria-label="시연 탐색"><a href="#demo-stage">실제 시연</a><a href="#demo-verification">검증 범위</a></nav>
+      <nav aria-label="시연 탐색"><a href="#customer-value">고객 활용</a><a href="#demo-stage">실제 시연</a><a href="#customer-lab">내 공정 실험</a></nav>
       <a className="demo-operator" href="/operator"><Code2 size={15} aria-hidden="true" />운영자<ArrowUpRight size={14} aria-hidden="true" /></a>
     </header>
     <main id="demo-main">
       <section className="demo-intro" aria-labelledby="demo-title">
-        <div><p className="demo-eyebrow">PUBLIC PRESENTATION · 읽기 전용</p>
-          <h1 id="demo-title">흠집 있는 부품을,<br className="demo-mobile-break" /> <span>후공정 대신 격리합니다.</span></h1>
-          <p className="demo-lead">{running && liveReady ? '접속하면 실제 자동 시연을 볼 수 있습니다. 관람을 위해 로그인하거나 실행 버튼을 누를 필요가 없습니다.' : '실제 카메라 → Foundry의 이미지 판단 → 제한된 로봇 이동 → 측정된 결과를 한 회차로 확인합니다.'}</p>
+        <div><p className="demo-eyebrow">제조 품질 공정 PoC · AZURE PHYSICAL AI</p>
+          <h1 id="demo-title">검사 결과를,<br className="demo-mobile-break" /> <span>실제 선별·격리 작업으로.</span></h1>
+          <p className="demo-lead">이미지를 설명하는 AI에서, 부품을 보고 판단한 뒤 물리 작업까지 확인하는 AI로. 실제 시연을 보고, 내 라인의 변경 조건을 설계해 운영자에게 전달하세요.</p>
         </div>
         <span className="demo-audience"><Eye size={18} aria-hidden="true" /><span>로그인 없는 공개 관람<small>시연 제어·편집 권한은 없음</small></span></span>
       </section>
 
+      <CustomerValue />
+      <div className="customer-section-heading"><div><p>01 · 현재 게시된 자동 시연</p><h2>부품을 보고, 경로를 결정하고, 도착을 확인합니다</h2></div>
+        <a className="demo-text-button" href="#demo-cases">정상·격리·보류 결과 비교</a></div>
       <section className="demo-public-status" aria-label="공개 시연 상태">
         <div className="public-status-label" role="status"><span className={`state-dot ${running && liveReady ? 'active' : ''}`} aria-hidden="true" /><strong>{stateLabel}</strong></div>
         {presentation && <div className="public-cycle"><span>회차 <b>{formatCount(presentation.cycle)}</b> / {formatCount(presentation.total_cycles)}</span>
@@ -140,6 +146,8 @@ export function DemoViewer({ loadSnapshot = getDemo }: {
         <PublishedCounts presentation={presentation} />
       </>}
 
+      <RecordedCases presentationId={data?.recorded_cases_presentation_id ?? presentation?.id ?? null} />
+      <CustomerScenarioPlanner />
       <details className="public-verification" id="demo-verification">
         <summary><ShieldCheck size={18} aria-hidden="true" /><span>무엇이 검증되었고, 무엇이 아닌가요?</span><ChevronDown size={17} aria-hidden="true" /></summary>
         <div className="verification-content">

@@ -11,6 +11,7 @@ import { useRequestScope } from '../hooks/useRequestScope';
 import { Badge, ErrorNotice, Loading } from '../ui/common';
 import { formatDate, shortId } from '../ui/format';
 import { RuntimePanel, type RuntimeControlsProps } from './RuntimePanel';
+import { CustomerScenarioPlanner } from '../environment/CustomerScenarioPlanner';
 
 interface StudioProps extends Omit<RuntimeControlsProps, 'environment'> {
   api: ConsoleApi;
@@ -144,6 +145,9 @@ export function EnvironmentStudio(props: StudioProps) {
 
   return <div className="studio-grid">
     <div className="studio-primary">
+      <CustomerScenarioPlanner onApply={(document, source) => replaceDraft({
+        text: JSON.stringify(document, null, 2), savedText: '', base: null, source,
+      })} />
       <section className="panel studio-sources" aria-labelledby="studio-sources-title">
         <div className="panel-heading"><div className="title-icon"><FileJson2 size={19} aria-hidden="true" /><h2 id="studio-sources-title">환경 문서 선택</h2></div><Badge>JSON Schema 2020-12</Badge></div>
         <div className="source-options">

@@ -231,6 +231,23 @@ def create_app(
             },
         )
 
+    @app.get("/api/demo/cases")
+    def public_cases(request: Request):
+        return request.app.state.public_demo.cases()
+
+    @app.get("/api/demo/cases/evidence")
+    def public_case_evidence(request: Request, presentation_id: str, observation_id: UUID):
+        image, run = request.app.state.public_demo.case_evidence(presentation_id, observation_id)
+        return Response(
+            image,
+            media_type="image/png",
+            headers={
+                "X-Frame-Id": str(run.evidence.observation_id),
+                "X-Captured-At": run.evidence.captured_at.isoformat(),
+                "X-Presentation-Id": presentation_id,
+            },
+        )
+
     @app.get("/healthz")
     def health(response: Response):
         response.headers["X-Server-Time"] = utcnow().isoformat()

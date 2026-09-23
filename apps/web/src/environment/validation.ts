@@ -126,3 +126,19 @@ export function workflowTarget(environment: EnvironmentRecord, classification: '
   const target = Object.entries(workflow).find(([name]) => name === key)?.[1];
   return typeof target === 'string' ? target : null;
 }
+
+export function isPosition(value: unknown): value is [number, number, number] {
+  return Array.isArray(value) && value.length === 3 && value.every(coordinate => typeof coordinate === 'number' && Number.isFinite(coordinate));
+}
+
+export function stationPosition(environment: EnvironmentRecord, stationId: string): [number, number, number] | null {
+  const stations = environment.document.stations;
+  if (!Array.isArray(stations)) return null;
+  for (const item of stations) {
+    if (typeof item !== 'object' || item === null || Array.isArray(item)) continue;
+    const station = new Map<string, unknown>(Object.entries(item));
+    const position = station.get('position_m');
+    if (station.get('id') === stationId && isPosition(position)) return position;
+  }
+  return null;
+}

@@ -70,10 +70,64 @@ Learning status is `not_published` or `cpu_smoke_verified`, with the other field
 shown above (optimizer_steps may be 0). The pinned CPU smoke uses test fixtures,
 not actual robot demonstrations.
 
-Reference mode must be a clearly labeled **scene schematic / scenario explainer**,
-not a fake moving robot, stock footage, invented defect score or recorded/live
-simulation. Interactive normal/rejected-path selection explains what the system
-does; it must not claim execution or send a write to any API.
+Reference mode shows an explicit unavailable/not-published live camera, not a
+schematic, stock footage or replay substitute. Customer-use explanations, local
+configuration authoring and explicitly requested recorded cases are separate from
+the live camera and never claim that a new task has run.
+
+## Customer task and local configuration authoring
+
+The page explains the inspection-to-sorting customer workflow and distinguishes
+watching a published run from designing a new experiment. The public planner
+changes only local state and a downloadable reference-derived JSON document.
+`anonymous_editing=false` continues to mean no anonymous **server** edits; choosing
+a local experiment is not a request to activate it. The bounded operator link
+hands off an unsaved draft, with no automatic save, inference or motion.
+See [customer environments](customer-environments.md) for the exact actions and limits.
+
+## Recorded customer outcome comparison
+
+`GET /api/demo/cases` returns `public-demo-cases-v1`, with
+`source=recorded_reference_runs`, a nullable `presentation_id`, and up to three
+`cases`. The page requests this comparison explicitly, not as a camera fallback.
+By default it uses the current presentation. An operator can pin
+`PUBLIC_DEMO_CASES_PRESENTATION_ID` (Bicep `publicDemoCasesPresentationId`) to an
+earlier presentation with the **same approved owner and immutable reference pair**.
+The snapshot's additive `recorded_cases_presentation_id` identifies this source
+separately from the live presentation. This preserves a genuine withheld example
+when a fresh live window starts, without letting visitors select arbitrary history.
+The curated kinds are:
+
+- `normal_route`: the first physically successful, correctly inspected normal part.
+- `defect_route`: the first physically successful, correctly inspected defect part.
+- `withheld`: the first reference inspection mismatch with no approval or execution.
+
+No case is invented when its evidence is absent. These are illustrative cases,
+not a representative accuracy sample. The current presentation's actual counters
+remain separate and are not replaced by a success-only comparison.
+
+Each case carries its cycle, scenario, actual classification/reason, planned
+station/position, original observation ID/time, `motion_authorized`, measured
+`result`, and nullable `physical_duration_seconds` from the recorded approval to
+physical completion. The fixed image path is `/api/demo/cases/evidence`.
+Withheld cases have no executed duration or measured final position.
+
+`GET /api/demo/cases/evidence?presentation_id=<id>&observation_id=<UUID>` returns
+only one of those selected runs' checksum-verified original input PNGs, with
+`X-Presentation-Id`, `X-Frame-Id` and `X-Captured-At`. It is **recorded input, not
+LIVE**; do not fabricate physics steps or apply a live-frame age rule. An expired
+presentation may still expose its selected recorded evidence until the operator
+changes/revokes the publication.
+
+Selection uses only the pinned presentation record's deterministic outcome IDs;
+it never lists or scans an operator's run history. Every selected run is revalidated
+against the approved owner, exact environment document/revision, original generic
+instruction, request fingerprint, authorization window, image/plan linkage and
+measured outcome. Image responses revalidate the selected publication/case after
+Blob retrieval. Unknown/private observations or changed publication IDs are 409;
+missing or inconsistent durable evidence fails closed as 503. All responses are
+`Cache-Control: no-store`; POSTs remain unsupported. This read path never contacts
+the live simulator or initiates Foundry/motion.
 
 ## Actual live frames, only after deliberate publication
 
