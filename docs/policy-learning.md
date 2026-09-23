@@ -383,6 +383,24 @@ locally and during image build without loading weights or CUDA. This alternative
 is a new bounded operator decision, not an automatic retry or evidence that the
 original `Bad Request` was definitely caused by command length.
 
+A subsequent source-only audit found that the original uploader had incorrectly
+applied its 2 MiB **log** limit to the explicit shared fixture safetensors file.
+Actual CPU serialization of the unchanged two-fixture workload is **4,732,400
+bytes**. The correction leaves logs at 2 MiB and the compressed trace at 8 MiB,
+caps JSON/config artifacts separately at 256 KiB, and derives the fixture limit
+from two float32 sets of three `3x256x256` images, six state values and `1x50x32`
+noise values, plus a 64 KiB metadata allowance: **4,796,976 bytes**, not an
+unrestricted size increase. Unknown artifact classes and model-weight files
+cannot use this allowance. A secondary artifact-limit failure never replaces a
+primary compile/numerical error and still prevents overall success.
+
+That fix does **not** patch an already submitted immutable image or authorize a
+new job. If a failed run contains real partial stage/timing proofs, they must be
+reported as partial. Missing synthetic fixture bytes may only be reconstructed
+with the unchanged generator and labeled as reconstructed **after exact SHA
+equality to the recorded original**; no forward metrics, stage timings or
+successful result may be generated from reconstruction.
+
 Official [asynchronous inference](https://github.com/huggingface/lerobot/blob/8fff0fde7c79f23a93d845d1a50e985de01f8b8a/docs/source/async.mdx)
 and [real-time chunking](https://github.com/huggingface/lerobot/blob/8fff0fde7c79f23a93d845d1a50e985de01f8b8a/docs/source/rtc.mdx)
 do exist. They are **different control semantics**, not an escape from the

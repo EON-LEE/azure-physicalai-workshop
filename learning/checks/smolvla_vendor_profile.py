@@ -22,6 +22,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from learning.common import (
+    ContractError,
     canonical,
     digest,
     file_digest,
@@ -66,6 +67,55 @@ def validate_settings(value: dict) -> None:
         canonical(value) == canonical(PROFILE_SETTINGS),
         "Profiling settings differ from the exact approved workload or tolerances",
     )
+
+
+def artifact_byte_limit(name: str) -> int:
+    if name in ("baseline.log", "compile.log"):
+        return PROFILE_SETTINGS["maximum_log_bytes"]
+    if name == "baseline-trace.json.gz":
+        return PROFILE_SETTINGS["maximum_compressed_trace_bytes"]
+    if name in ("explicit-inputs.json", "baseline-report.json", "compile-report.json"):
+        return 256 * 1024
+    if name == "explicit-inputs-and-noise.safetensors":
+        # Two float32 fixtures: three 3x256x256 images, six states, and 1x50x32 explicit noise.
+        payload = (
+            PROFILE_SETTINGS["numerical_fixtures"]
+            * (
+                PROFILE_SETTINGS["camera_count"] * 3 * 256 * 256
+                + PROFILE_SETTINGS["state_dim"]
+                + PROFILE_SETTINGS["chunk_size"] * 32
+            )
+            * 4
+        )
+        return payload + 65536
+    if name == "eager-reference-outputs.safetensors":
+        return (
+            PROFILE_SETTINGS["numerical_fixtures"]
+            * PROFILE_SETTINGS["chunk_size"]
+            * PROFILE_SETTINGS["state_dim"]
+            * 4
+            + 65536
+        )
+    raise ContractError(f"Unapproved profiling artifact class: {name}")
+
+
+def record_artifact_failure(report: dict, name: str, size: int, limit: int) -> None:
+    report["artifacts"][name] = {
+        "bytes": size,
+        "uploaded": False,
+        "limit_bytes": limit,
+        "reason": "artifact_exceeded_approved_byte_limit",
+    }
+    report.setdefault("artifact_failures", []).append(
+        {
+            "name": name,
+            "bytes": size,
+            "limit_bytes": limit,
+        }
+    )
+    report["passed"] = False
+    report.setdefault("failure_type", "ArtifactBudgetExceeded")
+    report.setdefault("failure", "Required profiling artifact exceeded its upload limit")
 
 
 def spawn_context():
@@ -985,22 +1035,9 @@ def run_profile(spec: dict) -> dict:
                 path = root / name
                 if not path.exists():
                     continue
-                limit = (
-                    PROFILE_SETTINGS["maximum_compressed_trace_bytes"]
-                    if name.endswith(".gz")
-                    else PROFILE_SETTINGS["maximum_log_bytes"]
-                )
+                limit = artifact_byte_limit(name)
                 if path.stat().st_size > limit:
-                    report["artifacts"][name] = {
-                        "bytes": path.stat().st_size,
-                        "uploaded": False,
-                        "reason": "artifact_exceeded_approved_byte_limit",
-                    }
-                    report["passed"] = False
-                    report.setdefault("failure_type", "ArtifactBudgetExceeded")
-                    report.setdefault(
-                        "failure", "Required profiling artifact exceeded its upload limit"
-                    )
+                    record_artifact_failure(report, name, path.stat().st_size, limit)
                     continue
                 with path.open("rb") as stream:
                     container.upload_blob(
