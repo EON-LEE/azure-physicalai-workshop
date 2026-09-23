@@ -91,6 +91,10 @@ def create_bridge_app(
     def command(command_id: UUID, principal: Owner):
         return core.command(principal, command_id)
 
+    @app.get("/v1/commands/{command_id}/capture")
+    def capture(command_id: UUID, principal: Owner):
+        return core.capture(principal, command_id)
+
     @app.post("/v1/commands/{command_id}/cancel")
     def cancel(command_id: UUID, principal: Owner):
         return core.cancel(principal, command_id)

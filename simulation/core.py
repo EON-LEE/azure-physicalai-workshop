@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 import threading
 from collections import OrderedDict, deque
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import Literal
 from uuid import UUID, uuid4
@@ -12,6 +12,7 @@ from apps.api.errors import Problem
 from apps.api.models import (
     TERMINAL,
     Activation,
+    DemonstrationResult,
     EnvironmentRecord,
     Execution,
     MotionCommand,
@@ -24,6 +25,13 @@ from apps.api.models import (
 )
 from apps.api.service import check_fresh, content_hash
 from simulation.extensions import SceneRegistry, SceneSpec
+from simulation.runtime_contracts import (
+    CaptureBinding,
+    CapturePhase,
+    CaptureReceipt,
+    CaptureStatus,
+    CommandBinding,
+)
 
 
 @dataclass(frozen=True)
@@ -68,6 +76,8 @@ class SimulationCore:
         self.active_command: tuple[str, UUID] | None = None
         self.motion: MotionTelemetry | None = None
         self.max_commands = max_commands
+        self.capture_bindings: dict[tuple[str, UUID], CaptureBinding] = {}
+        self.captures: dict[tuple[str, UUID], CaptureStatus] = {}
 
     def _owned(self, owner: str) -> None:
         if not self.owner or self.environment is None:
@@ -120,6 +130,13 @@ class SimulationCore:
                     )
             if self.pending:
                 raise Problem(409, "scene_loading", "A scene transition is already in progress.")
+            for key, state in self.captures.items():
+                if state.status not in {"ready", "invalid"}:
+                    self.publish_capture(
+                        self.capture_bindings[key],
+                        "invalid",
+                        message="Scene changed before capture publication.",
+                    )
             self.owner, self.environment, self.spec = owner, environment, spec
             self.epoch = uuid4()
             self.state_revision += 1
@@ -339,6 +356,129 @@ class SimulationCore:
                 and self.commands[self.active_command].status == "cancelling"
             )
 
+    def begin_capture(self, command_id: UUID) -> CaptureBinding:
+        with self.lock:
+            key = self.active_command
+            if (
+                key is None
+                or key[1] != command_id
+                or self.commands[key].status != "running"
+                or self.environment is None
+                or self.spec is None
+                or not self.spec.record_demonstration
+            ):
+                raise Problem(409, "capture_not_approved", "Capture requires approved motion.")
+            if key in self.capture_bindings:
+                raise Problem(409, "capture_exists", "The command already has a capture.")
+            binding = CaptureBinding(
+                key[0],
+                self.environment.environment_id,
+                self.environment.revision,
+                self.epoch,
+                command_id,
+                uuid4(),
+            )
+            self.capture_bindings[key] = binding
+            self.captures[key] = CaptureStatus(
+                capture_id=binding.capture_id,
+                command_id=command_id,
+                epoch=binding.epoch,
+                status="recording",
+            )
+            return binding
+
+    def binding(self, command_id: UUID) -> CommandBinding:
+        with self.lock:
+            if self.active_command is None or self.active_command[1] != command_id:
+                raise Problem(409, "command_not_active", "The command is no longer active.")
+            return CommandBinding(
+                self.active_command[0],
+                self.environment.environment_id,
+                self.environment.revision,
+                self.epoch,
+                command_id,
+            )
+
+    def matches(self, binding: CommandBinding) -> bool:
+        with self.lock:
+            return (
+                self.active_command == (binding.owner, binding.command_id)
+                and self.owner == binding.owner
+                and self.epoch == binding.epoch
+                and self.environment is not None
+                and self.environment.environment_id == binding.environment_id
+                and self.environment.revision == binding.revision
+            )
+
+    def actuation_allowed(self, binding: CommandBinding) -> bool:
+        with self.lock:
+            return (
+                self.matches(binding)
+                and self.commands[self.active_command].status == "running"
+                and self.error is None
+                and utcnow() < self.deadlines[self.active_command]
+            )
+
+    def capture(self, owner: str, command_id: UUID) -> CaptureStatus:
+        with self.lock:
+            state = self.captures.get((owner, command_id))
+            if state is None:
+                raise Problem(404, "capture_missing", "Capture not found for this user.")
+            return state.model_copy(deep=True)
+
+    def publish_capture(
+        self,
+        binding: CaptureBinding,
+        status: CapturePhase,
+        *,
+        receipt: CaptureReceipt | DemonstrationResult | None = None,
+        message: str | None = None,
+    ) -> bool:
+        with self.lock:
+            key = (binding.owner, binding.command_id)
+            if (
+                self.capture_bindings.get(key) != binding
+                or self.epoch != binding.epoch
+                or self.owner != binding.owner
+            ):
+                return False
+            previous = self.captures[key]
+            if previous.status in {"ready", "invalid"}:
+                return False
+            order = ("recording", "finalizing", "uploading", "ready", "invalid")
+            if order.index(status) < order.index(previous.status):
+                return False
+            result = self.commands[key]
+            demonstration = None
+            if status == "ready":
+                if result.status not in TERMINAL or receipt is None:
+                    raise ValueError("Capture publication requires an independent physical result.")
+                demonstration = (
+                    DemonstrationResult(status="uploaded", **asdict(receipt))
+                    if isinstance(receipt, CaptureReceipt)
+                    else DemonstrationResult.model_validate(receipt.model_dump())
+                )
+                if (
+                    demonstration.status != "uploaded"
+                    or demonstration.episode_id != binding.command_id
+                ):
+                    raise ValueError("Capture receipt is not bound to the completed command.")
+            elif status == "invalid":
+                if not message:
+                    raise ValueError("Invalid capture requires an explicit reason.")
+                demonstration = DemonstrationResult(status="failed", message=message)
+            self.captures[key] = CaptureStatus(
+                capture_id=binding.capture_id,
+                command_id=binding.command_id,
+                epoch=binding.epoch,
+                status=status,
+                receipt=demonstration if status == "ready" else None,
+                message=message,
+            )
+            if result.status in TERMINAL and demonstration is not None:
+                self.commands[key] = result.model_copy(update={"demonstration": demonstration})
+            return True
+
     def finish(
         self,
         status: Literal["succeeded", "failed", "cancelled", "timed_out"],
@@ -347,11 +487,21 @@ class SimulationCore:
         *,
         completed_at: datetime | None = None,
         demonstration: dict | None = None,
+        binding: CommandBinding | None = None,
     ) -> None:
         with self.lock:
             key = self.active_command
-            if key is None:
+            if key is None or (binding is not None and not self.matches(binding)):
                 return
+            completed_at = completed_at or utcnow()
+            if status == "succeeded":
+                if self.commands[key].status == "cancelling":
+                    status, message = "cancelled", "Cancellation won the completion race."
+                elif completed_at >= self.deadlines[key]:
+                    status, message = "timed_out", "Completion exceeded the command deadline."
+            capture = self.captures.get(key)
+            if demonstration is None and capture is not None and capture.status == "invalid":
+                demonstration = {"status": "failed", "message": capture.message}
             error = (
                 None
                 if status == "succeeded"
@@ -363,7 +513,7 @@ class SimulationCore:
                 command_id=key[1],
                 status=status,
                 final_position=final_position,
-                completed_at=completed_at or utcnow(),
+                completed_at=completed_at,
                 error=error,
                 demonstration=demonstration,
             )

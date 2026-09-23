@@ -292,9 +292,9 @@ class IsaacWorkcell:
                 self.issued_targets, terminated=not truncated, truncated=truncated
             )
             recorder.append(sample)
+            recorder.seal()
         finally:
             self.recording = None
-        return recorder.finalize_and_upload()
 
     def position(self) -> tuple[float, float, float]:
         return tuple(float(value) for value in self.part.get_world_pose()[0])

@@ -6,6 +6,7 @@ import hashlib
 import inspect
 import os
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID
@@ -13,6 +14,7 @@ from uuid import UUID
 from azure.identity import ManagedIdentityCredential
 from azure.storage.blob import BlobServiceClient, ContentSettings
 
+from apps.api.models import EnvironmentRecord
 from learning.capture import EpisodeWriter
 from learning.contract import (
     EpisodeSpec,
@@ -22,18 +24,22 @@ from learning.contract import (
     validate_dataset,
 )
 from simulation.core import SimulationCore
+from simulation.extensions import SceneSpec
+from simulation.runtime_contracts import CaptureReceipt
 
 
 @dataclass(frozen=True)
-class CaptureReceipt:
-    manifest_uri: str
-    manifest_sha256: str
-    episode_id: str
-    frame_count: int
+class DemonstrationRequest:
+    owner: str
+    environment: EnvironmentRecord
+    spec: SceneSpec
+    command_id: UUID
+    builder_path: Path
 
 
 class Demonstration:
-    def __init__(self, core: SimulationCore, command_id: UUID, root: Path | None = None) -> None:
+    @staticmethod
+    def prepare(core: SimulationCore, command_id: UUID) -> DemonstrationRequest:
         with core.lock:
             if (
                 core.active_command is None
@@ -50,6 +56,24 @@ class Demonstration:
             environment = core.environment.model_copy(deep=True)
             spec = core.spec
             builder = core.registry.builders[environment.document["scene"]["template_id"]]
+            return DemonstrationRequest(
+                owner, environment, spec, command_id, Path(inspect.getfile(type(builder)))
+            )
+
+    def __init__(
+        self,
+        core: SimulationCore | DemonstrationRequest,
+        command_id: UUID | None = None,
+        root: Path | None = None,
+    ) -> None:
+        if isinstance(core, SimulationCore):
+            if command_id is None:
+                raise ValueError("An approved capture command is required.")
+            request = self.prepare(core, command_id)
+        else:
+            request = core
+        owner, environment, spec = request.owner, request.environment, request.spec
+        command_id = request.command_id
         if os.environ.get("CAPTURE_ENABLED") != "true":
             raise ValueError("The deployment has not enabled real demonstration capture.")
         required = (
@@ -89,9 +113,7 @@ class Demonstration:
             simulator_image_digest=image.split("@", 1)[1],
             robot_asset_sha256=os.environ["FRANKA_ASSET_SHA256"],
             scene_builder_id=environment.document["scene"]["template_id"],
-            scene_builder_sha256=hashlib.sha256(
-                Path(inspect.getfile(type(builder))).read_bytes()
-            ).hexdigest(),
+            scene_builder_sha256=hashlib.sha256(request.builder_path.read_bytes()).hexdigest(),
             code_revision=os.environ["SOURCE_REVISION"],
             capture_host="azure_gpu",
             gpu_model=gpu[0],
@@ -120,9 +142,11 @@ class Demonstration:
     def append(self, sample: FrameSample) -> None:
         self.writer.append(sample)
 
-    def finalize_and_upload(self) -> CaptureReceipt:
+    def finalize_and_upload(self, on_uploading: Callable[[], None] | None = None) -> CaptureReceipt:
         manifest = self.writer.finalize()
         validated = validate_dataset(self.root, expected_scope=self.scope, require_live=True)
+        if on_uploading is not None:
+            on_uploading()
         prefix = f"{self.scope.owner_id}/{self.episode_id}/"
         account = os.environ["STORAGE_ACCOUNT_URL"].rstrip("/")
         container = os.environ.get("DEMONSTRATION_CONTAINER", "demonstrations")
@@ -143,6 +167,8 @@ class Demonstration:
         ):
             target = blobs.get_container_client(container)
             for relative in sorted(set(paths)):
+                if on_uploading is not None:
+                    on_uploading()
                 with (self.root / relative).open("rb") as stream:
                     target.upload_blob(
                         prefix + relative,
@@ -154,6 +180,8 @@ class Demonstration:
                             else "application/x-ndjson"
                         ),
                     )
+            if on_uploading is not None:
+                on_uploading()
             with manifest.open("rb") as stream:
                 target.upload_blob(
                     prefix + "manifest.json",
