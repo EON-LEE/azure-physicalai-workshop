@@ -68,6 +68,28 @@ python -m learning.smolvla.prepare \
   --binding APPROVED_BINDING.json --output NEW_PRIVATE_ASSET_BUNDLE
 ```
 
+For authorized private Azure preparation, `learning.smolvla.cloud_assets` verifies
+the completed vendor inventory and exact allowlist through managed-identity Blob
+reads, checks immutable ETags, byte counts, SHA-256s and pinned metadata revisions,
+then invokes the same native importer. Inputs and outputs must be distinct paths
+under the exact tenant/opaque-owner prefix; existing partial outputs are not
+overwritten. The final prepared-inventory proof is written last. The job deadline
+is bounded, and the runtime image must match its reviewed `code-manifest.json`.
+`learning/smolvla/Dockerfile.runtime` layers only an allowlisted learning-code
+build context over an explicitly digest-pinned dependency image; do not send the
+whole worktree or test/credential files as its build context.
+
+The September 23 authorized reconciliation observed asset-stage execution
+`factory20-smol-assets-01-wyvpmlc` succeed, then independently re-read all **20
+private files (2,941,579,286 bytes)** in bounded CPU execution
+`factory20-learning-smol-prep-01-apbq8a5`. That second job checked every content
+hash and metadata revision and published the private verification proof with SHA
+`2c396c80cfa4cd2ddd41207569ffefcc16e2de87fcac268bd40147c3961220cc`.
+It loaded **no model weights** and ran **zero optimizer steps**. This proves
+staged asset integrity, not a prepared robot binding, learned policy or task
+accuracy. Native bundle preparation still requires the actual deployed servo
+profile, approved full task and independently verified real capture provenance.
+
 Binding JSON contains `scope: {tenant_id, owner_id}`, `control_profile` and
 `task: {task_id, instruction, goal_id}`. `owner_id` is the opaque 64-hex owner
 hash, **not** the actor's object ID. `prepare.VENDOR_SHA256` and

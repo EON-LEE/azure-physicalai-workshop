@@ -6,8 +6,8 @@ from learning.common import ContractError
 from learning.smolvla import BACKBONE_ID, BACKBONE_REVISION, MODEL_ID, MODEL_REVISION
 from learning.smolvla.prepare import VENDOR_GIT_BLOBS, VENDOR_SHA256
 
-TENANT = "2573db8c-dfe5-4805-9e28-a0859692e705"
-OWNER = "2ec908df6936652c12469d5a2f274a3012fbe41a4896a5ab7ef59ecbc2a3f803"
+TENANT = "11111111-1111-4111-8111-111111111111"
+OWNER = "a" * 64
 PREFIX = f"tenants/{TENANT}/owners/{OWNER}/learning/vendor/smolvla-20260923-01"
 
 
