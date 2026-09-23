@@ -1,7 +1,7 @@
 # Azure policy learning
 
 This is the learning slice of the existing customer inspection cell, not a second
-simulator or a replacement controller. It uses the Isaac Sim **5.1.0 Franka**
+simulator or a replacement controller. It supports pinned Isaac Sim **5.1.0/6.0.0 Franka**
 articulation, the existing customer environment revision and reviewed scene
 builder, both real cameras, and all **nine** joints. `learning/` is deliberately
 independent of the API, UI, and Isaac SDK. Only its capture/contract modules need
@@ -24,6 +24,26 @@ fixtures and records those limitations; retain the ACR run ID and image digest
 alongside it.
 
 ## Capture contract and simulator integration
+
+The GR00T teaching path uses **`physicalai.demonstrations/v2`**, not a relabeled
+v1 baseline recording. `EpisodeWriter(..., control_profile=ControlProfile(
+servo_profile_sha256=...), demonstration=DemonstrationSource(kind, task_id,
+instruction, goal_id, source_policy_sha256=None))` selects v2. Omitting both
+arguments preserves v1 exactly. The v2 profile `franka-position-hold-10hz-v1`
+requires 10 Hz control / 60 Hz physics, six held absolute nine-joint targets,
+zero actual target velocities and arm-only measured PhysX gravity compensation.
+Its SHA is `digest(canonical(asdict(profile)))`; the servo digest identifies the
+reviewed shared runtime implementation, not an assertion of measured timing.
+
+`FrameSample.applied_controls` must contain six `AppliedControl(physics_step,
+monotonic_ns, commanded_joint_targets, commanded_joint_velocities, gravity_efforts)`
+values from actual following physics ticks. Sample observation/images first,
+apply the command, collect each real tick, then send the completed immutable
+batch to the writer's owning thread. Changed intervening targets, missing ticks,
+nonzero target velocities or finger gravity efforts invalidate the recording.
+Partial/cancelled intervals are not padded into training examples. Runtime
+timing approval and physical guards remain outside the writer. The unchanged
+60 Hz reference controller remains v1; the GR00T exporter rejects it.
 
 `physicalai.demonstrations/v1` is a closed, versioned JSON contract, implemented
 by `learning.contract`. Unknown fields are rejected, including rewards, defect

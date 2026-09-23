@@ -10,6 +10,7 @@ from uuid import UUID
 from learning import CONTRACT_VERSION
 from learning.common import (
     ContractError,
+    canonical,
     digest,
     file_digest,
     integer,
@@ -34,6 +35,7 @@ JOINT_UPPER = (2.8973, 1.7628, 2.8973, -0.0698, 2.8973, 3.7525, 2.8973, 0.04, 0.
 CAMERAS = ("inspection", "overview")
 SPLITS = ("train", "validation", "test")
 MAX_PNG_BYTES = 32 * 1024 * 1024
+TEACHING_CONTRACT_VERSION = "physicalai.demonstrations/v2"
 FRAME_KEYS = {
     "frame_index",
     "captured_at_utc",
@@ -145,6 +147,69 @@ class CameraSample:
 
 
 @dataclass(frozen=True)
+class ControlProfile:
+    servo_profile_sha256: str
+    profile_id: str = "franka-position-hold-10hz-v1"
+    control_hz: int = 10
+    physics_hz: int = 60
+    hold_steps: int = 6
+    velocity_target_mode: str = "zero"
+    gravity_compensation: str = "physx_measured_arm_only"
+
+    def validate(self) -> None:
+        sha256(self.servo_profile_sha256, "reviewed servo profile")
+        require(
+            self.profile_id == "franka-position-hold-10hz-v1"
+            and self.velocity_target_mode == "zero"
+            and self.gravity_compensation == "physx_measured_arm_only",
+            "Unsupported teaching servo semantics",
+        )
+        for value, expected in ((self.control_hz, 10), (self.physics_hz, 60), (self.hold_steps, 6)):
+            require(type(value) is int and value == expected, "Teaching requires 10Hz/60Hz hold6")
+
+    @property
+    def sha256(self) -> str:
+        self.validate()
+        return digest(canonical(asdict(self)))
+
+
+@dataclass(frozen=True)
+class DemonstrationSource:
+    kind: str
+    task_id: str
+    instruction: str
+    goal_id: str
+    source_policy_sha256: str | None = None
+
+    def validate(self) -> None:
+        require(
+            self.kind in ("human_teleop", "reference_controller", "learned"),
+            "Unknown demonstration source",
+        )
+        token(self.task_id, "approved task")
+        token(self.goal_id, "approved goal")
+        require(
+            isinstance(self.instruction, str)
+            and 1 <= len(self.instruction.strip()) <= 512
+            and all(ord(character) >= 32 for character in self.instruction),
+            "Expected a bounded approved task instruction",
+        )
+        if self.kind == "learned":
+            sha256(self.source_policy_sha256, "demonstrator checkpoint")
+        else:
+            require(self.source_policy_sha256 is None, "Non-policy demonstration has a checkpoint")
+
+
+@dataclass(frozen=True)
+class AppliedControl:
+    physics_step: int
+    monotonic_ns: int
+    commanded_joint_targets: tuple[float, ...]
+    commanded_joint_velocities: tuple[float, ...]
+    gravity_efforts: tuple[float, ...]
+
+
+@dataclass(frozen=True)
 class FrameSample:
     captured_at_utc: str
     monotonic_ns: int
@@ -154,6 +219,7 @@ class FrameSample:
     images: dict[str, CameraSample]
     terminated: bool = False
     truncated: bool = False
+    applied_controls: tuple[AppliedControl, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -245,14 +311,51 @@ def validate_frame(
     *,
     index: int,
     control_interval_steps: int,
+    control_profile: ControlProfile | None = None,
 ) -> None:
-    keys(frame, FRAME_KEYS, "frame")
+    keys(frame, FRAME_KEYS | ({"applied_controls"} if control_profile else set()), "frame")
     require(integer(frame["frame_index"], "frame index") == index, "Nonsequential frame index")
     captured = utc(frame["captured_at_utc"])
     integer(frame["monotonic_ns"], "monotonic timestamp", 1)
     integer(frame["physics_step"], "physics step")
     bounded_joints(frame["joint_positions"], "measured joints")
     bounded_joints(frame["commanded_joint_targets"], "issued joint targets")
+    if control_profile is not None:
+        control_profile.validate()
+        controls = frame["applied_controls"]
+        require(
+            isinstance(controls, list) and len(controls) == control_profile.hold_steps,
+            "Incomplete actual hold interval",
+        )
+        timestamp = frame["monotonic_ns"]
+        for offset, control in enumerate(controls, start=1):
+            keys(control, set(AppliedControl.__dataclass_fields__), "applied control")
+            require(
+                integer(control["physics_step"], "applied physics step")
+                == frame["physics_step"] + offset,
+                "Missing/duplicate actual physics tick",
+            )
+            require(
+                integer(control["monotonic_ns"], "applied timestamp", 1) > timestamp,
+                "Control must follow its observation with strictly increasing timestamps",
+            )
+            timestamp = control["monotonic_ns"]
+            require(
+                bounded_joints(control["commanded_joint_targets"], "held targets")
+                == tuple(frame["commanded_joint_targets"]),
+                "Intervening changed target; downsampling is forbidden",
+            )
+            require(
+                vector(control["commanded_joint_velocities"], 9, "issued velocities") == (0.0,) * 9,
+                "Teaching profile requires actual zero velocity targets",
+            )
+            gravity = vector(control["gravity_efforts"], 9, "measured gravity efforts")
+            require(gravity[7:] == (0.0, 0.0), "Gravity compensation must be arm-only")
+        if previous is not None:
+            require(
+                frame["monotonic_ns"] >= previous["applied_controls"][-1]["monotonic_ns"],
+                "Next observation precedes completion of the previous hold",
+            )
     require(type(frame["terminated"]) is bool and type(frame["truncated"]) is bool, "Invalid done")
     require(not (frame["terminated"] and frame["truncated"]), "Ambiguous episode end")
     if previous is not None:
@@ -315,6 +418,7 @@ def validate_dataset(
     if expected_manifest_sha256 is not None:
         require(checksum == sha256(expected_manifest_sha256), "Manifest checksum mismatch")
     manifest = read_json(path)
+    is_teaching = manifest.get("schema") == TEACHING_CONTRACT_VERSION
     keys(
         manifest,
         {
@@ -326,13 +430,31 @@ def validate_dataset(
             "joint_names",
             "joint_units",
             "episodes",
-        },
+        }
+        | ({"control_profile"} if is_teaching else set()),
         "manifest",
     )
-    require(manifest["schema"] == CONTRACT_VERSION, "Unsupported demonstration schema")
+    require(
+        manifest["schema"] in (CONTRACT_VERSION, TEACHING_CONTRACT_VERSION),
+        "Unsupported demonstration schema",
+    )
     token(manifest["dataset_id"], "dataset ID")
     require(manifest["scope"] == asdict(expected_scope), "Tenant/owner scope mismatch")
     interval = timing(manifest["fps"], manifest["physics_hz"])
+    profile = None
+    if is_teaching:
+        profile = ControlProfile(
+            **keys(
+                manifest["control_profile"],
+                set(ControlProfile.__dataclass_fields__),
+                "control profile",
+            )
+        )
+        profile.validate()
+        require(
+            manifest["fps"] == profile.control_hz and manifest["physics_hz"] == profile.physics_hz,
+            "Capture rate differs from the teaching control profile",
+        )
     require(manifest["joint_names"] == list(JOINT_NAMES), "Wrong joint ordering")
     require(manifest["joint_units"] == list(JOINT_UNITS), "Wrong joint units")
     require(
@@ -343,7 +465,15 @@ def validate_dataset(
     verified = []
     image_size = None
     for metadata in manifest["episodes"]:
-        keys(metadata, EPISODE_KEYS, "episode")
+        keys(metadata, EPISODE_KEYS | ({"demonstration"} if is_teaching else set()), "episode")
+        if is_teaching:
+            DemonstrationSource(
+                **keys(
+                    metadata["demonstration"],
+                    set(DemonstrationSource.__dataclass_fields__),
+                    "demonstration source",
+                )
+            ).validate()
         spec = EpisodeSpec(**{name: metadata[name] for name in EpisodeSpec.__dataclass_fields__})
         spec.validate()
         provenance = keys(
@@ -379,6 +509,7 @@ def validate_dataset(
                     frames[-1] if frames else None,
                     index=index,
                     control_interval_steps=interval,
+                    control_profile=profile,
                 )
                 for camera, image in frame["images"].items():
                     expected_path = f"episodes/{spec.episode_id}/{camera}/{index:08d}.png"

@@ -21,6 +21,9 @@ from learning.contract import (
     CAMERAS,
     JOINT_NAMES,
     JOINT_UNITS,
+    TEACHING_CONTRACT_VERSION,
+    ControlProfile,
+    DemonstrationSource,
     EpisodeSpec,
     FrameSample,
     Provenance,
@@ -72,12 +75,26 @@ class EpisodeWriter:
         physics_hz: int = 60,
         max_frames: int = 3600,
         max_bytes: int = 512 * 1024 * 1024,
+        control_profile: ControlProfile | None = None,
+        demonstration: DemonstrationSource | None = None,
     ) -> None:
         scope.validate()
         episode.validate()
         provenance.validate()
         token(dataset_id, "dataset ID")
         self.interval = timing(fps, physics_hz)
+        require(
+            (control_profile is None) == (demonstration is None),
+            "Control profile and demonstration source must be supplied together",
+        )
+        if control_profile is not None:
+            control_profile.validate()
+            demonstration.validate()
+            require(
+                fps == control_profile.control_hz and physics_hz == control_profile.physics_hz,
+                "Capture must use the actual 10Hz teaching hold profile, not 60Hz decimation",
+            )
+        self.control_profile = control_profile
         integer(max_frames, "max frames", 2, 100000)
         integer(max_bytes, "max bytes", 1024, 20 * 1024**3)
         require(not root.exists() and not root.is_symlink(), "Capture folder already exists")
@@ -97,7 +114,7 @@ class EpisodeWriter:
         self.frames_path.parent.mkdir(parents=True)
         self.frames_path.touch(exist_ok=False)
         self.manifest = {
-            "schema": CONTRACT_VERSION,
+            "schema": TEACHING_CONTRACT_VERSION if control_profile else CONTRACT_VERSION,
             "dataset_id": dataset_id,
             "scope": asdict(scope),
             "fps": fps,
@@ -106,6 +123,9 @@ class EpisodeWriter:
             "joint_units": list(JOINT_UNITS),
             "episodes": [self.metadata],
         }
+        if control_profile is not None:
+            self.manifest["control_profile"] = asdict(control_profile)
+            self.metadata["demonstration"] = asdict(demonstration)
 
     def _writable(self) -> None:
         require(threading.get_ident() == self.thread_id, "Capture must stay on its creating thread")
@@ -141,7 +161,18 @@ class EpisodeWriter:
             "terminated": sample.terminated,
             "truncated": sample.truncated,
         }
-        validate_frame(frame, self.previous, index=self.count, control_interval_steps=self.interval)
+        if self.control_profile is not None:
+            require(sample.applied_controls is not None, "Missing actual held-control evidence")
+            frame["applied_controls"] = [asdict(control) for control in sample.applied_controls]
+        else:
+            require(sample.applied_controls is None, "v1 cannot carry v2 control evidence")
+        validate_frame(
+            frame,
+            self.previous,
+            index=self.count,
+            control_interval_steps=self.interval,
+            control_profile=self.control_profile,
+        )
         dimensions = {(image["width"], image["height"]) for image in images.values()}
         if self.previous is not None:
             dimensions.update(
@@ -198,6 +229,11 @@ def assemble_dataset(
     manifest = dict(sources[0].manifest, dataset_id=dataset_id, episodes=[])
     seen, seed_splits = set(), {}
     for source in sources:
+        require(
+            source.manifest["schema"] == manifest["schema"]
+            and source.manifest.get("control_profile") == manifest.get("control_profile"),
+            "Cannot mix capture versions or servo profiles",
+        )
         require(
             (source.manifest["fps"], source.manifest["physics_hz"])
             == (manifest["fps"], manifest["physics_hz"]),
