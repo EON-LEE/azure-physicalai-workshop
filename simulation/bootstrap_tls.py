@@ -6,7 +6,7 @@ from pathlib import Path
 from azure.identity import ManagedIdentityCredential
 from azure.keyvault.secrets import SecretClient
 
-from simulation.assets import prepare_assets
+from simulation.assets import configure_asset_environment
 
 
 def main() -> None:
@@ -27,10 +27,7 @@ def main() -> None:
             descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             with os.fdopen(descriptor, "w", encoding="ascii") as stream:
                 stream.write(value)
-        os.environ["FRANKA_USD_PATH"] = str(prepare_assets(credential))
-        os.environ["FRANKA_ASSET_ROOT"] = str(
-            Path("/data/assets") / os.environ["FRANKA_ASSET_SHA256"]
-        )
+        configure_asset_environment(credential)
     os.environ["SIM_TLS_CERT_FILE"] = str(directory / "server.crt")
     os.environ["SIM_TLS_KEY_FILE"] = str(directory / "server.key")
     from simulation.run_isaac import main as run

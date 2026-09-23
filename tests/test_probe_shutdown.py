@@ -38,6 +38,7 @@ def probe(monkeypatch, tmp_path):
         ]
     )
     monkeypatch.setenv("ENTRA_TENANT_ID", str(ACTOR.tenant_id))
+    monkeypatch.setattr(probe_control, "initialize_probe_assets", lambda: None, raising=False)
     events = []
     at_close = []
     real_fsync = os.fsync

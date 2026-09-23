@@ -101,3 +101,13 @@ def prepare_assets(credential) -> Path:
     if not result.is_file():
         raise ValueError("The robot USD is missing from the verified asset cache.")
     return result
+
+
+def configure_asset_environment(credential) -> Path:
+    asset = prepare_assets(credential)
+    root = Path("/data/assets") / os.environ["FRANKA_ASSET_SHA256"]
+    if not asset.is_relative_to(root):
+        raise ValueError("The verified robot asset is outside the pinned cache root.")
+    os.environ["FRANKA_USD_PATH"] = str(asset)
+    os.environ["FRANKA_ASSET_ROOT"] = str(root)
+    return asset

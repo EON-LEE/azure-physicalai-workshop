@@ -14,10 +14,13 @@ from itertools import pairwise
 from pathlib import Path
 from uuid import UUID, uuid4
 
+from azure.identity import ManagedIdentityCredential
+
 from apps.api.models import EnvironmentRecord, Execution, MotionCommand, utcnow
 from learning.common import canonical, digest, read_json, require
 from learning.contract import ControlProfile, DemonstrationSource, Scope
 from learning.inference import GuardedPolicyAdapter
+from simulation.assets import configure_asset_environment
 from simulation.core import SimulationCore
 from simulation.demonstrations import Demonstration
 from simulation.extensions import SceneRegistry
@@ -33,6 +36,11 @@ from simulation.runtime_contracts import (
 )
 
 FIXTURE_SHA = digest(b"physicalai-isolated-actuation-fixture/v1")
+
+
+def initialize_probe_assets() -> None:
+    with ManagedIdentityCredential(client_id=os.environ["AZURE_CLIENT_ID"]) as credential:
+        configure_asset_environment(credential)
 
 
 def _persist_receipt(path: Path, report: dict) -> None:
@@ -186,8 +194,10 @@ def run_probe(args) -> dict:
     core = None
     hardware = None
     report = None
-    phase = "application_initialization"
+    phase = "asset_preparation"
     try:
+        initialize_probe_assets()
+        phase = "application_initialization"
         application = create_simulation_app()
         from simulation.isaac_adapter import IsaacWorkcell
 
