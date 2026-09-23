@@ -39,6 +39,58 @@ def example_config() -> dict:
     return config
 
 
+def check_actual_cancel_sdk(config: dict) -> dict:
+    import inspect
+    from types import SimpleNamespace
+    from unittest.mock import Mock, create_autospec
+
+    from azure.ai.ml.operations import JobOperations
+    from azure.core.pipeline.policies import RetryPolicy
+
+    from learning.gr00t.azure import job_tags, workspace_id
+    from learning.smolvla.azure import PolicyJobs
+
+    name = "offline-cancel-signature-only"
+    tags = job_tags(config, "a" * 64, policy_type="smolvla")
+    jobs = create_autospec(JobOperations, instance=True, spec_set=True)
+    jobs.get.side_effect = [
+        SimpleNamespace(name=name, id=workspace_id(config) + "/jobs/" + name, tags=tags, status=s)
+        for s in ("Queued", "CancelRequested")
+    ]
+    receipt = PolicyJobs(SimpleNamespace(jobs=jobs), config, storage_client=None).cancel(name)
+    jobs.begin_cancel.assert_called_once_with(name, polling=False, retry_total=0)
+    jobs.begin_cancel.return_value.result.assert_not_called()
+    require(receipt["status"] == "cancelling", "LRO acknowledgement is not terminal job proof")
+    rest = Mock()
+    shim = SimpleNamespace(
+        _operation_scope=SimpleNamespace(resource_group_name=config["resource_group"]),
+        _workspace_name=config["workspace"],
+        _operation_2023_02_preview=SimpleNamespace(begin_cancel=rest),
+        _kwargs={},
+    )
+    inspect.unwrap(JobOperations.begin_cancel)(shim, name, polling=False, retry_total=0)
+    rest.assert_called_once_with(
+        id=name,
+        resource_group_name=config["resource_group"],
+        workspace_name=config["workspace"],
+        polling=False,
+        retry_total=0,
+    )
+    require(
+        RetryPolicy().configure_retries({"retry_total": 0})["total"] == 0,
+        "Actual Azure Core did not disable implicit mutation retries",
+    )
+    return {
+        "actual_job_operations_autospec": True,
+        "actual_public_sdk_forwarding": True,
+        "actual_retry_policy_checked": True,
+        "method": "begin_cancel",
+        "polling": False,
+        "retry_total": 0,
+        "cloud_calls": 0,
+    }
+
+
 def run(output: Path, *, job_deadline_utc: str | None = None) -> dict:
     from azure.ai.ml import load_job
 
@@ -77,6 +129,7 @@ def run(output: Path, *, job_deadline_utc: str | None = None) -> dict:
         "check": "real-azure-ai-ml-1.35.0-schema",
         "policy_type": "smolvla",
         "config_schema": config["schema"],
+        "cancellation_sdk": check_actual_cancel_sdk(config),
         "schemas": successes,
         "cloud_calls": 0,
         "jobs_submitted": 0,

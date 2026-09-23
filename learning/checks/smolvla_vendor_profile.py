@@ -21,6 +21,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
 
+from learning import deadlines
 from learning.common import (
     ContractError,
     canonical,
@@ -33,9 +34,11 @@ from learning.common import (
     require,
     sha256,
 )
+from learning.deadlines import JobDeadline, validate_deadline
 from learning.offline import enforce_offline
 
-PROFILE_SCHEMA = "physicalai.smolvla-vendor-profile/v1"
+PROFILE_SCHEMA = "physicalai.smolvla-vendor-profile/v2"
+LEGACY_PROFILE_SCHEMA = "physicalai.smolvla-vendor-profile/v1"
 PROFILE_SETTINGS = {
     "warmup_calls": 3,
     "measured_calls": 20,
@@ -213,12 +216,21 @@ def _helper(spec: dict):
 
 
 def validate_specification(spec: dict) -> None:
+    fields = {"schema", "vendor_specification", "profile_code_sha256", "settings"}
+    if spec.get("schema") == PROFILE_SCHEMA:
+        fields |= {"start_deadline_utc", "entry_code_sha256", "deadline_code_sha256"}
     keys(
         spec,
-        {"schema", "vendor_specification", "profile_code_sha256", "settings"},
+        fields,
         "profile specification",
     )
-    require(spec["schema"] == PROFILE_SCHEMA, "Wrong vendor profiling schema")
+    require(
+        spec["schema"] in (PROFILE_SCHEMA, LEGACY_PROFILE_SCHEMA), "Wrong vendor profiling schema"
+    )
+    if spec["schema"] == PROFILE_SCHEMA:
+        validate_deadline(spec["start_deadline_utc"])
+        sha256(spec["entry_code_sha256"])
+        sha256(spec["deadline_code_sha256"])
     sha256(spec["profile_code_sha256"])
     validate_settings(spec["settings"])
     helper = _helper(spec)
@@ -227,6 +239,29 @@ def validate_specification(spec: dict) -> None:
         spec["vendor_specification"]["execution_timeout_seconds"] == 600,
         "Approved profiling execution budget is exactly 600 seconds",
     )
+
+
+def admit_start(spec: dict) -> dict:
+    require(
+        spec.get("schema") == PROFILE_SCHEMA,
+        "New diagnostic execution requires v2 with an explicit immutable start deadline",
+    )
+    deadline = JobDeadline(spec.get("start_deadline_utc"))
+    deadline.check()
+    validate_specification(spec)
+    for path, key in (
+        (Path(__file__), "profile_code_sha256"),
+        (Path(__file__).with_name("smolvla_profile_entry.py"), "entry_code_sha256"),
+        (Path(deadlines.__file__), "deadline_code_sha256"),
+    ):
+        require(file_digest(path) == spec[key], f"Approved {key} code checksum mismatch")
+    deadline.check()
+    return {
+        "start_deadline_utc": deadline.value,
+        "start_deadline_sha256": digest(canonical({"start_deadline_utc": deadline.value})),
+        "checked_at_utc": deadlines.utcnow().isoformat().replace("+00:00", "Z"),
+        "admitted": True,
+    }
 
 
 def precision_flags() -> dict:
@@ -268,6 +303,7 @@ def _parameter_dtypes(policy) -> dict:
 
 
 def _build_policy(root: Path, spec: dict, report: dict):
+    report["weight_load_admission"] = admit_start(spec)
     enforce_offline()
     import torch
     from lerobot.configs.policies import PreTrainedConfig
@@ -299,6 +335,7 @@ def _build_policy(root: Path, spec: dict, report: dict):
     torch.set_num_threads(2)
     torch.cuda.reset_peak_memory_stats()
     report["precision_flags_before_load"] = precision_flags()
+    report["weight_load_admission"] = admit_start(spec)
     started = time.monotonic()
     policy = SmolVLAPolicy.from_pretrained(
         root / "assets" / "model",
@@ -819,6 +856,7 @@ def _phase_worker(phase: str, root_string: str, spec: dict) -> None:
                     time.sleep(10)
                 report["passed"] = True
             else:
+                report["start_admission"] = admit_start(spec)
                 enforce_offline()
                 os.environ["TORCH_LOGS"] = "graph_breaks,recompiles,perf_hints"
                 if phase == "baseline":
@@ -920,7 +958,7 @@ def self_test_timeout() -> dict:
 
 
 def run_profile(spec: dict) -> dict:
-    validate_specification(spec)
+    admission = admit_start(spec)
     require(
         file_digest(Path(__file__)) == spec["profile_code_sha256"],
         "Profile harness checksum mismatch",
@@ -937,10 +975,13 @@ def run_profile(spec: dict) -> dict:
     report = helper.initial_report(vendor_spec)
     report.update(
         {
-            "schema": "physicalai.smolvla-vendor-profile-proof/v1",
+            "schema": "physicalai.smolvla-vendor-profile-proof/v2",
             "purpose": "vendor_stage_profile_same_precision_compile_only",
             "profile_code_sha256": spec["profile_code_sha256"],
             "configuration_sha256": digest(canonical(spec)),
+            "entry_code_sha256": spec["entry_code_sha256"],
+            "deadline_code_sha256": spec["deadline_code_sha256"],
+            "start_admission": admission,
             "settings": PROFILE_SETTINGS,
             "started_at_utc": datetime.now(UTC).isoformat(),
             "phases": {},

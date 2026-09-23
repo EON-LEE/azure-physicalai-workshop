@@ -224,6 +224,11 @@ without another POST. `cancellation_requested` records whether this call sent
 the request. `NotResponding`, `Paused` and `Unknown` are not evidence that
 allocation ended. Permission/network failures propagate, retaining an uncertain
 outcome rather than fabricating a terminal receipt.
+The pinned AML SDK uses `jobs.begin_cancel(name, polling=False, retry_total=0)`,
+not the nonexistent `jobs.cancel`. The returned LRO acknowledgement is ignored
+as terminal evidence; an owned GET remains authoritative. The offline SDK check
+uses the installed `JobOperations` autospec, actual public-method forwarding and
+Azure Core retry configuration, in addition to lightweight port tests.
 
 These source guards are **not a deployed durable queue reconciler**. Production
 submission still requires the API/worker owner's independently hosted,
@@ -451,6 +456,19 @@ reported as partial. Missing synthetic fixture bytes may only be reconstructed
 with the unchanged generator and labeled as reconstructed **after exact SHA
 equality to the recorded original**; no forward metrics, stage timings or
 successful result may be generated from reconstruction.
+
+The source-only profiling entry now requires
+`physicalai.smolvla-vendor-profile/v2` with an explicit, immutable
+`start_deadline_utc`. It verifies the actual entry, profiling harness and
+deadline-helper code hashes, and rejects expiry before identity/private asset
+access and again in each spawned phase before loading weights. The v2 proof
+records the exact UTC cutoff, its canonical-object SHA, each actual admission
+check and all code/config/image pins. Historical v1 specifications remain
+inspectable, not executable as new authority. This is a start-admission guard,
+not a claim that a local observer is a durable Azure queue-cancellation service.
+The proposed H100 `...profile-h100-20260923-04` build/submission authorization was
+**suspended before any build or job** when the coordinator selected a separate
+paused-simulation workstream. No H100 profiling or compiler success is claimed.
 
 Official [asynchronous inference](https://github.com/huggingface/lerobot/blob/8fff0fde7c79f23a93d845d1a50e985de01f8b8a/docs/source/async.mdx)
 and [real-time chunking](https://github.com/huggingface/lerobot/blob/8fff0fde7c79f23a93d845d1a50e985de01f8b8a/docs/source/rtc.mdx)

@@ -658,7 +658,7 @@ class Gr00tJobs:
             "CancelRequested",
         )
         if requested:
-            self.client.jobs.cancel(job_name)
+            self.client.jobs.begin_cancel(job_name, polling=False, retry_total=0)
         return {**self.status(job_name), "cancellation_requested": requested}
 
 

@@ -1,4 +1,4 @@
-"""Short immutable-image entry point for the unchanged one-shot profiling harness."""
+"""Short immutable-image entry point; new profiling runs require an explicit UTC start deadline."""
 
 from __future__ import annotations
 

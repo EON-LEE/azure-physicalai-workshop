@@ -56,8 +56,9 @@ def backend(config, *, state="Queued", cancel_error=None):
         calls.append("get")
         return job
 
-    def cancel(name):
+    def cancel(name, **kwargs):
         assert name == job.name
+        assert kwargs == {"polling": False, "retry_total": 0}
         calls.append("cancel")
         if cancel_error:
             raise cancel_error
@@ -66,7 +67,7 @@ def backend(config, *, state="Queued", cancel_error=None):
     client = SimpleNamespace(
         jobs=SimpleNamespace(
             get=get,
-            cancel=cancel,
+            begin_cancel=cancel,
             create_or_update=lambda value: pytest.fail("Never recreate an expired/uncertain job"),
         )
     )
