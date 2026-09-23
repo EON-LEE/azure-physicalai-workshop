@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import hashlib
+import inspect
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, replace
 from importlib.metadata import entry_points
 from math import hypot
+from pathlib import Path
 
 from apps.api.errors import Problem
 from apps.api.models import EnvironmentRecord, Position
@@ -33,6 +36,17 @@ class SceneSpec:
     platform_color: tuple[float, float, float]
     record_demonstration: bool = False
     demonstration_split: str | None = None
+    builder_id: str = "inspection-cell-v1"
+    initial_part_position: Position | None = None
+    scene_builder_sha256: str | None = None
+
+    @property
+    def part_position(self) -> Position:
+        return (
+            self.initial_part_position
+            if self.initial_part_position is not None
+            else self.station(self.source_id).position
+        )
 
     def station(self, station_id: str) -> Station:
         for station in self.stations:
@@ -45,7 +59,13 @@ def can_reset_in_place(previous: SceneSpec, current: SceneSpec) -> bool:
     return (
         not previous.record_demonstration
         and not current.record_demonstration
-        and replace(previous, seed=current.seed, defective=current.defective) == current
+        and replace(
+            previous,
+            seed=current.seed,
+            defective=current.defective,
+            initial_part_position=current.initial_part_position,
+        )
+        == current
     )
 
 
@@ -80,6 +100,7 @@ class InspectionCell(SceneBuilder):
             platform_color=self.platform_color,
             record_demonstration=doc["execution"].get("record_demonstration", False),
             demonstration_split=doc["execution"].get("demonstration_split"),
+            builder_id=doc["scene"]["template_id"],
         )
 
 
@@ -89,11 +110,38 @@ class CustomerInspectionCell(InspectionCell):
     platform_color = (0.35, 0.22, 0.4)
 
 
+class LearningInspectionCell(InspectionCell):
+    """A reviewed initial placement distribution, not a live part-position override."""
+
+    def build(self, environment: EnvironmentRecord) -> SceneSpec:
+        spec = super().build(environment)
+        x, y, z = spec.station(spec.source_id).position
+        if any(
+            not 0.15 <= hypot(x + dx, y + dy) <= 0.75
+            for dx in (-0.02, 0.02)
+            for dy in (-0.02, 0.02)
+        ):
+            raise Problem(
+                422,
+                "learning_source_margin",
+                "The learning source needs a two-centimetre reachable placement margin.",
+            )
+        seed = hashlib.sha256(f"{spec.builder_id}:{spec.seed}".encode("ascii")).digest()
+        offsets = tuple(
+            (2 * int.from_bytes(seed[index : index + 4], "big") / (2**32 - 1) - 1) * 0.02
+            for index in (0, 4)
+        )
+        return replace(
+            spec, defective=False, initial_part_position=(x + offsets[0], y + offsets[1], z)
+        )
+
+
 class SceneRegistry:
     def __init__(self, load_installed: bool = True) -> None:
         self.builders: dict[str, SceneBuilder] = {
             "inspection-cell-v1": InspectionCell(),
             "inspection-cell-custom-v1": CustomerInspectionCell(),
+            "inspection-cell-learning-v1": LearningInspectionCell(),
         }
         if load_installed:
             for point in entry_points(group="physicalai.scenes"):
@@ -106,6 +154,14 @@ class SceneRegistry:
         if not isinstance(builder, SceneBuilder) or builder.api_version != "1":
             raise ValueError(f"Unsupported scene extension API: {name}")
         self.builders[name] = builder
+
+    def builder_digest(self, name: str) -> str:
+        builder = self.builders.get(name)
+        if builder is None:
+            raise Problem(
+                422, "template_not_installed", "The reviewed scene builder is unavailable."
+            )
+        return hashlib.sha256(Path(inspect.getfile(type(builder))).read_bytes()).hexdigest()
 
     def build(self, environment: EnvironmentRecord) -> SceneSpec:
         if validate_environment(environment.document):
@@ -128,6 +184,10 @@ class SceneRegistry:
             raise Problem(
                 422, "invalid_extension", "The scene extension returned an invalid specification."
             )
+        spec = replace(
+            spec,
+            scene_builder_sha256=self.builder_digest(environment.document["scene"]["template_id"]),
+        )
         if spec.robot_profile != "reference-arm":
             raise Problem(
                 422,

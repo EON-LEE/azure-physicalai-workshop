@@ -12,9 +12,15 @@ from test_demonstration_wiring import active_capture
 
 from apps.api.errors import Problem
 from learning.contract import CameraSample, FrameSample
+from simulation.capture_status import CaptureStatusStore
 from simulation.capture_worker import CaptureWorker
 from simulation.run_isaac import SimulatorRuntime
-from simulation.runtime_contracts import CaptureBinding, CaptureReceipt
+from simulation.runtime_contracts import (
+    CaptureBinding,
+    CaptureReceipt,
+    CaptureStatus,
+    CaptureUpdate,
+)
 
 
 def binding():
@@ -133,9 +139,7 @@ def test_queue_exhaustion_invalidates_instead_of_dropping_or_waiting(limit):
             worker.append(sample(0))
         frame = sample(1)
         if limit == "bytes":
-            frame = replace(
-                frame, images={"inspection": CameraSample(b"x" * 1025, 1, 1, 1)}
-            )
+            frame = replace(frame, images={"inspection": CameraSample(b"x" * 1025, 1, 1, 1)})
         with pytest.raises(RuntimeError, match="backlog"):
             worker.append(frame)
         assert worker.snapshot().state.status == "invalid"
@@ -216,16 +220,107 @@ def test_late_or_misbound_capture_completion_is_rejected(monkeypatch, changed):
     assert core.active_command is None
 
 
-def test_reactivation_fences_upload_completion_without_poisoning_new_scene(monkeypatch):
+def test_old_epoch_capture_completion_updates_only_its_historical_execution(monkeypatch):
+    from test_simulation_core import command as motion_command
+
     core, command = active_capture(monkeypatch)
     core.begin_motion(command.command_id)
     context = core.begin_capture(command.command_id)
     core.finish("succeeded", (0.22, -0.38, 0.2))
+    previous = core.command(ACTOR.owner_key, command.command_id)
     core.activate(ACTOR.owner_key, core.environment)
-    assert not core.publish_capture(context, "invalid", message="Late old upload")
-    assert core.capture(ACTOR.owner_key, command.command_id).status == "invalid"
+    core.next_action()
+    for camera in ("overview", "inspection"):
+        core.publish_frame(camera, PNG, (0.35, 0.25, 0.2), 5, epoch=core.epoch)
+    next_command = motion_command(core, core.environment)
+    core.dispatch(ACTOR.owner_key, next_command)
+    core.next_action()
+    core.begin_motion(next_command.command_id)
+    core.begin_capture(next_command.command_id)
+    new_epoch, new_revision = core.epoch, core.state_revision
+    receipt = CaptureReceipt(
+        "https://test.blob.core.windows.net/demonstrations/manifest.json",
+        "b" * 64,
+        str(command.command_id),
+        2,
+    )
+    assert core.publish_capture(context, "ready", receipt=receipt)
+    assert core.capture(ACTOR.owner_key, command.command_id).status == "ready"
+    assert core.capture(ACTOR.owner_key, next_command.command_id).status == "recording"
+    assert core.active_command == (ACTOR.owner_key, next_command.command_id)
+    assert core.command(ACTOR.owner_key, next_command.command_id).status == "running"
+    historical = core.command(ACTOR.owner_key, command.command_id)
+    assert historical.status == previous.status
+    assert historical.completed_at == previous.completed_at
+    assert core.epoch == new_epoch and core.state_revision == new_revision
     assert core.error is None
-    assert core.next_action().epoch == core.epoch
+
+
+def test_terminal_capture_journal_is_owner_private_immutable_and_restart_readable(tmp_path):
+    from apps.api.models import DemonstrationResult
+
+    context = binding()
+    state = CaptureStatus(
+        capture_id=context.capture_id,
+        command_id=context.command_id,
+        epoch=context.epoch,
+        status="ready",
+        receipt=DemonstrationResult(
+            status="uploaded",
+            manifest_uri="https://test.blob.core.windows.net/demos/manifest.json",
+            manifest_sha256="b" * 64,
+            episode_id=context.command_id,
+            frame_count=2,
+        ),
+    )
+    store = CaptureStatusStore(tmp_path / "capture-status")
+    store.put(CaptureUpdate(context, state))
+    restarted = CaptureStatusStore(tmp_path / "capture-status")
+    assert restarted.get(ACTOR.owner_key, context.command_id) == state
+    assert restarted.get(OTHER.owner_key, context.command_id) is None
+    with pytest.raises(ValueError, match="binding"):
+        restarted.put(CaptureUpdate(replace(context, epoch=uuid4()), state))
+    assert restarted.get(ACTOR.owner_key, context.command_id) == state
+
+
+class LoopHardware:
+    def __init__(self):
+        self.world = SimpleNamespace(play=lambda: None)
+        self.recording = None
+        self.target = None
+        self.steps = 0
+        self.complete = False
+        self.started = False
+
+    def load(self, spec):
+        self.steps, self.started, self.complete = 0, False, False
+
+    def start(self, target, recording):
+        self.target, self.recording = target, recording
+        self.recording.append(sample(0))
+        self.started = True
+
+    def advance(self):
+        self.steps += 1
+        completed, self.complete = self.complete, False
+        return completed
+
+    def stop(self):
+        pass
+
+    def position(self):
+        return (0.22, -0.38, 0.2)
+
+    def motion_phase(self):
+        return "idle"
+
+    def capture(self, camera):
+        return None
+
+    def finish_recording(self, truncated):
+        recorder, self.recording = self.recording, None
+        recorder.append(replace(sample(1), terminated=not truncated, truncated=truncated))
+        recorder.seal()
 
 
 def test_main_loop_physics_and_actual_heartbeat_continue_during_upload(monkeypatch, tmp_path):
@@ -235,48 +330,7 @@ def test_main_loop_physics_and_actual_heartbeat_continue_during_upload(monkeypat
     core.pending.append(StartMotion(command, command.target_station_id))
     release = threading.Event()
     clock = [10.0]
-
-    class World:
-        def play(self):
-            pass
-
-    class Hardware:
-        def __init__(self):
-            self.world = World()
-            self.recording = None
-            self.target = None
-            self.steps = 0
-            self.complete = False
-            self.started = False
-
-        def start(self, target, recording):
-            self.target, self.recording = target, recording
-            self.recording.append(sample(0))
-            self.started = True
-
-        def advance(self):
-            self.steps += 1
-            completed, self.complete = self.complete, False
-            return completed
-
-        def stop(self):
-            pass
-
-        def position(self):
-            return (0.22, -0.38, 0.2)
-
-        def motion_phase(self):
-            return "idle"
-
-        def capture(self, camera):
-            return None
-
-        def finish_recording(self, truncated):
-            recorder, self.recording = self.recording, None
-            recorder.append(sample(1, terminal=True))
-            recorder.seal()
-
-    hardware = Hardware()
+    hardware = LoopHardware()
     heartbeat = tmp_path / "heartbeat"
     runtime = SimulatorRuntime(
         core,
@@ -308,6 +362,84 @@ def test_main_loop_physics_and_actual_heartbeat_continue_during_upload(monkeypat
         assert core.capture(ACTOR.owner_key, command.command_id).status == "ready"
     finally:
         release.set()
+        runtime.close()
+
+
+def test_two_bounded_workers_allow_new_capture_without_losing_the_old_upload(monkeypatch, tmp_path):
+    from test_simulation_core import command as motion_command
+
+    from simulation.core import StartMotion
+
+    core, first = active_capture(monkeypatch)
+    core.pending.append(StartMotion(first, first.target_station_id))
+    releases = [threading.Event(), threading.Event()]
+    created = []
+
+    def factory(context):
+        backend = Backend(context, block_upload=releases[len(created)])
+        created.append(backend)
+        return backend
+
+    hardware = LoopHardware()
+    store = CaptureStatusStore(tmp_path / "journal")
+    runtime = SimulatorRuntime(
+        core,
+        hardware,
+        heartbeat=tmp_path / "heartbeat",
+        capture_factory=factory,
+        capture_store=store,
+    )
+    try:
+        runtime.tick()
+        first_worker = runtime.capture_worker
+        assert first_worker.prepared.wait(2)
+        runtime.tick()
+        hardware.complete = True
+        runtime.tick()
+        assert first_worker.upload_started.wait(2)
+        first_result = core.command(ACTOR.owner_key, first.command_id)
+        core.activate(ACTOR.owner_key, core.environment)
+        runtime.tick()
+        for camera in ("overview", "inspection"):
+            core.publish_frame(camera, PNG, (0.35, 0.25, 0.2), 5, epoch=core.epoch)
+        second = motion_command(core, core.environment)
+        core.dispatch(ACTOR.owner_key, second)
+        runtime.tick()
+        second_worker = runtime.capture_worker
+        assert second_worker is not first_worker and second_worker.prepared.wait(2)
+        runtime.tick()
+        assert len(runtime.capture_workers) == 2
+        assert core.command(ACTOR.owner_key, second.command_id).status == "running"
+        releases[0].set()
+        first_worker.thread.join(2)
+        runtime.tick()
+        assert core.capture(ACTOR.owner_key, first.command_id).status == "ready"
+        assert (
+            core.command(ACTOR.owner_key, first.command_id).completed_at
+            == first_result.completed_at
+        )
+        assert core.active_command == (ACTOR.owner_key, second.command_id)
+        assert core.capture(ACTOR.owner_key, second.command_id).status == "recording"
+        hardware.complete = True
+        runtime.tick()
+        releases[1].set()
+        second_worker.thread.join(2)
+        runtime.tick()
+        assert core.capture(ACTOR.owner_key, second.command_id).status == "ready"
+        from simulation.core import SimulationCore
+        from simulation.extensions import SceneRegistry
+
+        restarted = SimulationCore(
+            SceneRegistry(load_installed=False), capture_status_reader=store.get
+        )
+        assert restarted.capture(ACTOR.owner_key, first.command_id).status == "ready"
+        assert restarted.capture(ACTOR.owner_key, second.command_id).status == "ready"
+        with pytest.raises(Problem):
+            restarted.capture(OTHER.owner_key, first.command_id)
+        assert restarted.active_command is None
+    finally:
+        for release in releases:
+            release.set()
         runtime.close()
 
 

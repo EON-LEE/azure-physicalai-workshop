@@ -17,6 +17,8 @@ from azure.storage.blob import BlobServiceClient, ContentSettings
 from apps.api.models import EnvironmentRecord
 from learning.capture import EpisodeWriter
 from learning.contract import (
+    ControlProfile,
+    DemonstrationSource,
     EpisodeSpec,
     FrameSample,
     Provenance,
@@ -35,6 +37,8 @@ class DemonstrationRequest:
     spec: SceneSpec
     command_id: UUID
     builder_path: Path
+    control_profile: ControlProfile | None = None
+    demonstration: DemonstrationSource | None = None
 
 
 class Demonstration:
@@ -56,8 +60,35 @@ class Demonstration:
             environment = core.environment.model_copy(deep=True)
             spec = core.spec
             builder = core.registry.builders[environment.document["scene"]["template_id"]]
+            teaching = core.teaching_by_command.get(core.active_command)
+            policy = core.policy_commands.get(core.active_command)
+            profile, demonstration = None, None
+            if teaching is not None:
+                request = core.teaching_sessions[teaching].request
+                profile = core.control_profile
+                demonstration = DemonstrationSource(
+                    request.demonstrator_kind,
+                    request.task.task_id,
+                    request.task.instruction,
+                    request.task.goal_id,
+                )
+            elif policy is not None:
+                profile = core.control_profile
+                demonstration = DemonstrationSource(
+                    "learned",
+                    policy.task.task_id,
+                    policy.task.instruction,
+                    policy.task.goal_id,
+                    policy.model_sha256,
+                )
             return DemonstrationRequest(
-                owner, environment, spec, command_id, Path(inspect.getfile(type(builder)))
+                owner,
+                environment,
+                spec,
+                command_id,
+                Path(inspect.getfile(type(builder))),
+                profile,
+                demonstration,
             )
 
     def __init__(
@@ -133,10 +164,12 @@ class Demonstration:
                 spec.demonstration_split,
             ),
             provenance=provenance,
-            fps=60,
+            fps=request.control_profile.control_hz if request.control_profile is not None else 60,
             physics_hz=60,
-            max_frames=18002,
+            max_frames=3002 if request.control_profile is not None else 18002,
             max_bytes=512 * 1024 * 1024,
+            control_profile=request.control_profile,
+            demonstration=request.demonstration,
         )
 
     def append(self, sample: FrameSample) -> None:

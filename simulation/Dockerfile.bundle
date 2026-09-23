@@ -3,6 +3,6 @@ COPY apps/__init__.py /app/apps/__init__.py
 COPY apps/api/ /app/apps/api/
 COPY contracts/ /app/contracts/
 COPY simulation/ /app/simulation/
-COPY learning/__init__.py learning/common.py learning/contract.py learning/capture.py /app/learning/
+COPY learning/ /app/learning/
 COPY simulation/Dockerfile.host /build/Dockerfile
 COPY simulation/Dockerfile.six /build/Dockerfile.six

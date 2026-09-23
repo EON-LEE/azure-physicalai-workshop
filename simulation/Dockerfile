@@ -16,7 +16,7 @@ COPY apps/__init__.py apps/__init__.py
 COPY apps/api/ apps/api/
 COPY contracts/ contracts/
 COPY simulation/ simulation/
-COPY learning/__init__.py learning/common.py learning/contract.py learning/capture.py learning/
+COPY learning/ learning/
 COPY --from=assets /reference/franka.tar /opt/physicalai/reference/franka.tar
 COPY --from=assets /reference/bundle.json /opt/physicalai/reference/bundle.json
 ENV PYTHONPATH=/app PYTHONUNBUFFERED=1

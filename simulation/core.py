@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import base64
 import threading
+import time
 from collections import OrderedDict, deque
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import Literal
@@ -24,14 +26,26 @@ from apps.api.models import (
     utcnow,
 )
 from apps.api.service import check_fresh, content_hash
+from learning.contract import ControlProfile, Scope
+from learning.inference import ControlContext
 from simulation.extensions import SceneRegistry, SceneSpec
+from simulation.policy_executor import PolicyProvider
 from simulation.runtime_contracts import (
     CaptureBinding,
     CapturePhase,
     CaptureReceipt,
     CaptureStatus,
     CommandBinding,
+    PolicyCommand,
+    PolicyExecution,
+    PolicyRuntime,
+    TeachingInput,
+    TeachingIntent,
+    TeachingLease,
+    TeachingStart,
+    TeachingState,
 )
+from simulation.teaching import TeachingSession
 
 
 @dataclass(frozen=True)
@@ -52,11 +66,42 @@ class StopMotion:
     command_id: UUID
 
 
+@dataclass(frozen=True)
+class StartTeaching:
+    request: TeachingStart
+
+
+@dataclass(frozen=True)
+class FinishTeaching:
+    binding: CommandBinding
+
+
+@dataclass(frozen=True)
+class StartPolicy:
+    request: PolicyCommand
+
+
 class SimulationCore:
     """Thread-safe protocol state; all physics execution stays in the Isaac main thread."""
 
-    def __init__(self, registry: SceneRegistry, max_commands: int = 2048) -> None:
+    def __init__(
+        self,
+        registry: SceneRegistry,
+        max_commands: int = 2048,
+        *,
+        control_profile: ControlProfile | None = None,
+        policy_provider: PolicyProvider | None = None,
+        tenant_id: str | None = None,
+        capture_status_reader: Callable[[str, UUID], CaptureStatus | None] | None = None,
+        clock_ns: Callable[[], int] = time.monotonic_ns,
+        clock_utc: Callable[[], datetime] | None = None,
+    ) -> None:
         self.registry = registry
+        self.control_profile = control_profile
+        self.policy_provider, self.tenant_id = policy_provider, tenant_id
+        self.capture_status_reader = capture_status_reader
+        self.clock_ns = clock_ns
+        self.clock_utc = clock_utc if clock_utc is not None else lambda: utcnow()
         self.lock = threading.RLock()
         self.owner: str | None = None
         self.environment: EnvironmentRecord | None = None
@@ -72,12 +117,18 @@ class SimulationCore:
         self.commands: dict[tuple[str, UUID], Execution] = {}
         self.fingerprints: dict[tuple[str, UUID], str | None] = {}
         self.deadlines: dict[tuple[str, UUID], datetime] = {}
-        self.pending: deque[LoadScene | StartMotion | StopMotion] = deque()
+        self.monotonic_deadlines: dict[tuple[str, UUID], int] = {}
+        self.pending: deque[
+            LoadScene | StartMotion | StopMotion | StartTeaching | FinishTeaching | StartPolicy
+        ] = deque()
         self.active_command: tuple[str, UUID] | None = None
         self.motion: MotionTelemetry | None = None
         self.max_commands = max_commands
         self.capture_bindings: dict[tuple[str, UUID], CaptureBinding] = {}
         self.captures: dict[tuple[str, UUID], CaptureStatus] = {}
+        self.teaching_sessions: dict[tuple[str, UUID], TeachingSession] = {}
+        self.teaching_by_command: dict[tuple[str, UUID], tuple[str, UUID]] = {}
+        self.policy_commands: dict[tuple[str, UUID], PolicyCommand] = {}
 
     def _owned(self, owner: str) -> None:
         if not self.owner or self.environment is None:
@@ -130,13 +181,6 @@ class SimulationCore:
                     )
             if self.pending:
                 raise Problem(409, "scene_loading", "A scene transition is already in progress.")
-            for key, state in self.captures.items():
-                if state.status not in {"ready", "invalid"}:
-                    self.publish_capture(
-                        self.capture_bindings[key],
-                        "invalid",
-                        message="Scene changed before capture publication.",
-                    )
             self.owner, self.environment, self.spec = owner, environment, spec
             self.epoch = uuid4()
             self.state_revision += 1
@@ -234,6 +278,24 @@ class SimulationCore:
 
     def dispatch(self, owner: str, command: MotionCommand) -> Execution:
         fingerprint = content_hash(command.model_dump(mode="json"))
+        return self._dispatch(
+            owner,
+            command,
+            fingerprint=fingerprint,
+            action=StartMotion(command, command.target_station_id),
+            deadline=command.deadline,
+        )
+
+    def _dispatch(
+        self,
+        owner: str,
+        command: MotionCommand | TeachingStart,
+        *,
+        fingerprint: str,
+        action: StartMotion | StartTeaching | StartPolicy,
+        deadline: datetime,
+        teaching: bool = False,
+    ) -> Execution:
         key = (owner, command.command_id)
         with self.lock:
             if key in self.commands:
@@ -273,11 +335,13 @@ class SimulationCore:
             check_fresh(
                 observation, self.environment.document["execution"]["max_observation_age_ms"]
             )
-            remaining = (command.deadline - utcnow()).total_seconds()
-            if (
-                remaining <= 0
-                or remaining > self.environment.document["execution"]["max_step_seconds"] + 1
-            ):
+            remaining = (deadline - self.clock_utc()).total_seconds()
+            maximum = (
+                300
+                if teaching
+                else min(30, self.environment.document["execution"]["max_step_seconds"])
+            )
+            if remaining <= 0 or remaining > maximum:
                 raise Problem(
                     409,
                     "invalid_deadline",
@@ -292,10 +356,230 @@ class SimulationCore:
             result = Execution(command_id=command.command_id, status="queued")
             self.commands[key] = result
             self.fingerprints[key] = fingerprint
-            self.deadlines[key] = command.deadline
+            self.deadlines[key] = deadline
+            self.monotonic_deadlines[key] = self.clock_ns() + int(remaining * 1_000_000_000)
             self.active_command = key
-            self.pending.append(StartMotion(command, command.target_station_id))
+            self.pending.append(action)
             return result.model_copy(deep=True)
+
+    def dispatch_policy(self, owner: str, request: PolicyCommand) -> Execution:
+        fingerprint = content_hash(request.model_dump(mode="json"))
+        key = (owner, request.command.command_id)
+        with self.lock:
+            if key in self.commands:
+                previous = self.fingerprints[key]
+                if previous is not None and previous != fingerprint:
+                    raise Problem(409, "command_id_reused", "A policy command ID cannot be reused.")
+                return self.commands[key].model_copy(deep=True)
+            if self.control_profile is None:
+                raise Problem(
+                    503, "control_profile_unverified", "No verified policy servo profile."
+                )
+            if self.policy_provider is None or self.tenant_id is None:
+                raise Problem(503, "policy_unavailable", "No deployment-approved policy provider.")
+            self.control_profile.validate()
+            self._owned(owner)
+            self.policy_provider.authorize(owner, request, self.control_profile)
+            result = self._dispatch(
+                owner,
+                request.command,
+                fingerprint=fingerprint,
+                action=StartPolicy(request),
+                deadline=request.command.deadline,
+            )
+            self.policy_commands[key] = request.model_copy(deep=True)
+            self.commands[key] = PolicyExecution(
+                **result.model_dump(exclude={"policy_runtime"}),
+                policy_runtime=PolicyRuntime(
+                    policy_release_id=request.policy_release_id, policy_type=request.policy_type
+                ),
+            )
+            return self.commands[key].model_copy(deep=True)
+
+    def policy_context(self, binding: CommandBinding) -> ControlContext:
+        with self.lock:
+            key = (binding.owner, binding.command_id)
+            request = self.policy_commands.get(key)
+            if request is None or self.tenant_id is None:
+                raise RuntimeError("There is no approved policy context for this command.")
+            scope = Scope(self.tenant_id, binding.owner)
+            scope.validate()
+            return ControlContext(
+                scope,
+                binding.environment_id,
+                binding.revision,
+                str(binding.command_id),
+                str(binding.epoch),
+                str(binding.command_id),
+                request.command.target_station_id,
+                True,
+                self.actuation_allowed(binding),
+                self.monotonic_deadlines[key],
+            )
+
+    def publish_policy_metrics(self, binding: CommandBinding, metrics: PolicyRuntime) -> bool:
+        with self.lock:
+            if not self.matches(binding):
+                return False
+            key = (binding.owner, binding.command_id)
+            request = self.policy_commands.get(key)
+            if request is None:
+                return False
+            metrics = PolicyRuntime.model_validate(metrics.model_dump())
+            if (
+                metrics.policy_release_id != request.policy_release_id
+                or metrics.policy_type != request.policy_type
+                or metrics.applied_model_sha not in (None, request.model_sha256)
+            ):
+                raise ValueError("Applied policy metrics do not belong to the approved release.")
+            previous = self.commands[key].policy_runtime
+            if (
+                metrics.policy_predict_calls < previous.policy_predict_calls
+                or metrics.applied_action_count < previous.applied_action_count
+            ):
+                raise ValueError("Policy application counters cannot move backwards.")
+            self.commands[key] = self.commands[key].model_copy(
+                update={"policy_runtime": metrics.model_copy(deep=True)}
+            )
+            return True
+
+    def apply_guarded(self, binding: CommandBinding, submit: Callable[[], None]) -> None:
+        with self.lock:
+            if not self.actuation_allowed(binding):
+                raise RuntimeError("The bound motion command is no longer active.")
+            submit()
+
+    def start_teaching(self, owner: str, request: TeachingStart) -> TeachingState:
+        with self.lock:
+            key = (owner, request.session_id)
+            if key in self.teaching_sessions:
+                if self.teaching_sessions[key].request != request:
+                    raise Problem(409, "session_reused", "A teaching session ID cannot be reused.")
+                return self.teaching(owner, request.session_id)
+            if (
+                self.control_profile is None
+                or self.control_profile.profile_id != request.control_profile_id
+            ):
+                raise Problem(
+                    503,
+                    "control_profile_unverified",
+                    "The teaching control profile is not enabled.",
+                )
+            self.control_profile.validate()
+            self._owned(owner)
+            if not self.spec.record_demonstration:
+                raise Problem(
+                    409,
+                    "capture_not_approved",
+                    "Teaching requires an approved recorded scene and dataset split.",
+                )
+            self._dispatch(
+                owner,
+                request,
+                fingerprint=content_hash(request.model_dump(mode="json")),
+                action=StartTeaching(request),
+                deadline=request.session_expires_at,
+                teaching=True,
+            )
+            self.teaching_sessions[key] = TeachingSession(request.model_copy(deep=True))
+            self.teaching_by_command[(owner, request.command_id)] = key
+            return self.teaching(owner, request.session_id)
+
+    def _teaching(
+        self, owner: str, session_id: UUID, lease: TeachingLease | None = None
+    ) -> TeachingSession:
+        session = self.teaching_sessions.get((owner, session_id))
+        if session is None:
+            raise Problem(404, "teaching_missing", "Teaching session not found for this user.")
+        if lease is not None and (
+            lease.lease_id != session.request.lease_id or lease.epoch != session.request.epoch
+        ):
+            raise Problem(409, "teaching_lease_changed", "Teaching lease or epoch changed.")
+        return session
+
+    def teaching(self, owner: str, session_id: UUID) -> TeachingState:
+        with self.lock:
+            session = self._teaching(owner, session_id)
+            request = session.request
+            result = self.commands[(owner, request.command_id)]
+            return TeachingState(
+                session_id=request.session_id,
+                lease_id=request.lease_id,
+                command_id=request.command_id,
+                epoch=request.epoch,
+                control_profile_id=request.control_profile_id,
+                demonstrator_kind=request.demonstrator_kind,
+                session_expires_at=request.session_expires_at,
+                status=(
+                    "finishing"
+                    if session.finishing and result.status == "running"
+                    else result.status
+                ),
+                last_sequence=session.last_input.sequence if session.last_input else 0,
+                input_expires_at=session.last_input.expires_at if session.last_input else None,
+                execution=result.model_copy(deep=True),
+                capture=self.captures.get((owner, request.command_id)),
+            )
+
+    def teaching_input(self, owner: str, session_id: UUID, request: TeachingInput) -> TeachingState:
+        with self.lock:
+            session = self._teaching(owner, session_id, request)
+            key = (owner, session.request.command_id)
+            if (
+                key != self.active_command
+                or session.request.epoch != self.epoch
+                or self.commands[key].status != "running"
+            ):
+                raise Problem(409, "teaching_not_running", "Teaching motion is not active.")
+            if self.deadline_expired():
+                raise Problem(409, "teaching_expired", "The teaching session has expired.")
+            if session.finishing:
+                raise Problem(409, "teaching_finishing", "The teaching session is finishing.")
+            session.admit(request, self.clock_utc(), self.clock_ns())
+            return self.teaching(owner, session_id)
+
+    def teaching_intent(self, binding: CommandBinding) -> TeachingIntent | None:
+        with self.lock:
+            if not self.actuation_allowed(binding):
+                return None
+            key = self.teaching_by_command.get((binding.owner, binding.command_id))
+            if key is None:
+                return None
+            return self.teaching_sessions[key].intent(self.clock_ns())
+
+    def teaching_hold_allowed(self, binding: CommandBinding, sequence: int) -> bool:
+        with self.lock:
+            if not self.actuation_allowed(binding):
+                return False
+            key = self.teaching_by_command.get((binding.owner, binding.command_id))
+            if key is None:
+                return False
+            session = self.teaching_sessions[key]
+            return (
+                session.last_input is not None
+                and session.last_input.deadman
+                and session.last_input.sequence >= sequence
+                and self.clock_ns() < session.input_deadline_ns
+            )
+
+    def finish_teaching(self, owner: str, session_id: UUID, lease: TeachingLease) -> TeachingState:
+        with self.lock:
+            session = self._teaching(owner, session_id, lease)
+            command_id = session.request.command_id
+            if self.commands[(owner, command_id)].status in TERMINAL or session.finishing:
+                return self.teaching(owner, session_id)
+            binding = self.binding(command_id)
+            if binding.epoch != lease.epoch or binding.owner != owner:
+                raise Problem(409, "teaching_lease_changed", "Teaching lease or epoch changed.")
+            session.finishing = True
+            self.pending.append(FinishTeaching(binding))
+            return self.teaching(owner, session_id)
+
+    def cancel_teaching(self, owner: str, session_id: UUID, lease: TeachingLease) -> TeachingState:
+        with self.lock:
+            session = self._teaching(owner, session_id, lease)
+            self.cancel(owner, session.request.command_id)
+            return self.teaching(owner, session_id)
 
     def command(self, owner: str, command_id: UUID) -> Execution:
         with self.lock:
@@ -334,9 +618,9 @@ class SimulationCore:
             if self.active_command is None or self.active_command[1] != command_id:
                 return False
             key = self.active_command
-            if self.commands[key].status == "cancelling":
+            if self.commands[key].status != "queued":
                 return False
-            if utcnow() >= self.deadlines[key]:
+            if self.deadline_expired():
                 self.finish("timed_out", None, "Command expired before execution.")
                 return False
             self.commands[key] = self.commands[key].model_copy(update={"status": "running"})
@@ -344,8 +628,9 @@ class SimulationCore:
 
     def deadline_expired(self) -> bool:
         with self.lock:
-            return (
-                self.active_command is not None and utcnow() >= self.deadlines[self.active_command]
+            return self.active_command is not None and (
+                self.clock_utc() >= self.deadlines[self.active_command]
+                or self.clock_ns() >= self.monotonic_deadlines[self.active_command]
             )
 
     def should_stop(self, command_id: UUID) -> bool:
@@ -416,12 +701,15 @@ class SimulationCore:
                 self.matches(binding)
                 and self.commands[self.active_command].status == "running"
                 and self.error is None
-                and utcnow() < self.deadlines[self.active_command]
+                and not self.deadline_expired()
             )
 
     def capture(self, owner: str, command_id: UUID) -> CaptureStatus:
         with self.lock:
             state = self.captures.get((owner, command_id))
+        if state is None and self.capture_status_reader is not None:
+            state = self.capture_status_reader(owner, command_id)
+        with self.lock:
             if state is None:
                 raise Problem(404, "capture_missing", "Capture not found for this user.")
             return state.model_copy(deep=True)
@@ -436,11 +724,7 @@ class SimulationCore:
     ) -> bool:
         with self.lock:
             key = (binding.owner, binding.command_id)
-            if (
-                self.capture_bindings.get(key) != binding
-                or self.epoch != binding.epoch
-                or self.owner != binding.owner
-            ):
+            if self.capture_bindings.get(key) != binding:
                 return False
             previous = self.captures[key]
             if previous.status in {"ready", "invalid"}:
@@ -493,11 +777,14 @@ class SimulationCore:
             key = self.active_command
             if key is None or (binding is not None and not self.matches(binding)):
                 return
-            completed_at = completed_at or utcnow()
+            completed_at = completed_at or self.clock_utc()
             if status == "succeeded":
                 if self.commands[key].status == "cancelling":
                     status, message = "cancelled", "Cancellation won the completion race."
-                elif completed_at >= self.deadlines[key]:
+                elif (
+                    completed_at >= self.deadlines[key]
+                    or self.clock_ns() >= self.monotonic_deadlines[key]
+                ):
                     status, message = "timed_out", "Completion exceeded the command deadline."
             capture = self.captures.get(key)
             if demonstration is None and capture is not None and capture.status == "invalid":
@@ -509,7 +796,7 @@ class SimulationCore:
                     code=f"simulation_{status}", message=message or f"Simulator command {status}."
                 )
             )
-            self.commands[key] = Execution(
+            terminal = Execution(
                 command_id=key[1],
                 status=status,
                 final_position=final_position,
@@ -517,6 +804,15 @@ class SimulationCore:
                 error=error,
                 demonstration=demonstration,
             )
+            if key in self.policy_commands:
+                terminal = PolicyExecution(
+                    **terminal.model_dump(exclude={"policy_runtime"}),
+                    policy_runtime=self.commands[key].policy_runtime,
+                )
+            self.commands[key] = terminal
+            teaching_key = self.teaching_by_command.get(key)
+            if teaching_key is not None:
+                self.teaching_sessions[teaching_key].used_grants.clear()
             self.active_command = None
             if self.motion is not None:
                 self.motion = self.motion.model_copy(

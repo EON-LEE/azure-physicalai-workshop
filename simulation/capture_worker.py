@@ -38,11 +38,13 @@ class CaptureWorker:
         *,
         max_pending_frames: int = 64,
         max_pending_bytes: int = 64 * 1024 * 1024,
+        terminal_sink: Callable[[CaptureUpdate], None] | None = None,
     ) -> None:
         if not 1 <= max_pending_frames <= 600 or not 1024 <= max_pending_bytes <= 256 * 1024**2:
             raise ValueError("Capture queue budgets are outside the bounded runtime limits.")
         self.binding = binding
         self.factory = factory
+        self.terminal_sink = terminal_sink
         self.max_pending_frames = max_pending_frames
         self.max_pending_bytes = max_pending_bytes
         self.condition = threading.Condition()
@@ -122,9 +124,7 @@ class CaptureWorker:
             self.prepared.set()
             while True:
                 with self.condition:
-                    self.condition.wait_for(
-                        lambda: self.queue or self.state.status != "recording"
-                    )
+                    self.condition.wait_for(lambda: self.queue or self.state.status != "recording")
                     if self.state.status == "invalid":
                         return
                     if not self.queue:
@@ -141,7 +141,11 @@ class CaptureWorker:
             with self.condition:
                 if self.state.status == "invalid":
                     return
-                self.state = self.state.model_copy(update={"status": "ready", "receipt": result})
+                terminal = self.state.model_copy(update={"status": "ready", "receipt": result})
+            if self.terminal_sink is not None:
+                self.terminal_sink(CaptureUpdate(self.binding, terminal))
+            with self.condition:
+                self.state = terminal
         except (ValueError, RuntimeError, TypeError, OSError, AzureError):
             log.exception("Capture worker failed; no ready dataset will be reported")
             self.invalidate("Capture persistence or validation failed; no dataset was published.")
@@ -149,3 +153,8 @@ class CaptureWorker:
             if self.snapshot().state.status not in {"ready", "invalid"}:
                 log.error("Capture worker exited without a terminal publication state")
                 self.invalidate("Capture worker exited unexpectedly before publication.")
+            if self.terminal_sink is not None and self.snapshot().state.status == "invalid":
+                try:
+                    self.terminal_sink(self.snapshot())
+                except (ValueError, RuntimeError, TypeError, OSError):
+                    log.exception("Failed capture could not be persisted to its private journal")

@@ -12,6 +12,7 @@ from apps.api.errors import Problem
 from apps.api.middleware import BodyLimit
 from apps.api.models import EnvironmentRecord, MotionCommand
 from simulation.core import SimulationCore
+from simulation.runtime_contracts import PolicyCommand, TeachingInput, TeachingLease, TeachingStart
 
 
 class BridgeSettings(BaseSettings):
@@ -53,7 +54,7 @@ def create_bridge_app(
 
     def owner(
         authorization: Annotated[str | None, Header()] = None,
-        x_environment_owner: Annotated[str, Header(pattern=r"^[a-f0-9]{64}$")] = "",
+        x_environment_owner: Annotated[str | None, Header(pattern=r"^[a-f0-9]{64}$")] = None,
     ) -> str:
         identity.controller(authorization, set(settings.bridge_allowed_principal_ids))
         if not x_environment_owner:
@@ -87,6 +88,10 @@ def create_bridge_app(
     def dispatch(command: MotionCommand, principal: Owner):
         return core.dispatch(principal, command)
 
+    @app.post("/v1/policy/commands", status_code=202)
+    def policy(command: PolicyCommand, principal: Owner):
+        return core.dispatch_policy(principal, command)
+
     @app.get("/v1/commands/{command_id}")
     def command(command_id: UUID, principal: Owner):
         return core.command(principal, command_id)
@@ -98,5 +103,25 @@ def create_bridge_app(
     @app.post("/v1/commands/{command_id}/cancel")
     def cancel(command_id: UUID, principal: Owner):
         return core.cancel(principal, command_id)
+
+    @app.post("/v1/teaching", status_code=202)
+    def start_teaching(request: TeachingStart, principal: Owner):
+        return core.start_teaching(principal, request)
+
+    @app.get("/v1/teaching/{session_id}")
+    def teaching(session_id: UUID, principal: Owner):
+        return core.teaching(principal, session_id)
+
+    @app.post("/v1/teaching/{session_id}/input")
+    def teaching_input(session_id: UUID, request: TeachingInput, principal: Owner):
+        return core.teaching_input(principal, session_id, request)
+
+    @app.post("/v1/teaching/{session_id}/finish")
+    def finish_teaching(session_id: UUID, request: TeachingLease, principal: Owner):
+        return core.finish_teaching(principal, session_id, request)
+
+    @app.post("/v1/teaching/{session_id}/cancel")
+    def cancel_teaching(session_id: UUID, request: TeachingLease, principal: Owner):
+        return core.cancel_teaching(principal, session_id, request)
 
     return app

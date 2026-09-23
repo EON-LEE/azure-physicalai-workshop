@@ -10,15 +10,16 @@ evidence.
 `SimulatorRuntime.tick()` owns physics, cameras, command completion and the
 actual engine heartbeat. It never finalizes or uploads a dataset. An approved
 command snapshots its owner, environment revision, epoch and capture ID before
-creating a single bounded `CaptureWorker`. Writer construction, all appends,
+creating a bounded `CaptureWorker`. Writer construction, all appends,
 validation and managed-identity uploads execute on that same worker thread.
 Motion waits for writer preparation without blocking the main loop.
 
 The queue holds at most 64 pending frames and 64 MiB including a metadata
 allowance. Overflow invalidates capture and stops the command; it never drops or
-interpolates a sample. One persistence worker can exist at a time, including
-finalization/upload. A second recorded command fails explicitly while it is
-busy. Non-recorded physics and the engine heartbeat continue during upload.
+interpolates a sample. At most two persistence workers exist, including
+finalization/upload (128 MiB aggregate queue budget). This permits episode B to
+record while A uploads; a third overlapping capture fails explicitly. Physics
+and the engine heartbeat continue during upload.
 
 `GET /v1/commands/{command_id}/capture` uses the existing authenticated
 `X-Environment-Owner` lease and returns:
@@ -44,10 +45,168 @@ Physical `Execution.status`, completion time and final measured position are
 committed independently, without waiting for storage. Only the matching
 owner/epoch/command/capture can attach a receipt to that historical execution.
 A stale callback cannot finish another command, restore readiness, play physics
-or mutate a new scene. Reactivation invalidates unpublished captures. A failed
+or mutate a new scene. A valid A completion can update A's historical record
+after B activates a new epoch or another owner acquires the cell. It cannot
+change B. Terminal capture states are atomically journalled by the worker under
+`/data/demonstrations/.capture-status`, outside validated episode folders;
+owner-scoped capture GETs can recover those receipts after process restart. A failed
 upload does not retroactively change physical success, and a successful upload
 cannot turn a cancelled or timed-out command into success.
 
 The original reference recording cadence remains 60 Hz with two actual
 synchronized camera frames and effective issued nine-joint position targets.
 It is not re-labelled as 10 Hz held-position training data.
+
+## Explicit teaching and learned control
+
+`simulation.runtime_contracts` contains CPU-safe closed DTOs. Existing reference
+commands remain at most 30 seconds. A **separate** `TeachingStart` permits an
+approved session lease up to 300 seconds; that lease alone never authorizes
+movement. All new motion paths keep the published 0.2 m/s measured TCP ceiling.
+
+| Bridge endpoint | Contract |
+| --- | --- |
+| `POST /v1/teaching` | Flat scene/observation binding; `command_id`, `session_id`, `lease_id`, `session_expires_at`, `control_profile_id`, approved `task`, explicit `demonstrator_kind` |
+| `GET /v1/teaching/{session_id}` | `TeachingState`, physical `Execution`, and independent capture state |
+| `POST /v1/teaching/{session_id}/input` | Lease/epoch, sequence, deadman, Cartesian `delta_xyz_m`, gripper intent, server expiry and control grant |
+| `POST /v1/teaching/{session_id}/finish` | Lease/epoch; request a measured terminal check at an actual held boundary |
+| `POST /v1/teaching/{session_id}/cancel` | Lease/epoch; stop immediately, even mid-interval |
+| `POST /v1/policy/commands` | `command: MotionCommand`, explicit `policy_type`, `policy_release_id`, `model_sha256`, profile ID and approved task |
+
+The task is `{task_id, instruction, goal_id}` with a bounded single-line
+instruction; its goal must match the selected station. An input moves at most
+one centimetre in Euclidean distance and is valid for at most 250 ms. The API
+issues a short server grant (at most one second), bound to the exact owner,
+session, epoch, sequence and intent; browsers cannot supply authoritative clock
+values. The bridge requires `grant_id` and `grant_expires_at` for positive
+deadman inputs and intersects motion expiry with that original grant. Replays
+cannot refresh authority. A neutral deadman release needs no grant and may skip
+forward sequences to fence a delayed, never-seen earlier motion request.
+
+No input accepts joint arrays, arbitrary model paths, URLs or Python modules.
+Missing/failing providers stop explicitly; there is no baseline or animation
+fallback. `smolvla` is explicitly selected, not relabelled GR00T. Historical DTOs
+also recognize `gr00t_n1_5` and `gr00t_n1_7`, but those families are not registered
+for commercial execution. An unavailable SmolVLA module/socket/model is an
+error, not permission to select another model family.
+
+`franka-position-hold-10hz-v1` has a deliberately different low-level contract
+from the reference controller:
+
+* One synchronized observation and nine absolute targets per six actual 60 Hz
+  physics ticks; no intermediate targets are dropped or resampled.
+* The identical targets and explicit zero velocity targets are passed to
+  `ArticulationAction` on every tick. Arm-only measured PhysX gravity efforts
+  are recomputed and recorded on every tick.
+* New intervals are paced against a monotonic 100 ms clock without blocking
+  heartbeat handling or advancing extra physics. Camera capture, prediction
+  and all six physics ticks must complete inside that budget.
+* Teacher proposals and learned outputs use the same tracking/slew checks:
+  0.05 rad for each arm joint and 0.004 m for each individual finger per
+  interval. Teacher contact pressure is bounded relative to measured fingers;
+  neutral holds retain issued finger targets rather than dropping grip force.
+
+The v2 recorder stages an observation plus its six **actual following**
+`AppliedControl` records. It keeps one complete interval pending so graceful
+finish can mark a genuine terminal interval without synthesizing future ticks.
+Mid-interval emergency stops invalidate capture. These records include the
+issued velocities and gravity evidence; v1 remains unchanged and is not
+eligible for this profile.
+
+Learned execution constructs no RMPflow controller or reference route. Every
+application rechecks owner, epoch, command, original deadline, model and physics
+tick immediately before the actual actuator call. Counters count real
+prediction attempts and successfully submitted physics-tick actions;
+`applied_model_sha` stays null until submission succeeds. `policy_runtime`
+includes the immutable family/release, counts and `reference_route_calls=0`.
+Stopping physics precedes model cleanup, so a reset failure cannot defer stop.
+
+Success requires measured lift/grasp evidence, open fingers, part position
+inside the unchanged 4 cm goal tolerance, wrist separation, and a settled part.
+No model-supplied success flag is trusted.
+
+## Reviewed initial layouts
+
+`inspection-cell-learning-v1` uses seed-hashed initial part XY offsets within
+two centimetres of the same source platform, with no defect stripe. It does not
+change `inspection-cell-v1`. Placement occurs only during stopped scene reset,
+never during an action. The learning scene must settle within 1 mm of its
+pinned initial pose or loading fails.
+
+`SceneSpec.part_position`, `scene_builder_sha256` and
+`IsaacWorkcell.initial_state_evidence()` support frozen before/after cases.
+Different seeds require separately saved environment revisions; release
+catalogues allow only explicitly authorized `(environment_id, revision)` pairs.
+Seed, evaluator pose and task success are never policy observation features.
+
+## Deployment gates
+
+The default deployment enables neither teaching nor learned execution. Enabling
+the profile requires `CONTROL_TIMING_FILE` and `CONTROL_TIMING_SHA256`: a
+deployment-controlled, checksum-pinned `physicalai.control-timing/v1` document.
+It binds the simulator image/version, robot asset, source revision, reviewed
+servo source digest, profile and real GPU trace. At least 100 complete aligned
+camera/control intervals, a maximum cycle below 100 ms, inference at most
+80 ms, and heartbeat gaps at most two seconds are required. CPU fixtures cannot
+qualify. A model-specific proof must also name the exact family and model SHA.
+
+Optional `POLICY_CATALOG_FILE` and `POLICY_CATALOG_SHA256` select a pinned
+`physicalai.policy-catalog/v1` deployment catalogue. Each release binds
+`policy_type`, model SHA, tenant/owner, control-profile SHA, approved task and
+environment cases, a local Unix socket, expected peer UID, and model-specific
+timing evidence. The transport checks peer credentials and one absolute
+deadline across connect, send, every receive and validation. It loads no ML
+framework in Isaac; the real SmolVLA process has its separate environment.
+
+Creating a reviewed API/Cosmos `PolicyRelease` **does not install or load it**.
+An approved deployment operator must install/verify the artifact, start the
+separate inference process, complete timing validation, install the pinned
+catalogue and perform the controlled simulator rollout. There is no browser
+SSH path, automatic release activation or hot model swap under an active command.
+
+The simulator Docker recipes copy the complete learning Python package for its
+CPU import closure, but install no LeRobot, Torch or Transformers in Isaac.
+The existing launcher already passes the deployment environment and `/data`
+bind mount; it needs no automatic restart or network change for these options.
+
+## Parent-operated GPU G0, not a learning gate
+
+Only an explicitly approved **isolated** Isaac process should run this probe.
+It does not stop an existing simulator or provision anything. Use the parent's
+already verified Isaac 6 base image:
+
+```bash
+docker build -f simulation/Dockerfile.code \
+  --build-arg SIMULATOR_BASE_IMAGE=<verified-isaac6-image@sha256:digest> \
+  -t <new-runtime-image> .
+```
+
+Pin the resulting image and source revision. The container needs the existing
+asset paths/checksum and managed identity plus `CAPTURE_ENABLED=true`,
+`SIMULATOR_IMAGE`, `ISAAC_SIM_VERSION=6.0.0`, `SOURCE_REVISION`,
+`ENTRA_TENANT_ID`, `AZURE_CLIENT_ID` and `STORAGE_ACCOUNT_URL`. Prepare a private,
+writable output directory. Supply an actual saved `EnvironmentRecord` with
+capture explicitly enabled and `demonstration_split=test`; do not mutate its
+revision/seed inside the probe.
+
+```bash
+/isaac-sim/python.sh -m simulation.probe_control \
+  --environment-record /data/probes/approved-test-environment.json \
+  --owner <opaque-owner-key> --tenant-id <tenant-uuid> \
+  --mode teaching --intervals 100 \
+  --output /data/probes/teaching-probe.json --confirm-isolated-simulator
+```
+
+Repeat with `--mode policy-fixture` and a new output path. The first mode issues
+one bounded 1 mm Cartesian jog; the second exercises the learned actuator
+branch through a tiny deterministic port fixture. Both use real Isaac cameras,
+physics, capture workers and private Blob upload. Both are explicitly scripted
+`reference_controller` data, never claimed to be customer/human input.
+The fixture is **not** a deployed SmolVLA/GR00T model and is never available
+through HTTP or the production catalogue.
+
+Reports deliberately say no model weights were loaded, no task/learning success
+was established, and production is not ready. They are not automatically
+accepted timing attestations. The parent must separately verify real
+grip/hold/place behavior, licensed checkpoint inference, and frozen paired
+held-out trials before accepting teaching data or promoting any policy.

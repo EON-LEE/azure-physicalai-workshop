@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 import os
 import time
+from dataclasses import replace
 from datetime import UTC, datetime
 from io import BytesIO
+from math import dist
 from pathlib import Path
 
 import numpy as np
@@ -27,8 +29,16 @@ from pxr import Gf, Sdf, UsdGeom, UsdLux, UsdShade
 
 from apps.api.models import MotionPhase
 from learning.capture import resolve_joint_targets
-from learning.contract import CameraSample, FrameSample
+from learning.contract import AppliedControl, CameraSample, FrameSample
+from learning.inference import PolicyObservation
 from simulation.asset_references import validate_usd_bundle
+from simulation.control import (
+    HoldCapture,
+    TaskWatchdog,
+    check_measured_motion,
+    validate_position_target,
+)
+from simulation.core import SimulationCore
 from simulation.extensions import SceneSpec, can_reset_in_place
 from simulation.motion import (
     GripperRamp,
@@ -37,6 +47,8 @@ from simulation.motion import (
     move_toward,
     rotate_toward,
 )
+from simulation.policy_executor import PolicyExecutor
+from simulation.runtime_contracts import PolicyCommand, TeachingStart
 
 
 class IsaacWorkcell:
@@ -59,6 +71,24 @@ class IsaacWorkcell:
         self.initial_part_position = None
         self.grasp_verified = False
         self.peak_tcp_speed = 0.0
+        self.control_mode = "reference"
+        self.control_done = True
+        self.control_succeeded = False
+        self.control_core = None
+        self.control_binding = None
+        self.control_profile = None
+        self.policy_executor = None
+        self.hold_capture = None
+        self.held_targets = None
+        self.held_sequence = None
+        self.held_expires_ns = 0
+        self.hold_offset = 0
+        self.policy_command = None
+        self.finish_requested = False
+        self.actuation_guard = None
+        self.warmup_steps = 0
+        self.reset_initial_position = None
+        self.render_monotonic_ns = 0
 
     def load(self, spec: SceneSpec) -> None:
         self._validate_asset_bundle()
@@ -122,7 +152,7 @@ class IsaacWorkcell:
             DynamicCuboid(
                 prim_path="/World/Part",
                 name="part-001",
-                position=np.array(spec.station(spec.source_id).position),
+                position=np.array(spec.part_position),
                 scale=np.array([0.05, 0.05, 0.05]),
                 mass=0.05,
                 color=np.array([0.15, 0.7, 0.45]),
@@ -191,6 +221,11 @@ class IsaacWorkcell:
             raise RuntimeError("The reference surface-defect material is not visibly bound.")
 
     def _prepare_episode(self) -> None:
+        self.control_mode = "reference"
+        self.control_done = True
+        self.actuation_guard = None
+        self._configure_cameras()
+        self._place_part_at_reset()
         self.defect.GetVisibilityAttr().Set(
             UsdGeom.Tokens.inherited if self.spec.defective else UsdGeom.Tokens.invisible
         )
@@ -213,7 +248,35 @@ class IsaacWorkcell:
         for _ in range(18):
             self._compensate_gravity()
             self.world.step(render=True)
+            self.render_monotonic_ns = time.monotonic_ns()
             self.steps += 1
+        self.reset_initial_position = self.position()
+        if (
+            self.spec.initial_part_position is not None
+            and dist(self.reset_initial_position, self.spec.part_position) > 0.001
+        ):
+            raise RuntimeError(
+                "The learning part did not settle within its pinned 1 mm start pose."
+            )
+
+    def _place_part_at_reset(self) -> None:
+        if self.controller is not None or (
+            self.control_mode != "reference" and not self.control_done
+        ):
+            raise RuntimeError("Part placement is allowed only during a stopped scene reset.")
+        self.part.set_world_pose(position=np.array(self.spec.part_position))
+        self.part.set_linear_velocity(np.zeros(3))
+        self.part.set_angular_velocity(np.zeros(3))
+
+    def initial_state_evidence(self) -> dict:
+        if self.reset_initial_position is None or self.spec.scene_builder_sha256 is None:
+            raise RuntimeError(
+                "Measured initial pose and reviewed builder evidence are unavailable."
+            )
+        return {
+            "observed_initial_pose_m": self.reset_initial_position,
+            "scene_builder_sha256": self.spec.scene_builder_sha256,
+        }
 
     @staticmethod
     def _validate_asset_bundle() -> None:
@@ -222,6 +285,11 @@ class IsaacWorkcell:
         )
 
     def start(self, target_id: str, recording=None) -> None:
+        self.control_mode = "reference"
+        self.control_done = True
+        self.policy_executor = None
+        self.hold_capture = None
+        self._configure_cameras()
         self.target = target_id
         self.phase = 0
         self.controller = RMPFlowController(
@@ -250,6 +318,262 @@ class IsaacWorkcell:
             self.issued_targets = resolve_joint_targets(None, hold)
         self.world.play()
 
+    def _configure_cameras(self) -> bool:
+        profiled = self.control_mode != "reference"
+        resolution = (320, 320) if profiled or self.spec.record_demonstration else (960, 540)
+        frequency = 10 if profiled or not self.spec.record_demonstration else 60
+        changed = False
+        for camera in self.cameras.values():
+            if tuple(camera.get_resolution()) != resolution:
+                camera.set_resolution(resolution)
+                changed = True
+            if camera.get_frequency() != frequency:
+                camera.set_frequency(frequency)
+                changed = True
+        if changed:
+            self.last_render_frame.clear()
+        return changed
+
+    def _start_control(self, mode, command, core: SimulationCore, recording) -> None:
+        if core.control_profile is None:
+            raise RuntimeError("The aligned control profile has not been enabled.")
+        self.control_mode, self.control_done = mode, False
+        self.control_succeeded = False
+        self.control_core = core
+        self.control_binding = core.binding(command.command_id)
+        self.control_profile = core.control_profile
+        self.control_profile.validate()
+        self.target = command.target_station_id
+        self.route = None
+        self.controller = None
+        self.policy_executor = None
+        self.recording = recording
+        self.hold_capture = (
+            HoldCapture(recording, self.control_profile) if recording is not None else None
+        )
+        self.held_targets, self.held_sequence = None, None
+        self.issued_targets = None
+        self.hold_offset = 0
+        self.finish_requested = False
+        self.last_jog_sequence = 0
+        self.jog_goal = self._measured_tcp()
+        self.jog_gripper = "hold"
+        self.orientation_target = tuple(self.robot.end_effector.get_world_pose()[1])
+        self.task_watchdog = TaskWatchdog(
+            self.position(), self.spec.station(command.target_station_id).position
+        )
+        self.initial_part_position = self.position()
+        self.last_effector_position = self._measured_tcp()
+        self.grasp_verified = False
+        self.peak_tcp_speed = 0.0
+        self.warmup_steps = 6 if self._configure_cameras() else 0
+        self.control_next_ns = core.clock_ns()
+        self.control_timings = []
+        self.world.play()
+
+    def start_teaching(self, request: TeachingStart, core: SimulationCore, recording=None) -> None:
+        self._start_control("human_teaching", request, core, recording)
+        self.controller = RMPFlowController(
+            name="bounded-cartesian-teaching",
+            robot_articulation=self.robot,
+            physics_dt=1 / self.control_profile.control_hz,
+        )
+
+    def start_learned(
+        self,
+        request: PolicyCommand,
+        core: SimulationCore,
+        executor: PolicyExecutor,
+        recording=None,
+    ) -> None:
+        self._start_control("learned", request.command, core, recording)
+        self.policy_executor = executor
+        executor.start()
+
+    def request_finish(self) -> None:
+        if self.control_mode != "human_teaching" or self.control_done:
+            raise RuntimeError(
+                "Only an active teaching session can request a held boundary finish."
+            )
+        self.finish_requested = True
+
+    def _measured_tcp(self) -> tuple[float, float, float]:
+        return tuple(float(value) for value in self.robot.end_effector.get_world_pose()[0])
+
+    def _issue_command(self, targets, velocities) -> None:
+        self.robot.apply_action(
+            ArticulationAction(
+                joint_positions=np.array(targets), joint_velocities=np.array(velocities)
+            )
+        )
+        self.issued_targets = tuple(float(value) for value in targets)
+
+    def _teaching_targets(self, joints):
+        core, profile = self.control_core, self.control_profile
+        intent = core.teaching_intent(self.control_binding)
+        minimum_hold_ns = round(1_000_000_000 / profile.control_hz)
+        targets = list(joints)
+        if self.issued_targets is not None:
+            targets[7:] = self.issued_targets[7:]
+        if intent is None or intent.expires_at_monotonic_ns - core.clock_ns() < minimum_hold_ns:
+            return tuple(targets), None, core.monotonic_deadlines[core.active_command]
+        current = self._measured_tcp()
+        if intent.sequence != self.last_jog_sequence:
+            self.jog_goal = tuple(a + b for a, b in zip(current, intent.delta_xyz_m, strict=True))
+            check_measured_motion(None, self.jog_goal, joints, dt=self.dt, speed_limit=0.05)
+            if intent.gripper != "hold":
+                self.jog_gripper = intent.gripper
+            self.last_jog_sequence = intent.sequence
+        target = move_toward(
+            current, self.jog_goal, min(0.05, self.spec.requested_speed) / profile.control_hz
+        )
+        if any(abs(a - b) > 1e-7 for a, b in zip(current, target, strict=True)):
+            requested = self.controller.forward(
+                target_end_effector_position=np.array(target),
+                target_end_effector_orientation=np.array(self.orientation_target),
+            )
+            if requested.joint_positions is None:
+                raise RuntimeError("The Cartesian jog solver returned no position targets.")
+            selected = (
+                range(len(requested.joint_positions))
+                if requested.joint_indices is None
+                else requested.joint_indices
+            )
+            for index, value in zip(selected, requested.joint_positions, strict=True):
+                if index < 7 and value is not None:
+                    targets[index] = float(value)
+        if self.jog_gripper in {"open", "close"}:
+            fingers = (0.04, 0.04) if self.jog_gripper == "open" else (0.0, 0.0)
+            targets[7:] = move_toward(tuple(joints[7:]), fingers, 0.025 / profile.control_hz)
+        return tuple(targets), intent.sequence, intent.expires_at_monotonic_ns
+
+    def _next_control_interval(self) -> None:
+        self.interval_started_ns = self.control_core.clock_ns()
+        self.control_next_ns = self.interval_started_ns + 100_000_000
+        joints = tuple(float(value) for value in self.robot.get_joint_positions())
+        observed = self._sample_before_command(joints)
+        if self.control_mode == "learned":
+            context = self.control_core.policy_context(self.control_binding)
+            observation = PolicyObservation(
+                context.scope,
+                context.environment_id,
+                context.revision,
+                context.episode_id,
+                observed.captured_at_utc,
+                observed.monotonic_ns,
+                observed.physics_step,
+                observed.joint_positions,
+                observed.images,
+            )
+            self.policy_command = self.policy_executor.predict(observation)
+            targets = self.policy_command.targets
+            self.held_expires_ns = min(
+                self.policy_command.expires_at_monotonic_ns, self.control_next_ns
+            )
+            self.held_sequence = None
+        else:
+            targets, self.held_sequence, self.held_expires_ns = self._teaching_targets(joints)
+        self.held_targets = validate_position_target(joints, targets, self.issued_targets)
+        self.hold_offset = 0
+        if self.hold_capture is not None:
+            self.hold_capture.begin(replace(observed, commanded_joint_targets=self.held_targets))
+
+    def _advance_control(self) -> bool:
+        core = self.control_core
+        if not core.actuation_allowed(self.control_binding):
+            raise RuntimeError("The control command is no longer active.")
+        if self.warmup_steps:
+
+            def prepare_cameras():
+                self._compensate_gravity()
+                self._issue_command(self.robot.get_joint_positions(), (0.0,) * 9)
+
+            core.apply_guarded(self.control_binding, prepare_cameras)
+            self.world.step(render=True)
+            self.render_monotonic_ns = core.clock_ns()
+            self.steps += 1
+            self.warmup_steps -= 1
+            return False
+        if self.held_targets is None or self.hold_offset == self.control_profile.hold_steps:
+            if core.clock_ns() < self.control_next_ns:
+                return False
+            if len(self.control_timings) >= 3000:
+                raise RuntimeError("The bounded control-interval retention budget was exhausted.")
+            self._next_control_interval()
+        efforts = None
+
+        def submit(targets):
+            nonlocal efforts
+            if core.clock_ns() >= self.held_expires_ns:
+                raise RuntimeError("The issued control authority expired during its hold.")
+            if self.held_sequence is not None and not core.teaching_hold_allowed(
+                self.control_binding, self.held_sequence
+            ):
+                raise RuntimeError("Teaching deadman was released during an active hold.")
+            efforts = self._compensate_gravity()
+            self._issue_command(targets, (0.0,) * 9)
+
+        if self.control_mode == "learned":
+            self.policy_executor.apply(
+                self.policy_command, physics_step=self.steps + 1, actuator=submit
+            )
+        else:
+            core.apply_guarded(self.control_binding, lambda: submit(self.held_targets))
+        render = self.hold_offset + 1 == self.control_profile.hold_steps
+        self.world.step(render=render)
+        if render:
+            self.render_monotonic_ns = core.clock_ns()
+        self.steps += 1
+        self.hold_offset += 1
+        if self.hold_capture is not None:
+            self.hold_capture.applied(
+                AppliedControl(self.steps, core.clock_ns(), self.held_targets, (0.0,) * 9, efforts)
+            )
+        current = self._measured_tcp()
+        joints = tuple(float(value) for value in self.robot.get_joint_positions())
+        speed = check_measured_motion(
+            self.last_effector_position,
+            current,
+            joints,
+            dt=self.dt,
+            speed_limit=self.spec.requested_speed,
+        )
+        self.peak_tcp_speed = max(self.peak_tcp_speed, speed)
+        self.last_effector_position = current
+        complete = self.task_watchdog.observe(tcp=current, part=self.position(), joints=joints)
+        self.grasp_verified = self.task_watchdog.grasp_verified
+        if self.hold_offset == self.control_profile.hold_steps:
+            self.control_timings.append(
+                {
+                    "observation_step": self.steps - self.control_profile.hold_steps,
+                    "completed_step": self.steps,
+                    "control_cycle_ms": (core.clock_ns() - self.interval_started_ns) / 1_000_000,
+                    "inference_latency_ms": (
+                        self.policy_command.inference_latency_ms
+                        if self.control_mode == "learned"
+                        else 0.0
+                    ),
+                }
+            )
+            if core.clock_ns() - self.interval_started_ns > 100_000_000:
+                raise RuntimeError(
+                    "The measured control interval exceeded the 10 Hz profile budget."
+                )
+            if self.finish_requested or (self.control_mode == "learned" and complete):
+                if not complete:
+                    raise RuntimeError(
+                        "Measured grasp, release, goal and settling checks did not pass."
+                    )
+                core.apply_guarded(
+                    self.control_binding,
+                    lambda: self._issue_command(self.robot.get_joint_positions(), (0.0,) * 9),
+                )
+                self.control_done, self.control_succeeded = True, True
+                if self.policy_executor is not None:
+                    self.policy_executor.stop()
+                return True
+        return False
+
     def _sample_before_command(
         self, targets: tuple[float, ...], *, terminated: bool = False, truncated: bool = False
     ) -> FrameSample:
@@ -270,7 +594,7 @@ class IsaacWorkcell:
                     "A genuinely new camera frame is required for every recorded control step."
                 )
             images[name] = CameraSample(
-                image, int(metadata["rendering_frame"]), self.steps, time.monotonic_ns()
+                image, int(metadata["rendering_frame"]), self.steps, self.render_monotonic_ns
             )
         return FrameSample(
             captured_at_utc=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
@@ -288,11 +612,14 @@ class IsaacWorkcell:
             return None
         recorder = self.recording
         try:
-            sample = self._sample_before_command(
-                self.issued_targets, terminated=not truncated, truncated=truncated
-            )
-            recorder.append(sample)
-            recorder.seal()
+            if self.hold_capture is not None:
+                self.hold_capture.finish(truncated=truncated)
+            else:
+                sample = self._sample_before_command(
+                    self.issued_targets, terminated=not truncated, truncated=truncated
+                )
+                recorder.append(sample)
+                recorder.seal()
         finally:
             self.recording = None
 
@@ -302,6 +629,10 @@ class IsaacWorkcell:
     def motion_phase(self) -> MotionPhase:
         if self.world is None or not self.world.is_playing():
             return "stopped"
+        if self.control_mode != "reference":
+            if self.control_done:
+                return "complete" if self.control_succeeded else "stopped"
+            return "transporting" if self.grasp_verified else "approaching"
         if self.controller is None:
             return "complete" if self.route is not None and self.route.done else "idle"
         phases: dict[str, MotionPhase] = {
@@ -320,11 +651,13 @@ class IsaacWorkcell:
         }
         return phases[self.route.current.name]
 
-    def _compensate_gravity(self) -> None:
+    def _compensate_gravity(self) -> tuple[float, ...]:
         gravity = self.dynamics.get_generalized_gravity_forces()
         if gravity is None:
             raise RuntimeError("PhysX gravity compensation is unavailable for the reference arm.")
-        self.robot.set_joint_efforts(np.array(arm_gravity_efforts(tuple(gravity[0]))))
+        efforts = arm_gravity_efforts(tuple(float(value) for value in gravity[0]))
+        self.robot.set_joint_efforts(np.array(efforts))
+        return efforts
 
     def advance(self) -> bool:
         if self.world is None:
@@ -332,6 +665,8 @@ class IsaacWorkcell:
         if not self.world.is_playing():
             self.world.render()
             return False
+        if self.control_mode != "reference" and not self.control_done:
+            return self._advance_control()
         self._compensate_gravity()
         if self.controller is not None:
             joints = self.robot.get_joint_positions()
@@ -386,26 +721,34 @@ class IsaacWorkcell:
                     indices.tolist() if isinstance(indices, np.ndarray) else indices,
                 )
                 sample = self._sample_before_command(targets)
-            self.robot.apply_action(actions)
+
+            def submit_reference():
+                self._issue_command(actions.joint_positions, actions.joint_velocities)
+
+            if self.actuation_guard is not None:
+                self.actuation_guard(submit_reference)
+            else:
+                submit_reference()
             if self.recording is not None:
                 self.issued_targets = targets
                 self.recording.append(sample)
         render = self.spec.record_demonstration or self.steps % 6 == 0
         self.world.step(render=render)
+        if render:
+            self.render_monotonic_ns = time.monotonic_ns()
         self.steps += 1
         if self.controller is not None:
             current, _ = self.controller.rmp_flow.get_end_effector_pose(
                 self.robot.get_joint_positions()[:7]
             )
-            if self.last_effector_position is not None:
-                speed = np.linalg.norm(current - self.last_effector_position) / self.dt
-                self.peak_tcp_speed = max(self.peak_tcp_speed, float(speed))
-                if speed > self.spec.requested_speed:
-                    self.stop()
-                    raise RuntimeError(
-                        f"Reference Cartesian-speed watchdog exceeded: {speed:.3f} m/s; "
-                        f"limit {self.spec.requested_speed:.3f}; phase {self.route.index}."
-                    )
+            speed = check_measured_motion(
+                self.last_effector_position,
+                tuple(float(value) for value in current),
+                tuple(float(value) for value in self.robot.get_joint_positions()),
+                dt=self.dt,
+                speed_limit=self.spec.requested_speed,
+            )
+            self.peak_tcp_speed = max(self.peak_tcp_speed, speed)
             self.last_effector_position = current.copy()
             if self.route.index >= 5 and not self.grasp_verified:
                 if self.position()[2] < self.initial_part_position[2] + 0.05:
@@ -448,12 +791,7 @@ class IsaacWorkcell:
                     ),
                     flush=True,
                 )
-                self.robot.apply_action(
-                    ArticulationAction(
-                        joint_positions=self.robot.get_joint_positions(),
-                        joint_velocities=np.zeros(9),
-                    )
-                )
+                self._issue_command(self.robot.get_joint_positions(), (0.0,) * 9)
                 self.controller = None
                 return True
         return False
@@ -482,6 +820,9 @@ class IsaacWorkcell:
         return output.getvalue()
 
     def stop(self) -> None:
-        self.controller = None
         if self.world is not None:
             self.world.pause()
+        self.controller = None
+        self.control_done = True
+        if self.policy_executor is not None:
+            self.policy_executor.stop()
