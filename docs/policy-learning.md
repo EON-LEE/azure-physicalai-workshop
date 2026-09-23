@@ -362,6 +362,27 @@ evidence; actual outcomes must come from the separately pinned job proof.
 Even a measured speedup would not admit the real nine-DOF/two-camera/Isaac
 controller.
 
+The `...profile-20260923-02` attempt actually failed with AML
+`UserTrainingCommandFailed / Bad Request`; reported start/end times were equal.
+The parent confirmed the private profile proof was absent, and the available
+identity could not read the default AML diagnostic files. Exact submitted
+Python/shell syntax and the runpy/spawn launcher passed local self-tests, but
+those results do **not** establish the cloud failure's cause. No baseline profile
+or compiled speedup was obtained, and the failed job was not resubmitted.
+
+The parent explicitly authorized one distinct packaging alternative,
+`policy-smol-vendor-profile-20260923-03`: the **same** model workload, parameters,
+precision, tolerances and budgets, with an immutable code-layer image and a
+short `python -m learning.checks.smolvla_profile_entry` command instead of the
+21 KiB inline source. `learning/checks/Dockerfile.smol-profile` includes only
+the reviewed diagnostic files and a hash-pinned configuration template.
+The entry point verifies the template and final configuration hashes; the sole
+metadata substitution is the new immutable image digest, which cannot be
+embedded into its own image. Direct-module spawn and timeout cleanup are checked
+locally and during image build without loading weights or CUDA. This alternative
+is a new bounded operator decision, not an automatic retry or evidence that the
+original `Bad Request` was definitely caused by command length.
+
 Official [asynchronous inference](https://github.com/huggingface/lerobot/blob/8fff0fde7c79f23a93d845d1a50e985de01f8b8a/docs/source/async.mdx)
 and [real-time chunking](https://github.com/huggingface/lerobot/blob/8fff0fde7c79f23a93d845d1a50e985de01f8b8a/docs/source/rtc.mdx)
 do exist. They are **different control semantics**, not an escape from the
