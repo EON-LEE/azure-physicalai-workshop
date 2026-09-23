@@ -165,6 +165,13 @@ Folder hashes bind their appropriate manifest files; evaluation-plan hashes
 bind canonical native JSON. An API authorization-plan hash is a distinct value:
 the immutable specification binds the reviewed mapping to the native plan asset.
 
+For these new policy pipelines, `parameters.timeout_seconds` is the **total
+sequential execution budget**, not training time plus an extra converter
+allowance. Conversion receives at most 600 seconds and one fifth of that
+budget; training gets the remainder. Both limits are explicit in the job graph.
+Image preparation, allocation waits and actual dollar cost still require the
+operator/API's separate bounded allocation deadline and price review.
+
 Preflight reads **the actual separate outbound-rule endpoint** through
 `client.workspace_outbound_rules.list(workspace_name=...)`. The default workspace
 GET projection is insufficient. Inactive/missing approved private endpoints
@@ -631,10 +638,13 @@ a checkpoint or grants runtime controller approval.
 
 ## Azure ML v2 plans, submission and retention
 
-`infra/learning.bicep` provisions a private AML workspace and explicitly selected
-`Dedicated` or `LowPriority` single-node compute (minimum zero, maximum one,
-no public node IP, SSH/local auth disabled). It does **not** submit a job or
-grant permissions. Supply `workspaceName`, `location`, existing
+`infra/learning.bicep` first provisions the private workspace/endpoint with
+`provisionCompute=false`. After the deploying owner verifies narrowly scoped
+workspace self-private-endpoint approval permissions, an explicit second apply
+with `provisionCompute=true` creates the selected `Dedicated` or `LowPriority`
+single-node compute (minimum zero, maximum one, no public node IP, SSH/local
+auth disabled). It does **not** submit a job or grant permissions.
+Supply `workspaceName`, `location`, existing
 `storageAccountId`, `keyVaultId`, `containerRegistryId`, `applicationInsightsId`, `workspaceIdentityId`,
 `computeIdentityId`, `privateEndpointSubnetId`, the two prelinked
 `privateDnsZoneIds` (`privatelink.api.azureml.ms` and
@@ -800,11 +810,13 @@ Isaac Sim/asset/CUDA license review and any required NVIDIA assent remain the
 operator's responsibility. No license-acceptance flag, automated click-through,
 Hugging Face token, or model-hub upload is supplied here.
 
-As of this implementation handoff, actual Azure GPU capture, billable AML
-training, held-out Isaac rollout accuracy and model promotion are **unrun**.
-The deployment workstream reported unavailable A10/RTX family quota and no
-captured NVIDIA assent. Those are external live-release blockers; CPU checks
-cannot waive them.
+The September 20 ACT handoff had no available live GPU. By September 23 the
+parent separately reported actual Isaac 6/A10 operation and an AML A100 80 GB
+CUDA/private-Blob hardware probe. Those hardware results do not demonstrate
+SmolVLA weight updates, 80 ms concurrent inference or held-out physical task
+quality. This learning slice has not performed cloud mutations, vendor-weight
+downloads, live model optimization or policy promotion; the parent owns those
+explicit live gates. GR00T's separate license restrictions remain blocking.
 
 ### Verified upstream interfaces
 

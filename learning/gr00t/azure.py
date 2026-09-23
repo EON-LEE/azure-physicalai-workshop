@@ -184,6 +184,10 @@ def validate_config(
             )
         )
         options.validate()
+        require(
+            options.timeout_seconds >= 2,
+            "Conversion plus training needs a positive shared time budget",
+        )
         require(options.compute_tier == config["compute_tier"], "Training/compute tier mismatch")
     else:
         keys(config["parameters"], {"timeout_seconds"}, "comparison parameters")
@@ -284,6 +288,9 @@ def build_job(
     base_command = f"python -m {command_module}"
     config_arg = f" --runtime-config run-config.json --snapshot-sha256 {snapshot_sha256}"
     if config["kind"] == "train":
+        total_timeout = config["parameters"]["timeout_seconds"]
+        conversion_timeout = min(600, max(1, total_timeout // 5))
+        training_timeout = total_timeout - conversion_timeout
         outputs = {
             name: {"type": "uri_folder", "mode": "rw_mount", "path": f"{output_prefix}/{name}"}
             for name in ("dataset", "model")
@@ -295,7 +302,7 @@ def build_job(
                 + config_arg,
                 {"raw": "${{parent.inputs.demonstrations}}"},
                 {"dataset": "${{parent.outputs.dataset}}"},
-                600,
+                conversion_timeout,
             ),
             "train": step(
                 base_command + " train --input '${{inputs.dataset}}'"
@@ -308,7 +315,7 @@ def build_job(
                     **({"backbone": "${{parent.inputs.backbone}}"} if include_backbone else {}),
                 },
                 {"model": "${{parent.outputs.model}}"},
-                config["parameters"]["timeout_seconds"],
+                training_timeout,
             ),
         }
     elif config["kind"] == "compare":
