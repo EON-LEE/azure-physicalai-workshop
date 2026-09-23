@@ -39,11 +39,13 @@ def example_config() -> dict:
     return config
 
 
-def run(output: Path) -> dict:
+def run(output: Path, *, job_deadline_utc: str | None = None) -> dict:
     from azure.ai.ml import load_job
 
     require(not output.exists(), "Choose a new offline schema-check directory")
     config = example_config()
+    if job_deadline_utc is not None:
+        config.update(schema="physicalai.smolvla-azure/v2", job_deadline_utc=job_deadline_utc)
     successes = []
     for kind in ("train", "compare", "bootstrap_compare"):
         current = copy.deepcopy(config)
@@ -74,6 +76,7 @@ def run(output: Path) -> dict:
     report = {
         "check": "real-azure-ai-ml-1.35.0-schema",
         "policy_type": "smolvla",
+        "config_schema": config["schema"],
         "schemas": successes,
         "cloud_calls": 0,
         "jobs_submitted": 0,
@@ -86,4 +89,6 @@ def run(output: Path) -> dict:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, required=True)
-    print(json.dumps(run(parser.parse_args().output), indent=2))
+    parser.add_argument("--job-deadline-utc")
+    args = parser.parse_args()
+    print(json.dumps(run(args.output, job_deadline_utc=args.job_deadline_utc), indent=2))

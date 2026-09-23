@@ -126,6 +126,10 @@ def run_training(
     client,
     options: TrainOptions,
 ) -> dict:
+    from learning.smolvla.azure import job_deadline
+
+    deadline = job_deadline(config)
+    deadline.check()
     options.validate()
     require(
         options.gradient_accumulation_steps == 1,
@@ -136,6 +140,7 @@ def run_training(
         "Conversion checksum mismatch",
     )
     converted = validate_conversion(dataset, scope)
+    deadline.check()
     require(
         converted["test_only"] is False and converted.get("control_profile") is not None,
         "Production SmolVLA requires actual scoped v2 demonstrations",
@@ -146,6 +151,7 @@ def run_training(
         expected_model_sha256=parent_model_sha256,
         for_inference=False,
     )
+    deadline.check()
     validate_resume(parent, mode=options.resume_mode)
     profile = ControlProfile(**converted["control_profile"])
     require(
@@ -163,6 +169,7 @@ def run_training(
     backbone = validate_backbone(
         backbone_root, scope=scope, expected_sha256=parent["backbone_manifest_sha256"]
     )
+    deadline.check()
     require_lerobot()
     import torch
 
@@ -170,11 +177,14 @@ def run_training(
     from learning.gr00t.azure import running_job_binding
 
     binding = running_job_binding(client, config)
+    deadline.check()
     require(not output.exists() or not any(output.iterdir()), "Output folder is not empty")
     output.mkdir(parents=True, exist_ok=True)
     seed = output / "initialization"
     prepare_seed(parent_root, backbone, dataset, seed)
+    deadline.check()
     before = parameter_fingerprint(seed / "model.safetensors")
+    deadline.check()
     gpu = {"cuda": True, "name": torch.cuda.get_device_name()}
     write_json(
         output / "training-context.json",
@@ -198,12 +208,13 @@ def run_training(
         subprocess.run(
             training_command(dataset, seed, output / "training", options),
             check=True,
-            timeout=options.timeout_seconds,
+            timeout=min(options.timeout_seconds, deadline.check()),
             env={**os.environ, **OFFLINE_ENV},
             stdout=log,
             stderr=subprocess.STDOUT,
         )
-    return _seal_checkpoint(
+    deadline.check()
+    result = _seal_checkpoint(
         output / "training" / "checkpoints" / f"{options.max_steps:06d}",
         output,
         step=options.max_steps,
@@ -219,6 +230,8 @@ def run_training(
         conversion_sha256=conversion_sha256,
         code_snapshot_sha256=code_snapshot_sha256,
     )
+    deadline.check()
+    return result
 
 
 def _seal_checkpoint(

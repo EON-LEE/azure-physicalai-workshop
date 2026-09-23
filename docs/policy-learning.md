@@ -171,14 +171,24 @@ release and measured timing attestation.
 is offline-only. `clients_for_managed_identity(config, caller_client_id=...)`
 returns `(MLClient, StorageManagementClient)`; no interactive/default credential
 is selected. `PolicyJobs(client, config, storage_client=...)` exposes `preflight`,
-`submit`, `status` and `cancel`. The API owns the durable paid-job claim. An
+`submit`, `status`, `cancel` and explicit `reconcile_deadline`. The API owns the
+durable paid-job and cancellation claims. An
 existing deterministic job must match owner/specification/plan hashes and is
 reconciled, not resubmitted. Metrics remain null until verified actual outputs
 are read; Azure status `Completed` alone does not verify a model or its quality.
 
-The config schema is `physicalai.smolvla-azure/v1`, with explicit
+New admissions require config `physicalai.smolvla-azure/v2` and plan
+`physicalai.smolvla-azure-plan/v2`, with explicit
 `compute_tier`, resource/identity/private-store settings, immutable `UPSTREAM`,
 specification/task/profile hashes, and the same bounded training options.
+The required top-level `job_deadline_utc` is canonical UTC ending `Z`:
+the **earlier of the original persisted API run deadline and the original
+operator registration's `expires_at`**. The trusted worker binds this value
+before approval; retries, process restarts and delayed allocation cannot replace
+it with `now + timeout`. Config, code snapshot, plan SHA, and both pipeline and
+component tags bind the exact value. A v1 plan remains available for offline
+inspection and owned status/cancellation, but has no new queue authority and
+cannot enter preflight, submission, reconciliation or component execution.
 `kind: train` has registered inputs `demonstrations`, `parent_model`, `backbone`;
 outputs are `dataset` and `model`. `kind: compare` has `policy_before`,
 `policy_after`, `evidence`, `plan`; `kind: bootstrap_compare` has `candidate`,
@@ -193,6 +203,34 @@ allowance. Conversion receives at most 600 seconds and one fifth of that
 budget; training gets the remainder. Both limits are explicit in the job graph.
 Image preparation, allocation waits and actual dollar cost still require the
 operator/API's separate bounded allocation deadline and price review.
+
+Native v2 checks expiry before preflight and again immediately before job
+creation. Every component checks before data/model access and verifies its real
+Azure component/parent deadline tags; no AML identity is synthesized. The Linux
+CLI supervises the complete component in its own process group with an absolute
+UTC deadline and a monotonic budget that cannot be extended by a clock rollback.
+This also bounds blocking artifact hashing, conversion and model-loading phases.
+Expiry kills the component and its descendants, exits nonzero, and cannot seal
+an acknowledged successful run. Training checks phase boundaries and caps its
+actual upstream optimizer subprocess to the remaining approved budget.
+Partial mounted files do not prove a successful candidate.
+
+`status` is read-only and includes raw `azure_status`. Explicit
+`reconcile_deadline(job_name)` requires the caller's **durable cancellation
+claim**; it never creates or resubmits a job. Expired active jobs use the existing
+owned `cancel` path, then return the actual Azure state. `CancelRequested` is
+still `cancelling`, not `cancelled` or `timed_out`; a terminal race is reread
+without another POST. `cancellation_requested` records whether this call sent
+the request. `NotResponding`, `Paused` and `Unknown` are not evidence that
+allocation ended. Permission/network failures propagate, retaining an uncertain
+outcome rather than fabricating a terminal receipt.
+
+These source guards are **not a deployed durable queue reconciler**. Production
+submission still requires the API/worker owner's independently hosted,
+restart-safe deadline/cancellation claim and scheduling path; a CLI monitor or
+UI GET alone cannot ensure unattended cancellation. The pinned SDK's command
+execution timeout does not supply a queue TTL. No scheduler, role, network rule
+or paid job is created by this native change.
 
 Preflight reads **the actual separate outbound-rule endpoint** through
 `client.workspace_outbound_rules.list(workspace_name=...)`. The default workspace
@@ -382,6 +420,19 @@ embedded into its own image. Direct-module spawn and timeout cleanup are checked
 locally and during image build without loading weights or CUDA. This alternative
 is a new bounded operator decision, not an automatic retry or evidence that the
 original `Bad Request` was definitely caused by command length.
+
+The actual `...profile-20260923-03` alternative was still `Queued` when resumed.
+Its original allocation deadline was `2026-09-23T14:24:30.310547Z`; the attached
+local monitor was absent, and the explicit cancellation request at
+`14:27:28.286266Z` was approximately **178 seconds late**. Both ARM and RunHistory
+subsequently confirmed `Canceled`, not a successful profiling run. The parent
+confirmed the exact private proof path was absent. Read-only reconciliation saw
+compute current/target nodes `0/0` with state `Resizing`, and no active recent
+owned diagnostics. No stage profile, compiled forward, numerical comparison,
+or original fixture SHA was obtained; therefore no fixture reconstruction was
+performed. The first compatibility diagnostic's approximately 248 ms A100
+measurements remain separate from this canceled attempt. This observed
+monitor-lifetime gap motivated the native expiry contract above.
 
 A subsequent source-only audit found that the original uploader had incorrectly
 applied its 2 MiB **log** limit to the explicit shared fixture safetensors file.

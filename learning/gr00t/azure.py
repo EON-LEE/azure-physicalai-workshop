@@ -224,6 +224,19 @@ def running_job_binding(client, config: dict) -> dict:
         ),
         "Component parent pipeline owner/specification mismatch",
     )
+    if "job_deadline_utc" in config:
+        expected = {
+            "config_schema": config["schema"],
+            "job_deadline_utc": config["job_deadline_utc"],
+        }
+        require(
+            all(
+                (job.tags or {}).get(key) == value
+                for job in (parent, component)
+                for key, value in expected.items()
+            ),
+            "Actual component/parent job deadline differs from the approved config",
+        )
     return {
         "azure_job_id": parent.id,
         "azure_component_job_id": component.id,
@@ -232,7 +245,7 @@ def running_job_binding(client, config: dict) -> dict:
 
 
 def job_tags(config: dict, snapshot_sha256: str, *, policy_type: str = POLICY_TYPE) -> dict:
-    return {
+    tags = {
         "scope_tenant": config["tenant_id"],
         "scope_owner": config["owner_id"],
         "specification_sha256": config["specification_sha256"],
@@ -246,6 +259,9 @@ def job_tags(config: dict, snapshot_sha256: str, *, policy_type: str = POLICY_TY
         "retention_days": str(config["retention_days"]),
         "quality_verified": "false",
     }
+    if "job_deadline_utc" in config:
+        tags.update(config_schema=config["schema"], job_deadline_utc=config["job_deadline_utc"])
+    return tags
 
 
 def build_job(
@@ -489,8 +505,11 @@ class Gr00tJobs:
     def check_license(self) -> None:
         require_commercial_model(POLICY_TYPE, self.config["upstream"]["model_revision"])
 
-    def preflight(self) -> None:
+    def check_admission(self) -> None:
         self.check_license()
+
+    def preflight(self) -> None:
+        self.check_admission()
         config = self.config
         workspace = self.client.workspaces.get(config["workspace"])
         require(
@@ -568,6 +587,14 @@ class Gr00tJobs:
             all((job.tags or {}).get(key) == value for key, value in expected.items()),
             "Named job owner/specification does not match this request",
         )
+        require(
+            (job.tags or {}).get("job_deadline_utc") == self.config.get("job_deadline_utc")
+            and (
+                "job_deadline_utc" not in self.config
+                or (job.tags or {}).get("config_schema") == self.config["schema"]
+            ),
+            "Named job deadline does not match this approved config",
+        )
 
     def status(self, job_name: str) -> dict:
         token(job_name, "job name")
@@ -580,6 +607,7 @@ class Gr00tJobs:
             "owner_key": self.config["owner_id"],
             "specification_sha256": self.config["specification_sha256"],
             "status": STATES[job.status],
+            "azure_status": job.status,
             "optimizer_steps": None,
             "loss": None,
             "quality_verified": False,
@@ -588,7 +616,7 @@ class Gr00tJobs:
     def submit(
         self, plan_dir: Path, *, approved_plan_sha256: str, deterministic_job_name: str
     ) -> dict:
-        self.check_license()
+        self.check_admission()
         plan = self.plan_reader(plan_dir)
         require(
             plan["plan_sha256"] == sha256(approved_plan_sha256)
@@ -617,14 +645,21 @@ class Gr00tJobs:
         )
         job = load_job(source=plan_dir / "job.json")
         job.tags["plan_sha256"] = approved_plan_sha256
+        self.check_admission()
         self.client.jobs.create_or_update(job)
         return self.status(deterministic_job_name)
 
     def cancel(self, job_name: str) -> dict:
         current = self.status(job_name)
-        if current["status"] in ("submitted", "running", "cancelling"):
+        requested = current["azure_status"] not in (
+            "Completed",
+            "Failed",
+            "Canceled",
+            "CancelRequested",
+        )
+        if requested:
             self.client.jobs.cancel(job_name)
-        return self.status(job_name)
+        return {**self.status(job_name), "cancellation_requested": requested}
 
 
 def clients_for_managed_identity(config: dict, *, caller_client_id: str, validator=validate_config):
