@@ -26,6 +26,7 @@ RESPONSE_SCHEMA = "physicalai.smolvla-response/v2"
 CONTEXT_SCHEMA = "physicalai.paused-control-context/v1"
 OBSERVATION_SCHEMA = "physicalai.frozen-policy-observation/v1"
 COMMAND_SCHEMA = "physicalai.paused-joint-command/v1"
+PUBLICATION_SCHEMA = "physicalai.initial-frozen-publication/v1"
 PLAN_SCHEMA = "physicalai.smolvla-paired-plan/v2"
 RESULT_SCHEMA = "physicalai.smolvla-paired-results/v3"
 REPORT_SCHEMA = "physicalai.smolvla-paired-report/v2"
@@ -46,6 +47,7 @@ def protocol_schemas() -> dict[str, str]:
         "context": CONTEXT_SCHEMA,
         "observation": OBSERVATION_SCHEMA,
         "command": COMMAND_SCHEMA,
+        "initial_publication": PUBLICATION_SCHEMA,
         "paired_plan": PLAN_SCHEMA,
         "paired_results": RESULT_SCHEMA,
         "paired_report": REPORT_SCHEMA,
@@ -153,6 +155,49 @@ class FrozenCameraSample(CameraSample):
 
 
 @dataclass(frozen=True)
+class InitialFrozenPublication:
+    publication_record_id: str
+    publication_record_sha256: str
+    capture_sha256: str
+    freeze_established_ns: int
+    published_at_utc: str
+    published_monotonic_ns: int
+    age_at_observation_start_ns: int
+    schema: str = PUBLICATION_SCHEMA
+    origin: str = "original_current_frozen_publication"
+
+    def validate(self, observation: FrozenPolicyObservation) -> None:
+        token(self.publication_record_id, "trusted runtime publication record")
+        sha256(self.publication_record_sha256, "runtime publication record checksum")
+        sha256(self.capture_sha256, "original sensor capture checksum")
+        integer(self.freeze_established_ns, "actual prepublication freeze", 1)
+        integer(self.published_monotonic_ns, "original publication timestamp", 1)
+        integer(self.age_at_observation_start_ns, "original publication age", 0, 2_000_000_000)
+        require(
+            self.schema == PUBLICATION_SCHEMA
+            and self.origin == "original_current_frozen_publication"
+            and observation.control_tick == 0,
+            "Original-publication proof is allowed only for the first control interval",
+        )
+        require(
+            self.published_monotonic_ns == observation.monotonic_ns
+            and self.published_at_utc == observation.captured_at_utc
+            and self.capture_sha256 == observation.capture_sha256
+            and self.age_at_observation_start_ns
+            == observation.observation_started_ns - self.published_monotonic_ns,
+            "Original publication was restamped, rebound or outside its original age",
+        )
+        require(
+            self.freeze_established_ns
+            <= min(
+                observation.joint_sample_ns,
+                *(image.monotonic_ns for image in observation.images.values()),
+            ),
+            "Actual freeze must precede original camera/joint publication",
+        )
+
+
+@dataclass(frozen=True)
 class FrozenPolicyObservation:
     scope: Scope
     environment_id: str
@@ -172,11 +217,18 @@ class FrozenPolicyObservation:
     joint_sample_ns: int
     simulation_time_numerator: int
     simulation_time_denominator: int
+    initial_publication: InitialFrozenPublication | None = None
+    observation_completed_ns: int | None = None
     schema: str = OBSERVATION_SCHEMA
     execution_timing: str = EXECUTION_TIMING
     real_time_admission: bool = False
 
     def __post_init__(self) -> None:
+        require(
+            self.initial_publication is None
+            or isinstance(self.initial_publication, InitialFrozenPublication),
+            "Expected typed initial publication evidence",
+        )
         require(isinstance(self.images, Mapping), "Frozen camera samples must be a mapping")
         require(
             all(isinstance(item, FrozenCameraSample) for item in self.images.values()),
@@ -195,11 +247,34 @@ class FrozenPolicyObservation:
             **{
                 name: getattr(self, name)
                 for name in self.__dataclass_fields__
-                if name not in ("images", "scope")
+                if name not in ("images", "scope", "initial_publication")
             },
             "scope": asdict(self.scope),
             "images": {name: item.metadata() for name, item in self.images.items()},
+            "initial_publication": asdict(self.initial_publication)
+            if self.initial_publication is not None
+            else None,
         }
+
+    @property
+    def capture_sha256(self) -> str:
+        metadata = self.metadata()
+        for name in (
+            "episode_id",
+            "freeze_id",
+            "control_tick",
+            "observation_started_ns",
+            "observation_completed_ns",
+            "initial_publication",
+        ):
+            metadata.pop(name)
+        return digest(canonical(metadata))
+
+    @property
+    def ready_ns(self) -> int:
+        if self.initial_publication is None:
+            return self.monotonic_ns
+        return integer(self.observation_completed_ns, "new observation work completion", 1)
 
     @property
     def sha256(self) -> str:
@@ -220,9 +295,19 @@ class FrozenPolicyObservation:
         for name in ("monotonic_ns", "observation_started_ns", "joint_sample_ns"):
             integer(getattr(self, name), name, 1)
         integer(now_ns, "current monotonic timestamp", 1)
+        if self.initial_publication is None:
+            require(
+                self.observation_completed_ns is None,
+                "Only the first original-publication proof separates capture and new work times",
+            )
+            sample_start = self.observation_started_ns
+        else:
+            self.initial_publication.validate(self)
+            sample_start = self.initial_publication.freeze_established_ns
         require(
-            self.observation_started_ns <= self.joint_sample_ns <= self.monotonic_ns <= now_ns
-            and self.monotonic_ns - self.observation_started_ns
+            sample_start <= self.joint_sample_ns <= self.monotonic_ns <= self.ready_ns <= now_ns
+            and self.observation_started_ns <= self.ready_ns
+            and self.ready_ns - self.observation_started_ns
             <= profile.max_observation_wall_ms * 1_000_000,
             "Future samples or expired paused observation phase",
         )
@@ -236,7 +321,7 @@ class FrozenPolicyObservation:
             integer(image.physics_step, "camera physics step")
             require(
                 image.physics_step == self.physics_step
-                and self.observation_started_ns <= image.monotonic_ns <= self.monotonic_ns
+                and sample_start <= image.monotonic_ns <= self.monotonic_ns
                 and utc(image.captured_at_utc) <= captured
                 and abs(image.simulation_time - self.simulation_time)
                 <= Fraction(1, 2 * profile.physics_hz),
@@ -332,7 +417,7 @@ class PausedControlContext:
             self.episode_started_ns
             <= self.interval_started_ns
             == observation.observation_started_ns
-            and self.interval_started_ns <= observation.monotonic_ns <= self.operation_started_ns
+            and self.interval_started_ns <= observation.ready_ns <= self.operation_started_ns
             and self.operation_started_ns
             <= now_ns
             < self.operation_deadline_ns
@@ -397,7 +482,7 @@ class PausedFrameSample:
         self, profile: PausedControlProfile, *, previous: PausedFrameSample | None = None
     ) -> None:
         observation = self.observation
-        observation.validate(profile, now_ns=observation.monotonic_ns)
+        observation.validate(profile, now_ns=observation.ready_ns)
         require(len(self.applied_controls) == profile.hold_steps, "Incomplete actual six-tick hold")
         validate_joint_tracking(
             self.commanded_joint_targets,
@@ -407,7 +492,7 @@ class PausedFrameSample:
         )
         for name in ("interval_deadline_ns", "hold_started_ns", "hold_deadline_ns"):
             integer(getattr(self, name), name, 1)
-        ready = observation.monotonic_ns
+        ready = observation.ready_ns
         require(
             (self.policy_started_ns is None) == (self.policy_finished_ns is None),
             "Incomplete actual policy timing evidence",

@@ -12,6 +12,7 @@ from learning.paused.contract import (
     CONTEXT_SCHEMA,
     EXECUTION_TIMING,
     FrozenPolicyObservation,
+    InitialFrozenPublication,
     PausedControlContext,
     PausedControlProfile,
     PausedJointCommand,
@@ -63,6 +64,10 @@ class PausedGuardedPolicyAdapter:
         *,
         profile: PausedControlProfile,
         clock_ns: Callable[[], int] = time.monotonic_ns,
+        publication_guard: Callable[
+            [InitialFrozenPublication, FrozenPolicyObservation, PausedControlContext], bool
+        ]
+        | None = None,
     ) -> None:
         profile.validate()
         require(
@@ -84,6 +89,7 @@ class PausedGuardedPolicyAdapter:
         policy.task.validate()
         sha256(policy.model_sha256)
         self.policy, self.profile, self.clock_ns = policy, profile, clock_ns
+        self.publication_guard = publication_guard
         self._lock = threading.Lock()
         self._generation, self._predict_calls = 0, 0
         self._inflight, self._faulted = False, True
@@ -146,6 +152,17 @@ class PausedGuardedPolicyAdapter:
             self._faulted = True
             self._binding = None
 
+    def _publication(
+        self, observation: FrozenPolicyObservation, context: PausedControlContext
+    ) -> None:
+        if observation.initial_publication is not None:
+            require(
+                self.publication_guard is not None
+                and self.publication_guard(observation.initial_publication, observation, context)
+                is True,
+                "Initial publication requires a known current trusted runtime record",
+            )
+
     def step(
         self, observation: FrozenPolicyObservation, context: PausedControlContext
     ) -> PausedJointCommand:
@@ -158,6 +175,7 @@ class PausedGuardedPolicyAdapter:
             started = integer(self.clock_ns(), "actual prediction start", 1)
             context.validate(self.profile, observation, now_ns=started)
             self._policy_binding(context)
+            self._publication(observation, context)
             require(_episode_binding(context) == binding, "Original episode authority changed")
             require(
                 observation.freeze_id not in self._freezes, "A freeze cannot be predicted twice"
@@ -168,7 +186,7 @@ class PausedGuardedPolicyAdapter:
                     observation.physics_step == previous.physics_step + self.profile.hold_steps
                     and observation.control_tick == previous.control_tick + 1
                     and observation.state_revision > previous.state_revision
-                    and observation.observation_started_ns > previous.monotonic_ns
+                    and observation.observation_started_ns > previous.ready_ns
                     and abs(
                         observation.simulation_time - previous.simulation_time - Fraction(1, 10)
                     )
@@ -194,6 +212,7 @@ class PausedGuardedPolicyAdapter:
                 fps=self.profile.control_sim_hz,
             )
             self._policy_binding(context)
+            self._publication(observation, context)
             ready = integer(self.clock_ns(), "validated prediction ready", 1)
             require(
                 finished <= ready < context.operation_deadline_ns,

@@ -288,6 +288,32 @@ purposes and truncated episodes. Incomplete streams remain unpublished evidence,
 not usable datasets. Both v1/v2 and v3 reuse the same checked PNG/path verifier;
 the old validator still refuses paused v3.
 
+Before any paused-mode capture, the coordinator clarified first-frame causality
+in frozen criteria revision 2 (`588fef92a96ace2dc5ffb5e606195a47f19e1e546b1ebf911220634708b3b1ef`;
+new frozen conditions plan `c28dc6a4892f9a90c9215d746fe331c221d0fb737ad765f6230f24d01ef08854`).
+Only control interval zero may carry `InitialFrozenPublication`: an original,
+current-physics publication at most 2,000 ms before the new observation request,
+with a real freeze established **before** its original joint/camera samples.
+It retains original UTC/monotonic values and binds sensor-only capture content,
+epoch/scope/physics/native-time identity, an opaque runtime record ID/hash and
+the exact declared age. `observation_completed_ns` measures the **new**
+observation work; `ready_ns` exposes that completion without reminting the old
+publication timestamp. Subsequent observations keep the original strict fresh
+post-hold chronology. All controls still follow episode admission, and none of
+the 2/2/2/5-second or episode resource limits changed.
+
+The private world/object/qvel state and its fingerprint stay in the trusted
+runtime/evaluator record, never in model observations or neural features.
+Offline hashes are not physical truth. For initial-publication inference the
+adapter additionally requires a `publication_guard(publication, observation,
+context) -> bool` callback authorizing the **known** live record both before and
+after prediction; missing/unknown records and changed state fail closed. This
+callback must use a trusted thread-safe ledger, not call the simulator SDK on
+the inference worker. The main thread must still resolve and recheck actual
+private frozen state immediately before applying any action. Missing, expired
+or retrospectively invented proof requires explicit re-preparation or failure,
+not timestamp copying, duplicate-frame rendering or an extra physics step.
+
 Capture storage does not by itself execute a model or establish physical quality.
 Subsequent model/IPC/evaluation producers must explicitly consume these contracts;
 real-time 80/100 ms gates remain blocked, and no actual paused training or quality

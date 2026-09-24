@@ -38,6 +38,7 @@ from learning.paused.contract import (
     RAW_SCHEMA,
     FrozenCameraSample,
     FrozenPolicyObservation,
+    InitialFrozenPublication,
     PausedControlProfile,
     PausedFrameSample,
 )
@@ -136,9 +137,23 @@ def _decode_frame(frame: dict, payloads: dict[str, bytes], index: int) -> Paused
             png=payloads[name], **{key: image[key] for key in camera_fields}
         )
     observation = FrozenPolicyObservation(
-        **{key: frame[key] for key in observation_fields - {"scope", "images"}},
+        **{
+            key: frame[key]
+            for key in observation_fields - {"scope", "images", "initial_publication"}
+        },
         scope=Scope(**keys(frame["scope"], {"tenant_id", "owner_id"}, "frame scope")),
         images=cameras,
+        initial_publication=(
+            InitialFrozenPublication(
+                **keys(
+                    frame["initial_publication"],
+                    set(InitialFrozenPublication.__dataclass_fields__),
+                    "initial publication proof",
+                )
+            )
+            if frame["initial_publication"] is not None
+            else None
+        ),
     )
     require(
         observation.sha256 == sha256(frame["observation_sha256"]),
