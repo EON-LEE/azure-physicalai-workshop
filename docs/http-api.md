@@ -90,6 +90,31 @@ Never substitute a stock image or animate robot movement in the browser.
 The template documents use the full existing customer-environment schema.
 `GET /api/environments` returns `{"items": [EnvironmentRecord]}`.
 
+Opt into bounded paging with `GET /api/environments?page_size=50`.
+`page_size` is an integer from 1 to 50; each response contains at most that
+many records and `next_cursor: "<opaque-server-UUID>" | null`. Pass that cursor
+to `GET /api/environments?cursor=...`; a supplied page size must still match
+the original page. The no-query legacy route retains its items-only shape
+and existing newest-first limit. Paged listings instead use unique environment
+document ID descending, with no new composite index or increased legacy limit.
+
+Cursor state is server-issued metadata in the authenticated owner's partition,
+bound to the page size, last scanned ID, and initial creation cutoff. Malformed,
+missing, foreign and expired cursors return 422 before any environment query.
+Only cursor documents set top-level `ttl: 600`, with a separate ten-minute
+logical expiry. Pagination is unavailable until container metadata confirms
+`defaultTtl: -1` (TTL enabled, no expiry for other records); deployment/readback
+of that setting remains operator-owned. Existing environments/runs get no TTL.
+
+Each query scans at most page size plus one record. Records created after the
+initial cutoff are excluded; an empty filtered page can still have a next cursor.
+This is **not an immutable content snapshot**: an existing record's content and
+revision can change between reads. Clients must retain the exact reviewed
+environment/case revision, seed and split, deduplicate IDs, flag changed
+versions, and require explicit reselection rather than adopting a new revision
+under an old checkbox. The server still authoritatively checks revisions at
+save/project/teaching admission.
+
 An `EnvironmentRecord` contains:
 
 ```json

@@ -46,7 +46,10 @@ export const environmentSchema = z.object({
   updated_at: timestamp,
 });
 
-export const environmentsSchema = z.object({ items: z.array(environmentSchema) });
+export const environmentsSchema = z.object({
+  items: z.array(environmentSchema).max(50),
+  next_cursor: z.uuid().nullable().optional(),
+});
 export const templatesSchema = z.object({
   items: z.array(z.object({ name: id, document: z.record(z.string(), z.unknown()) })),
 });
@@ -164,7 +167,7 @@ export interface FrameImage {
 export interface ConsoleApi {
   readonly learning?: LearningApi;
   getRuntime(signal?: AbortSignal): Promise<RuntimeInfo>;
-  getEnvironments(signal?: AbortSignal): Promise<Environments>;
+  getEnvironments(signal?: AbortSignal, cursor?: string): Promise<Environments>;
   getEnvironmentSchema(signal?: AbortSignal): Promise<EnvironmentJsonSchema>;
   getTemplates(signal?: AbortSignal): Promise<EnvironmentTemplates>;
   saveEnvironment(documentJson: string, expectedRevision: string | null, signal?: AbortSignal): Promise<EnvironmentRecord>;

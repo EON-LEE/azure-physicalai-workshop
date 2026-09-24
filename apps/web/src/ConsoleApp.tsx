@@ -8,6 +8,7 @@ import { isDraftDirty, type StudioDraft } from './environment/validation';
 import { buildCustomerExperiment, inspectionTask, readCustomerExperiment } from './environment/customerExperiment';
 import { usePageVisible } from './hooks/usePageVisible';
 import { usePolling } from './hooks/usePolling';
+import { useEnvironmentPages } from './hooks/useEnvironmentPages';
 import { useRequestScope } from './hooks/useRequestScope';
 import { Badge, Brand, ErrorNotice } from './ui/common';
 import { formatDate } from './ui/format';
@@ -55,12 +56,11 @@ export function ConsoleApp({ api, account, sessionExpired = false }: {
   const visible = usePageVisible();
   const startRequest = useRequestScope();
   const runtimeLoad = useCallback((signal: AbortSignal) => api.getRuntime(signal), [api]);
-  const environmentsLoad = useCallback((signal: AbortSignal) => api.getEnvironments(signal), [api]);
   const runsLoad = useCallback((signal: AbortSignal) => api.getRuns(signal), [api]);
   const runtime = usePolling(runtimeLoad, { intervalMs: 3000, active: !sessionExpired });
-  const environments = usePolling(environmentsLoad, { active: !sessionExpired });
+  const environments = useEnvironmentPages(api, account.id, !sessionExpired);
   const runs = usePolling(runsLoad, { intervalMs: view === 'history' ? 10_000 : null, active: !sessionExpired });
-  const records = environments.data?.items ?? [];
+  const records = environments.items;
   const selected = records.find((item) => item.environment_id === selectedId) ?? null;
   const runtimeFresh = !runtime.paused && !runtime.error && runtime.lastReceivedAt !== null && clock - runtime.lastReceivedAt < 10_000 && !sessionExpired;
   const currentRun = focusedRun ?? (runs.data?.items.filter((run) => run.environment_id === selected?.environment_id)
@@ -77,10 +77,10 @@ export function ConsoleApp({ api, account, sessionExpired = false }: {
   }, [visible]);
 
   useEffect(() => {
-    if (selectedId !== null || !environments.data?.items.length) return;
-    const active = environments.data.items.find((item) => item.environment_id === runtime.data?.simulation.environment_id);
-    setSelectedId(active?.environment_id ?? environments.data.items[0]?.environment_id ?? null);
-  }, [selectedId, environments.data, runtime.data?.simulation.environment_id]);
+    if (selectedId !== null || !records.length) return;
+    const active = records.find((item) => item.environment_id === runtime.data?.simulation.environment_id);
+    setSelectedId(active?.environment_id ?? records[0]?.environment_id ?? null);
+  }, [selectedId, records, runtime.data?.simulation.environment_id]);
 
   useEffect(() => {
     if (!dirty) return;
@@ -105,10 +105,10 @@ export function ConsoleApp({ api, account, sessionExpired = false }: {
   };
 
   const onSaved = useCallback((record: EnvironmentRecord) => {
-    environments.setData((value) => ({ items: [...(value?.items ?? []).filter((item) => item.environment_id !== record.environment_id), record] }));
+    environments.upsert(record);
     setSelectedId(record.environment_id);
     runtime.refresh();
-  }, [environments.setData, runtime.refresh]);
+  }, [environments.upsert, runtime.refresh]);
 
   const onRunChange = useCallback((run: RunRecord) => {
     setFocusedRun(run);
@@ -184,6 +184,12 @@ export function ConsoleApp({ api, account, sessionExpired = false }: {
           <p>라이브 이미지는 Isaac Sim의 인증된 합성 카메라 출력입니다. 임의 Python 실행과 재생 대체 모드는 제공하지 않습니다. Teaching Studio는 별도 통합 검증 후 활성화됩니다. 미저장 JSON은 새로고침이나 로그아웃 전에 보관하세요.</p>
         </section>}
         <ErrorNotice error={environments.error} title="저장된 환경 목록을 확인할 수 없습니다" retry={environments.refresh} />
+        <div className="workspace-toolbar" aria-label="저장 환경 페이지">
+          <span role="status">불러온 저장 환경 {new Intl.NumberFormat('ko-KR').format(records.length)}개</span>
+          {environments.nextCursor && <button type="button" className="button secondary" disabled={environments.loading || environments.loadingMore || environments.paused} onClick={() => void environments.loadMore()}>
+            {environments.loadingMore ? '저장 환경 불러오는 중…' : '저장 환경 더 불러오기'}
+          </button>}
+        </div>
         {view === 'live' && <ErrorNotice error={runs.error} title="기존 실행 기록을 확인할 수 없습니다" retry={runs.refresh} />}
         {view === 'live' && <FactoryLive {...runtimeControls} api={api} environments={records} environment={selected}
           onSelect={(id) => { setSelectedId(id); if (!focusedRun || isTerminal(focusedRun.status)) setFocusedRun(null); }}

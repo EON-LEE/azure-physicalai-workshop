@@ -7,6 +7,7 @@ import '../../src/styles.css';
 import './fixture.css';
 import { browserLearning, type LearningTrace } from './learning-fixture';
 import { skillRun } from '../fixtures/released-skill';
+import { environmentCursor, seventyEnvironments } from '../fixtures/environment-pages';
 
 interface FixtureTrace {
   marker: string;
@@ -79,7 +80,13 @@ const api: ConsoleApi = {
     }
     return structuredClone(activeRuntime);
   },
-  async getEnvironments(signal) { call('environments', signal); return { items: [structuredClone(record)] }; },
+  async getEnvironments(signal, cursor) {
+    call('environments', signal);
+    if (scenario === 'learning-pages') return structuredClone(cursor
+      ? { items: seventyEnvironments.slice(50), next_cursor: null }
+      : { items: seventyEnvironments.slice(0, 50), next_cursor: environmentCursor });
+    return { items: [structuredClone(record)], next_cursor: null };
+  },
   async getEnvironmentSchema(signal) { call('schema', signal); return environmentSchema; },
   async getTemplates(signal) { call('templates', signal); return { items: [{ name: '참조 검사 셀 (테스트 전용)', document: fixtureDocument }] }; },
   async saveEnvironment(documentJson, expectedRevision, signal) {

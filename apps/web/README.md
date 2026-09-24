@@ -165,6 +165,15 @@ not a trained VLA/policy controlling the robot.
 Audience members need no login to view the public inspection/sorting presentation.
 The controls below belong to the separately protected operator area.
 
+- **Owner environment pages:** The console requests bounded pages of 50 from the
+  authenticated API and exposes an explicit load-more control. The count means
+  records loaded, not total inventory or simulator readiness. Opaque cursors
+  expire and never switch owner partitions. Duplicate IDs are deduplicated;
+  changed revisions are flagged. Teaching case search shows at most 20 checkbox
+  rows at a time, retaining each selected original ID/revision/seed/split across
+  pages and filters. A changed selected case or anchor blocks submission until
+  explicitly reselected; no page refresh fabricates or silently replaces pins.
+  Page creation cutoff is not an immutable snapshot of existing record content.
 - **Environment Studio:** Select an API reference template, explicitly load a
   saved environment, or import a `.json` file up to 1 MiB. Reference templates
   are labeled as reference data, not real customer-factory measurements.

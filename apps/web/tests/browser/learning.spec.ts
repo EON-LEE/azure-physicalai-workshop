@@ -1,5 +1,24 @@
 import { expect, test } from '@playwright/test';
 
+test('seventy owner environments remain browsable with bounded case rows and retained selection', async ({ page }) => {
+  await page.goto('/?scenario=learning-pages&view=learning');
+  await expect(page.getByRole('note')).toContainText('Azure / GPU 동작 검증이 아닙니다');
+  await expect(page.getByText('불러온 저장 환경 50개')).toBeVisible();
+  await page.getByRole('button', { name: '새 학습 작업 정의' }).click();
+  expect(await page.locator('input[name="teaching-case"]').count()).toBeLessThanOrEqual(20);
+  await page.getByRole('searchbox', { name: '시연 배치 검색' }).fill('case-040');
+  const selection = page.getByRole('checkbox', { name: /case-040/ });
+  await selection.focus();
+  await page.keyboard.press('Space');
+  await expect(selection).toBeChecked();
+  await page.getByRole('button', { name: '저장 환경 더 불러오기' }).click();
+  await expect(page.getByText('불러온 저장 환경 70개')).toBeVisible();
+  await expect(selection).toBeChecked();
+  await page.getByRole('searchbox', { name: '시연 배치 검색' }).fill('case-000');
+  await expect(page.getByRole('checkbox', { name: /case-000/ })).toBeVisible();
+  expect(await page.evaluate(() => window.__learningFixture.calls.includes('createProject'))).toBe(false);
+});
+
 test('teaching remains blocked without verified dependencies and never creates a paid job', async ({ page }) => {
   await page.goto('/?scenario=learning-off&view=learning');
   await expect(page.getByRole('heading', { name: '학습 기능이 아직 활성화되지 않았습니다' })).toBeVisible();

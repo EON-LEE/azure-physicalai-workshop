@@ -22,4 +22,9 @@ export function defaultTeachingCase(cases: TeachingCase[], environmentId: string
   return anchors.length === 1 ? anchors[0]!.case_id : '';
 }
 
+export function sameTeachingCase(left: TeachingCase | undefined, right: TeachingCase): boolean {
+  return Boolean(left && left.case_id === right.case_id && left.environment_id === right.environment_id &&
+    left.revision === right.revision && left.seed === right.seed && left.split === right.split);
+}
+
 export const splitLabel = (split: TeachingCase['split']) => split === 'train' ? '학습 (train)' : '검증 (validation)';

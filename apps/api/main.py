@@ -302,7 +302,16 @@ def create_app(
         return {"items": items}
 
     @app.get("/api/environments")
-    def list_environments(user: Actor, backend: Service):
+    def list_environments(
+        user: Actor,
+        backend: Service,
+        page_size: Annotated[int | None, Query(ge=1, le=50)] = None,
+        cursor: UUID | None = None,
+    ):
+        if page_size is not None or cursor is not None:
+            return backend.store.page_environments(
+                user.owner_key, page_size=page_size, cursor=cursor
+            )
         return {"items": backend.store.list_environments(user.owner_key)}
 
     @app.post("/api/environments", status_code=201)

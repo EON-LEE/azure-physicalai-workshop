@@ -4,6 +4,7 @@ from uuid import UUID
 from apps.api.models import (
     Activation,
     Decision,
+    EnvironmentPage,
     EnvironmentRecord,
     Execution,
     MotionCommand,
@@ -29,6 +30,9 @@ class Store(Protocol):
         self, owner: str, environment_id: str
     ) -> Stored[EnvironmentRecord] | None: ...
     def list_environments(self, owner: str) -> list[EnvironmentRecord]: ...
+    def page_environments(
+        self, owner: str, *, page_size: int | None = None, cursor: UUID | None = None
+    ) -> EnvironmentPage: ...
     def put_environment(
         self, owner: str, record: EnvironmentRecord, etag: str | None
     ) -> Stored[EnvironmentRecord]: ...

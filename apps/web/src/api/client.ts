@@ -136,8 +136,10 @@ export class ApiClient implements ConsoleApi {
     return this.request('/api/runtime', (response) => decode(response, runtimeSchema), signal);
   }
 
-  async getEnvironments(signal?: AbortSignal) {
-    return this.request('/api/environments', (response) => decode(response, environmentsSchema), signal);
+  async getEnvironments(signal?: AbortSignal, cursor?: string) {
+    const query = new URLSearchParams({ page_size: '50' });
+    if (cursor !== undefined) query.set('cursor', cursor);
+    return this.request(`/api/environments?${query}`, (response) => decode(response, environmentsSchema), signal);
   }
 
   async getEnvironmentSchema(signal?: AbortSignal) {

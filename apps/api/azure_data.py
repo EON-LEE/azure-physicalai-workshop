@@ -2,15 +2,16 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from datetime import timedelta
 from typing import TypeVar
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from azure.core import MatchConditions
 from azure.core.exceptions import AzureError, ResourceExistsError, ResourceNotFoundError
 from azure.cosmos import CosmosClient
 from azure.cosmos.exceptions import CosmosHttpResponseError, CosmosResourceNotFoundError
 from azure.storage.blob import BlobServiceClient, ContentSettings
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from apps.api.errors import Problem, unavailable
 from apps.api.learning_models import (
@@ -28,7 +29,16 @@ from apps.api.learning_models import (
     TrainingRun,
     transition,
 )
-from apps.api.models import EnvironmentRecord, PresentationRecord, Principal, RunRecord, Stored
+from apps.api.models import (
+    EnvironmentCursor,
+    EnvironmentPage,
+    EnvironmentRecord,
+    PresentationRecord,
+    Principal,
+    RunRecord,
+    Stored,
+    utcnow,
+)
 
 log = logging.getLogger(__name__)
 T = TypeVar("T")
@@ -132,6 +142,8 @@ class CosmosStore:
             "updated_at": value.model_dump(mode="json")["updated_at"],
             "value": value.model_dump(mode="json"),
         }
+        if kind == "environment_cursor":
+            body["ttl"] = 600
         if etag is None:
             item = _cosmos(lambda: self.container.create_item(body=body))
         else:
@@ -162,6 +174,91 @@ class CosmosStore:
 
     def list_environments(self, owner: str) -> list[EnvironmentRecord]:
         return self._list(owner, "environment", EnvironmentRecord)
+
+    def page_environments(
+        self, owner: str, *, page_size: int | None = None, cursor: UUID | None = None
+    ) -> EnvironmentPage:
+        now = utcnow()
+        created_before, after = now, None
+        if cursor is not None:
+            previous = self._read(owner, f"environment-cursor:{cursor}", EnvironmentCursor)
+            if previous is None or (
+                previous.value.id != cursor
+                or previous.value.owner_key != owner
+                or now >= previous.value.expires_at
+                or (page_size is not None and previous.value.page_size != page_size)
+            ):
+                raise Problem(
+                    422,
+                    "invalid_environment_cursor",
+                    "Cursor is invalid or expired for this owner. Reload the first page.",
+                )
+            page_size = previous.value.page_size
+            created_before, after = (
+                previous.value.created_before,
+                previous.value.after_environment_id,
+            )
+        size = 50 if page_size is None else page_size
+        if type(size) is not int or not 1 <= size <= 50:
+            raise Problem(422, "invalid_page_size", "Environment page size must be 1 through 50.")
+        properties = _cosmos(self.container.read)
+        if properties.get("defaultTtl") != -1:
+            raise Problem(
+                503,
+                "environment_pagination_unavailable",
+                "Cursor TTL requires a verified non-expiring container default before pagination.",
+            )
+        query = "SELECT TOP @limit * FROM c WHERE c.kind = @kind"
+        parameters = [
+            {"name": "@kind", "value": "environment"},
+            {"name": "@limit", "value": size + 1},
+        ]
+        if after is not None:
+            query += " AND c.id < @after"
+            parameters.append({"name": "@after", "value": f"environment:{after}"})
+        query += " ORDER BY c.id DESC"
+        rows = _cosmos(
+            lambda: list(
+                self.container.query_items(
+                    query=query, parameters=parameters, partition_key=owner, max_item_count=size + 1
+                )
+            )
+        )
+        if len(rows) > size + 1:
+            raise unavailable("Bounded environment page")
+        scanned, items = [], []
+        for row in rows[:size]:
+            if row.get("owner_key") != owner or row.get("kind") != "environment":
+                raise Problem(503, "environment_scope_corrupted", "Environment page scope differs.")
+            try:
+                value = EnvironmentRecord.model_validate(row["value"])
+            except (KeyError, ValidationError) as exc:
+                log.exception("Stored environment page failed validation")
+                raise unavailable("Stored environment page") from exc
+            if row["id"] != f"environment:{value.environment_id}":
+                raise Problem(
+                    503, "environment_scope_corrupted", "Environment document ID differs."
+                )
+            scanned.append(value)
+            # Compare parsed times after a bounded scan; ISO strings can have different precision.
+            if value.created_at <= created_before:
+                items.append(value)
+        next_cursor = None
+        if len(rows) > size:
+            record = EnvironmentCursor(
+                id=uuid4(),
+                owner_key=owner,
+                after_environment_id=scanned[-1].environment_id,
+                page_size=size,
+                created_before=created_before,
+                expires_at=now + timedelta(minutes=10),
+                updated_at=now,
+            )
+            self._write(
+                owner, f"environment-cursor:{record.id}", "environment_cursor", record, None
+            )
+            next_cursor = record.id
+        return EnvironmentPage(items=items, next_cursor=next_cursor)
 
     def put_environment(
         self, owner: str, record: EnvironmentRecord, etag: str | None

@@ -60,6 +60,22 @@ class EnvironmentRecord(Model):
     updated_at: AwareDatetime
 
 
+class EnvironmentPage(Model):
+    items: list[EnvironmentRecord] = Field(max_length=50)
+    next_cursor: UUID | None = None
+
+
+class EnvironmentCursor(Model):
+    version: Literal["environment-page-v1"] = "environment-page-v1"
+    id: UUID
+    owner_key: Revision
+    after_environment_id: Identifier
+    page_size: int = Field(strict=True, ge=1, le=50)
+    created_before: AwareDatetime
+    expires_at: AwareDatetime
+    updated_at: AwareDatetime
+
+
 class StartRun(Model):
     request_id: UUID
     environment_id: Identifier

@@ -10,10 +10,10 @@ import { PolicyComparison } from './PolicyComparison';
 import { TeachingControls } from './TeachingControls';
 import {
   sourceLabel, type CoachResponse, type CreateProjectBody, type Evaluation, type Job,
-  type LearningApi, type LearningRecord, type Project, type Resource, type Teaching,
+  type LearningApi, type LearningRecord, type Project, type Resource, type Teaching, type TeachingCase,
 } from './contracts';
 import './learning.css';
-import { defaultTeachingCase, savedTeachingCases, splitLabel } from './teachingCases';
+import { defaultTeachingCase, sameTeachingCase, savedTeachingCases, splitLabel } from './teachingCases';
 
 export function TeachingStudio({ api, environments, consoleApi }: {
   api: LearningApi; environments: EnvironmentRecord[]; consoleApi?: ConsoleApi;
@@ -63,25 +63,40 @@ function ProjectForm({ api, environments, onCreated, bootstrapAllowed, policyTyp
   const [busy, setBusy] = useState(false);
   const requestId = useRef(crypto.randomUUID());
   const planId = useRef(crypto.randomUUID());
-  const [environmentId, setEnvironmentId] = useState(environments[0]?.environment_id ?? '');
+  const [environment, setEnvironment] = useState<EnvironmentRecord | null>(environments[0] ?? null);
   const [kind, setKind] = useState<'adaptation' | 'bootstrap'>('adaptation');
   const [policyType, setPolicyType] = useState<Project['policy_type'] | ''>(policyTypes[0] ?? '');
   const availableCases = savedTeachingCases(environments);
-  const [approvedCaseIds, setApprovedCaseIds] = useState<string[]>([]);
-  const environment = environments.find((item) => item.environment_id === environmentId);
+  const [approvedCases, setApprovedCases] = useState<TeachingCase[]>([]);
+  const [caseFilter, setCaseFilter] = useState('');
+  const [casePage, setCasePage] = useState(0);
+  const currentCases = new Map(availableCases.map((item) => [item.case_id, item]));
+  const staleCases = approvedCases.filter((item) => !sameTeachingCase(currentCases.get(item.case_id), item));
+  const latestEnvironment = environments.find((item) => item.environment_id === environment?.environment_id);
+  const environmentStale = Boolean(environment && latestEnvironment?.revision !== environment.revision);
+  const filteredCases = availableCases.filter((item) => `${item.environment_id} ${item.seed} ${item.split}`.toLowerCase().includes(caseFilter.trim().toLowerCase()));
+  const casePages = Math.max(1, Math.ceil(filteredCases.length / 20));
+  const visibleCasePage = Math.min(casePage, casePages - 1);
+  const visibleCases = filteredCases.slice(visibleCasePage * 20, (visibleCasePage + 1) * 20);
   const submit = async (form: HTMLFormElement) => {
+    if (environmentStale || staleCases.length) {
+      setError(new Error('변경된 저장 버전을 확인하고 해당 환경과 배치를 다시 선택하세요.')); return;
+    }
     const fields = new FormData(form);
-    const teachingCases = availableCases.filter((item) => approvedCaseIds.includes(item.case_id));
+    const teachingCases = approvedCases;
     const seeds = String(fields.get('seeds')).split(',').map((value) => Number(value.trim()));
     if (!environment || !policyType || seeds.length < 20 || seeds.length > 100 || new Set(seeds).size !== seeds.length || seeds.some((value) => !Number.isSafeInteger(value) || value < 0)) {
       setError(new Error('저장 환경과 중복 없는 held-out seed 20~100개를 확인하세요.')); return;
     }
     const cases = seeds.flatMap((seed) => {
-      const found = environments.find((item) => {
+      const matching = environments.filter((item) => {
         const scene = item.document.scene;
+        const execution = item.document.execution;
         return Boolean(scene && typeof scene === 'object' && 'seed' in scene && scene.seed === seed &&
-          'template_id' in scene && scene.template_id === 'inspection-cell-learning-v1');
+          'template_id' in scene && scene.template_id === 'inspection-cell-learning-v1' &&
+          execution && typeof execution === 'object' && 'demonstration_split' in execution && execution.demonstration_split === 'test');
       });
+      const found = matching.length === 1 ? matching[0] : undefined;
       return found ? [{ seed, environment_id: found.environment_id, revision: found.revision }] : [];
     });
     if (cases.length !== seeds.length) {
@@ -123,7 +138,13 @@ function ProjectForm({ api, environments, onCreated, bootstrapAllowed, policyTyp
       {bootstrapAllowed && <label className="wide-field">작업 유형<select value={kind} name="project-kind" onChange={(event) => setKind(event.target.value === 'bootstrap' ? 'bootstrap' : 'adaptation')}><option value="adaptation">실제 P0에서 고객 P1 학습</option><option value="bootstrap">승인 운영자: 첫 Franka P0 부트스트랩</option></select></label>}
       <label>프로젝트 이름<input name="name" required maxLength={120} autoComplete="off" /></label>
       <label>등록할 task ID<input name="task" required pattern="[a-z][a-z0-9-]*" defaultValue="manufacturing-part-placement-v1" autoComplete="off" spellCheck={false} /></label>
-      <label>저장된 LIVE 환경<select name="environment" value={environmentId} onChange={(event) => setEnvironmentId(event.target.value)}>{environments.map((item) => <option key={item.environment_id} value={item.environment_id}>{item.display_name}</option>)}</select></label>
+      <label>저장된 LIVE 환경<select name="environment" value={environment?.environment_id ?? ''} onChange={(event) => setEnvironment(environments.find((item) => item.environment_id === event.target.value) ?? null)}>
+        <option value="">저장 환경 선택</option>{environments.map((item) => <option key={item.environment_id} value={item.environment_id}>{item.display_name}</option>)}
+      </select></label>
+      {environmentStale && <div className="wide-field inline-note warning" role="alert">
+        <p>선택한 기준 환경의 저장 버전이 바뀌었습니다. 기존 revision을 자동으로 교체하지 않습니다.</p>
+        {latestEnvironment && <button type="button" className="button secondary" onClick={() => setEnvironment(latestEnvironment)}>현재 환경 버전으로 다시 선택</button>}
+      </div>}
       <label>목표 스테이션<select name="goal" required defaultValue="rejected">{stations.map((item) => {
         if (!item || typeof item !== 'object' || !('id' in item) || typeof item.id !== 'string') return null;
         return <option key={item.id} value={item.id}>{item.id}</option>;
@@ -135,15 +156,35 @@ function ProjectForm({ api, environments, onCreated, bootstrapAllowed, policyTyp
       <label className="wide-field">학습에서 제외할 seed 20~100개 (쉼표 구분)<input name="seeds" required autoComplete="off" placeholder="예: 200, 201, 202, …" /></label>
       <fieldset className="wide-field teaching-case-approval"><legend>명시적으로 승인할 학습·검증 배치</legend>
         <p className="small-text muted">저장된 capture split과 revision을 고정합니다. held-out test, G0 통합 전용 배치와 캡처가 비활성인 환경은 시연 목록에 넣지 않습니다.</p>
-        {availableCases.length ? availableCases.map((item) => <label className="checkbox-label" key={item.case_id}>
-          <input type="checkbox" name="teaching-case" value={item.case_id} checked={approvedCaseIds.includes(item.case_id)} onChange={(event) => setApprovedCaseIds((ids) => event.target.checked ? [...ids, item.case_id] : ids.filter((id) => id !== item.case_id))} />
-          <span>{item.environment_id} · {splitLabel(item.split)} · seed {item.seed}<code>{item.revision}</code></span>
-        </label>) : <p className="form-hint">명시적인 train/validation 캡처 설정이 있는 저장 배치를 먼저 준비하세요.</p>}
+        <label>시연 배치 검색<input type="search" name="case-filter" value={caseFilter} maxLength={128} autoComplete="off" onChange={(event) => { setCaseFilter(event.target.value); setCasePage(0); }} /></label>
+        <p role="status">불러온 선택 가능 배치 {new Intl.NumberFormat('ko-KR').format(availableCases.length)}개 · 검토한 선택 {new Intl.NumberFormat('ko-KR').format(approvedCases.length)}개</p>
+        {staleCases.length > 0 && <div className="inline-note warning" role="alert">
+          <p>선택한 배치의 저장 버전이 바뀌었습니다. 원래 revision·seed·split을 유지하며 변경된 항목은 해제 후 다시 선택해야 합니다.</p>
+          <button type="button" className="button secondary" onClick={() => setApprovedCases((items) => items.filter((item) => sameTeachingCase(currentCases.get(item.case_id), item)))}>변경된 선택 해제</button>
+        </div>}
+        {visibleCases.map((item) => {
+          const selected = approvedCases.find((entry) => entry.case_id === item.case_id);
+          return <label className="checkbox-label" key={item.case_id}>
+            <input type="checkbox" name="teaching-case" value={item.case_id} disabled={busy} checked={Boolean(selected)} onChange={(event) => {
+              const checked = event.target.checked;
+              setApprovedCases((items) => checked ? [...items.filter((entry) => entry.case_id !== item.case_id), { ...item }] : items.filter((entry) => entry.case_id !== item.case_id));
+            }} />
+            <span>{item.environment_id} · {splitLabel(item.split)} · seed {item.seed}<code>{item.revision}</code>
+              {selected && !sameTeachingCase(item, selected) && <small>이전 선택: {selected.revision} · seed {selected.seed} · {selected.split}</small>}
+            </span>
+          </label>;
+        })}
+        {!visibleCases.length && <p className="form-hint">현재 불러온 배치에서 검색 결과가 없습니다. 검색 조건을 바꾸거나 저장 환경을 더 불러오세요.</p>}
+        <div className="button-row">
+          <button type="button" className="button secondary" disabled={visibleCasePage === 0} onClick={() => setCasePage(visibleCasePage - 1)}>이전 배치 페이지</button>
+          <span>배치 페이지 {visibleCasePage + 1} / {casePages}</span>
+          <button type="button" className="button secondary" disabled={visibleCasePage + 1 >= casePages} onClick={() => setCasePage(visibleCasePage + 1)}>다음 배치 페이지</button>
+        </div>
       </fieldset>
     </div>
     <p className="form-hint">이 화면은 가격이나 용량을 추정하지 않습니다. 실제 유료 제출 전 서버가 승인된 compute·가격·시간 한도를 검증합니다. P0/P1는 동일한 미사용 조건에서 비교하며 성공 장면만 남기지 않습니다.</p>
     <ErrorNotice error={error} title="작업 정의를 저장하지 못했습니다" />
-    <button type="submit" className="button" disabled={busy}>{busy ? '저장 중…' : '불변 작업 정의 저장'}</button>
+    <button type="submit" className="button" disabled={busy || environmentStale || staleCases.length > 0}>{busy ? '저장 중…' : '불변 작업 정의 저장'}</button>
   </form>;
 }
 
