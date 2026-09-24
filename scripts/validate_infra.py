@@ -28,6 +28,9 @@ def validate() -> None:
             "spot-live-network",
             "reference-presentation",
             "learning",
+            "learning-worker",
+            "learning-reconciler",
+            "gpu-capacity-probe",
         ):
             output = Path(temporary) / f"{name}.json"
             subprocess.run(
@@ -97,6 +100,24 @@ def validate() -> None:
     assert compute["properties"]["vmPriority"] == "[parameters('computeTier')]"
     assert compute["properties"]["scaleSettings"]["minNodeCount"] == 0
     assert compute["properties"]["scaleSettings"]["maxNodeCount"] == 1
+    worker = resources(templates["learning-worker"], "Microsoft.App/containerApps")[0]
+    worker_ingress = worker["properties"]["configuration"]["ingress"]
+    assert worker_ingress["external"] is False
+    assert worker_ingress["allowInsecure"] is False
+    assert worker["properties"]["template"]["scale"]["maxReplicas"] == 1
+    assert templates["learning-worker"]["parameters"]["allowedPolicyTypes"]["defaultValue"] == []
+    reconciler = resources(templates["learning-reconciler"], "Microsoft.App/jobs")[0]
+    assert reconciler["condition"] == "[parameters('enabled')]"
+    assert templates["learning-reconciler"]["parameters"]["enabled"]["defaultValue"] is False
+    assert (
+        templates["learning-reconciler"]["parameters"]["reconciliationTargets"]["defaultValue"]
+        == []
+    )
+    scheduled = reconciler["properties"]["configuration"]
+    assert scheduled["triggerType"] == "Schedule"
+    assert scheduled["replicaRetryLimit"] == 0
+    assert scheduled["replicaTimeout"] == 120
+    assert scheduled["scheduleTriggerConfig"]["parallelism"] == 1
     for script in (
         ROOT / "infra" / "start-simulator.sh",
         ROOT / "scripts" / "start-live-simulator.sh",
