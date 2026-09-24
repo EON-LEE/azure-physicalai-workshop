@@ -314,6 +314,24 @@ private frozen state immediately before applying any action. Missing, expired
 or retrospectively invented proof requires explicit re-preparation or failure,
 not timestamp copying, duplicate-frame rendering or an extra physics step.
 
+`learning.paused.dataset.convert_dataset` is the explicit v3 -> pinned LeRobot
+entry. It requires the approved raw manifest, criteria and new frozen-plan SHAs,
+only selects complete train-split demonstrations, and uses the unchanged real
+LeRobot image/state/action writer. The installed 0.4.4 API rejects a user-supplied
+`timestamp` feature even though its implementation contains a timestamp pop.
+Instead, conversion checks every actual native simulation-time delta against
+the exact frame-index/10 Hz value **before** relying on the API's supported
+timestamp generation. There is no wall-time resampling or interpolated frame.
+`source-timing.jsonl` preserves original raw wall/native-SIM metadata, images'
+original identities and held-control times outside neural features; its checksum
+is part of conversion v3. The legacy conversion validator refuses v3.
+
+The separated `python -m learning.checks.paused_conversion_check --output <new-dir>`
+check used the actual installed LeRobot 0.4.4 and read actual Parquet timestamps
+approximately `[0.0, 0.1, 0.2]` for explicitly test-only frames whose original
+wall interval was two seconds. It loaded no policy weights, performed zero
+optimizer steps/cloud calls and proves conversion/API compatibility only.
+
 Capture storage does not by itself execute a model or establish physical quality.
 Subsequent model/IPC/evaluation producers must explicitly consume these contracts;
 real-time 80/100 ms gates remain blocked, and no actual paused training or quality

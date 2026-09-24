@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from fractions import Fraction
 from io import BytesIO
 from pathlib import Path
 
@@ -14,7 +15,14 @@ from learning.common import (
     token,
     write_json,
 )
-from learning.contract import CAMERAS, JOINT_NAMES, JOINT_UNITS, Scope, validate_dataset
+from learning.contract import (
+    CAMERAS,
+    JOINT_NAMES,
+    JOINT_UNITS,
+    Scope,
+    ValidatedDataset,
+    validate_dataset,
+)
 from learning.offline import require_lerobot
 
 CONVERSION_SCHEMA = "physicalai.lerobot-conversion/v1"
@@ -59,6 +67,28 @@ def convert_dataset(
         expected_manifest_sha256=expected_manifest_sha256,
         require_live=not allow_test_fixture,
     )
+    manifest = _convert_validated(
+        validated, output, expected_scope=expected_scope, split=split, image_size=image_size
+    )
+    write_json(output / "conversion.json", manifest)
+    return manifest
+
+
+def _convert_validated(
+    validated: ValidatedDataset,
+    output: Path,
+    *,
+    expected_scope: Scope,
+    split: str = "train",
+    image_size: int = 224,
+    simulation_timestamps: bool = False,
+) -> dict:
+    source = validated.root
+    require(
+        simulation_timestamps == (validated.manifest["schema"] == "physicalai.demonstrations/v3"),
+        "Paused capture requires explicitly selected simulation timestamps",
+    )
+    require(validated.manifest["scope"] == asdict(expected_scope), "Conversion owner scope differs")
     episodes = validated.split(split)
     features = feature_spec(image_size)
     require(not output.exists(), "Conversion output already exists")
@@ -83,7 +113,15 @@ def convert_dataset(
     )
     try:
         for episode in episodes:
-            for raw in episode.frames:
+            origin = (
+                Fraction(
+                    episode.frames[0]["simulation_time_numerator"],
+                    episode.frames[0]["simulation_time_denominator"],
+                )
+                if simulation_timestamps
+                else None
+            )
+            for frame_index, raw in enumerate(episode.frames):
                 frame = {
                     "observation.state": np.asarray(raw["joint_positions"], dtype=np.float32),
                     "action": np.asarray(raw["commanded_joint_targets"], dtype=np.float32),
@@ -91,6 +129,18 @@ def convert_dataset(
                     if "demonstration" in episode.metadata
                     else TASK,
                 }
+                if simulation_timestamps:
+                    elapsed = (
+                        Fraction(
+                            raw["simulation_time_numerator"], raw["simulation_time_denominator"]
+                        )
+                        - origin
+                    )
+                    require(
+                        abs(elapsed - Fraction(frame_index, validated.manifest["fps"]))
+                        <= Fraction(1, 1_000_000_000),
+                        "Native LeRobot timestamp would differ from actual simulation time",
+                    )
                 for camera in CAMERAS:
                     image = raw["images"][camera]
                     payload = safe_path(source, image["path"]).read_bytes()
@@ -138,5 +188,4 @@ def convert_dataset(
     }
     if "control_profile" in validated.manifest:
         manifest["control_profile"] = validated.manifest["control_profile"]
-    write_json(output / "conversion.json", manifest)
     return manifest

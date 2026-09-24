@@ -93,6 +93,18 @@ def validate_conversion(root: Path, expected_scope: Scope) -> dict:
     )
     if teaching:
         ControlProfile(**value["control_profile"]).validate()
+    return _validate_conversion_contents(root, expected_scope, value, teaching=teaching)
+
+
+def _validate_conversion_contents(
+    root: Path,
+    expected_scope: Scope,
+    value: dict,
+    *,
+    teaching: bool,
+    extra_episode_keys: frozenset[str] = frozenset(),
+) -> dict:
+    expected_scope.validate()
     require(value["lerobot_version"] == LEROBOT_VERSION, "Wrong converter version")
     require(value["scope"] == asdict(expected_scope), "Tenant/owner scope mismatch")
     require(value["repo_id"] == LOCAL_REPO_ID, "Remote dataset identifiers are forbidden")
@@ -112,7 +124,8 @@ def validate_conversion(root: Path, expected_scope: Scope) -> dict:
             episode,
             EPISODE_KEYS
             | {"episode_index", "terminated", "truncated"}
-            | ({"demonstration"} if teaching else set()),
+            | ({"demonstration"} if teaching else set())
+            | extra_episode_keys,
             "converted episode",
         )
         EpisodeSpec(**{name: episode[name] for name in EpisodeSpec.__dataclass_fields__}).validate()
