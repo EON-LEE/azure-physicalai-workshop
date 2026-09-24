@@ -98,9 +98,19 @@ training, model-bound actuator execution, and all frozen held-out physical
 trials are still required. An Azure `Completed` status, passing component tests,
 or handwritten results JSON cannot supply those missing facts.
 
+A separate **non-real-time simulation** path is being implemented rather than
+relaxing those failed real-time gates. Its saved environment must explicitly
+opt in through the closed `learning_execution` contract. Physics remains frozen
+while observations or policy predictions are pending; each accepted action then
+holds for exactly six actual 60 Hz physics steps. Wall-clock budgets and
+simulation-time limits are recorded separately, and its versioned data, models
+and results cannot qualify a real-time controller. This path has not yet completed
+real teaching-data collection, training or paired physical acceptance.
+
 See [policy learning](docs/policy-learning.md),
 [the learning API](docs/learning-api.md), and
-[runtime control and evidence](docs/runtime-control.md) for the implemented
+[runtime control and evidence](docs/runtime-control.md), including
+[paused simulation](docs/paused-simulation.md), for the implemented
 contracts, operator responsibilities, and remaining live gates.
 
 ## What exists
