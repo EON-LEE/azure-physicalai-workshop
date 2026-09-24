@@ -4,7 +4,7 @@ from uuid import UUID
 
 from fastapi import Depends, FastAPI, Header, Request
 from fastapi.responses import JSONResponse
-from pydantic import Field, ValidationError
+from pydantic import Field, ValidationError, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from apps.api.auth import EntraTokens
@@ -20,6 +20,7 @@ from apps.api.learning_models import (
 )
 from apps.api.learning_ports import JobSpecification
 from apps.api.models import Model, Principal
+from apps.learning_worker.registry import ReconciliationTarget
 
 
 class WorkerSettings(BaseSettings):
@@ -34,6 +35,21 @@ class WorkerSettings(BaseSettings):
     registry_container: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$")
     capture_account_url: str = Field(pattern=r"^https://[a-z0-9]{3,24}\.blob\.core\.windows\.net$")
     capture_container: str = "demonstrations"
+    reconciliation_enabled: bool = False
+    reconciliation_actor_ids: frozenset[UUID] = Field(default=frozenset(), max_length=20)
+    reconciliation_targets: tuple[ReconciliationTarget, ...] = Field(default=(), max_length=20)
+
+    @model_validator(mode="after")
+    def exact_monitor_allowlist(self):
+        targets = self.reconciliation_targets
+        if len({(item.actor_id, item.job_name) for item in targets}) != len(targets):
+            raise ValueError("Reconciliation targets must be unique.")
+        if self.reconciliation_enabled and (
+            not targets
+            or any(item.actor_id not in self.reconciliation_actor_ids for item in targets)
+        ):
+            raise ValueError("Enabled reconciliation requires exact allowlisted owner/job targets.")
+        return self
 
 
 class WorkerEnvelope(Model):
@@ -73,6 +89,9 @@ def create_worker(settings: WorkerSettings | None = None, operations=None, ident
                 artifacts,
                 configuration.managed_identity_client_id,
                 allowed_policy_types=configuration.allowed_policy_types,
+                reconciliation_enabled=configuration.reconciliation_enabled,
+                reconciliation_actor_ids=configuration.reconciliation_actor_ids,
+                reconciliation_targets=configuration.reconciliation_targets,
             )
             resources = [registry, credential]
         else:

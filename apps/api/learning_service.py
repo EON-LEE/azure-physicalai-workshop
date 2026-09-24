@@ -18,6 +18,7 @@ from apps.api.learning_models import (
     CreateProject,
     DatasetVersion,
     EvaluationRun,
+    JobCancellation,
     JogIntent,
     JogTeaching,
     LearningMutation,
@@ -571,6 +572,11 @@ class LearningService:
             not in receipt.azure_job_id
             or not receipt.azure_job_id.endswith(f"/jobs/{run.backend_job_name}")
             or (run.azure_job_id is not None and receipt.azure_job_id != run.azure_job_id)
+            or (receipt.job_deadline_utc is not None and receipt.job_deadline_utc > run.deadline)
+            or (
+                run.job_deadline_utc is not None
+                and receipt.job_deadline_utc != run.job_deadline_utc
+            )
         ):
             raise Problem(
                 503, "learning_receipt_mismatch", "Job receipt has different immutable scope."
@@ -586,15 +592,39 @@ class LearningService:
         jobs = self._dependency(self.jobs, "Azure ML learning backend")
         receipt = jobs.status(actor, stored.value)
         if receipt is None:
-            if utcnow() > stored.value.deadline:
+            if utcnow() >= (stored.value.job_deadline_utc or stored.value.deadline):
+                if stored.value.error_code == "job_receipt_missing":
+                    return stored
                 return self._save(
                     actor,
                     stored,
-                    status="blocked",
                     error_code="job_receipt_missing",
-                    message="No verified Azure receipt before deadline. No job was resubmitted.",
+                    message=(
+                        "Deadline elapsed without a verified Azure receipt. The named job remains "
+                        "unconfirmed; reconciliation must continue. No job was resubmitted."
+                    ),
                 )
             return stored
+        run = stored.value
+        self._check_job_receipt(actor, run, receipt)
+        if (
+            receipt.status not in JOB_TERMINAL
+            and run.status != "cancelling"
+            and run.cancellation is None
+            and utcnow() >= (receipt.job_deadline_utc or run.job_deadline_utc or run.deadline)
+        ):
+            request_id = uuid5(
+                NAMESPACE_URL,
+                f"learning-cancel:{actor.owner_key}:{run.id}:{run.specification_sha256}:deadline",
+            )
+            try:
+                return self._request_job_cancellation(
+                    actor, stored, request_id, "deadline", observed=receipt
+                )
+            except Problem as exc:
+                if exc.code != "revision_conflict":
+                    raise
+                return self.get(actor, run.kind, run.id)
         return self._apply_job(actor, stored, receipt)
 
     def _apply_job(self, actor: Principal, stored: Stored, receipt: BackendJob) -> Stored:
@@ -607,14 +637,29 @@ class LearningService:
                 actor, stored, status="submitted", azure_job_id=receipt.azure_job_id
             )
             run = stored.value
-        target = transition("job", run.status, receipt.status)
+        target = transition(
+            "job",
+            run.status,
+            "cancelling"
+            if run.status == "cancelling" and receipt.status not in JOB_TERMINAL
+            else receipt.status,
+        )
         changes = {
             "status": target,
             "azure_job_id": receipt.azure_job_id,
+            "job_deadline_utc": receipt.job_deadline_utc,
+            "backend_status": receipt.status,
+            "azure_status": receipt.azure_status,
             "metrics": receipt.metrics,
             "error_code": receipt.error_code,
             "message": receipt.message,
         }
+        if run.cancellation is not None and target not in JOB_TERMINAL:
+            changes["error_code"] = run.cancellation.error_code or receipt.error_code
+            changes["message"] = receipt.message or (
+                f"Cancellation {run.cancellation.state}; Azure currently reports "
+                f"{receipt.status}. Termination is not confirmed."
+            )
         if receipt.metrics.optimizer_steps is not None and run.metrics.optimizer_steps is not None:
             if receipt.metrics.optimizer_steps < run.metrics.optimizer_steps:
                 raise Problem(503, "regressing_job_metrics", "Worker step count regressed.")
@@ -697,7 +742,7 @@ class LearningService:
 
     def cancel_job(self, actor: Principal, job_id: UUID, request_id: UUID, etag: str | None):
         stored = self.get_job(actor, job_id)
-        if stored.value.status in JOB_TERMINAL:
+        if stored.value.status in JOB_TERMINAL or stored.value.cancellation is not None:
             return stored
         digest = fingerprint(
             {"job_id": str(job_id), "request_id": str(request_id), "action": "cancel"}
@@ -705,8 +750,35 @@ class LearningService:
         mutation, first = self._mutation(actor, stored, request_id, "cancel", digest, etag)
         if not first:
             return stored
+        try:
+            result = self._request_job_cancellation(actor, stored, request_id, "user")
+        except Problem as exc:
+            self._save(actor, mutation, status="uncertain", error_code=exc.code)
+            raise
+        self._save(actor, mutation, status="recorded")
+        return result
+
+    def _request_job_cancellation(
+        self, actor, stored, request_id, reason, *, observed: BackendJob | None = None
+    ):
+        if stored.value.status in JOB_TERMINAL or stored.value.cancellation is not None:
+            return stored
+        reservation = JobCancellation(request_id=request_id, reason=reason, requested_at=utcnow())
+        changes = {}
+        if observed is not None:
+            self._check_job_receipt(actor, stored.value, observed)
+            changes = {
+                "azure_job_id": observed.azure_job_id,
+                "job_deadline_utc": observed.job_deadline_utc,
+                "backend_status": observed.status,
+                "azure_status": observed.azure_status,
+            }
         reserved = self._save(
-            actor, stored, status=transition("job", stored.value.status, "cancelling")
+            actor,
+            stored,
+            status=transition("job", stored.value.status, "cancelling"),
+            cancellation=reservation,
+            **changes,
         )
         try:
             receipt = self._dependency(self.jobs, "Azure ML learning backend").cancel(
@@ -714,10 +786,36 @@ class LearningService:
             )
             result = self._apply_job(actor, reserved, receipt)
         except Problem as exc:
-            self._save(actor, mutation, status="uncertain", error_code=exc.code)
+            self._record_job_cancellation(
+                actor, reserved, "forbidden" if exc.status == 403 else "uncertain", exc.code
+            )
             raise
-        self._save(actor, mutation, status="recorded")
-        return result
+        return self._record_job_cancellation(
+            actor, result, receipt.cancellation_state or "acknowledged", receipt.error_code
+        )
+
+    def _record_job_cancellation(self, actor, stored, state, error_code=None):
+        request_id = stored.value.cancellation.request_id
+        for attempt in range(2):
+            run = stored.value
+            if run.cancellation is None or run.cancellation.request_id != request_id:
+                raise Problem(409, "cancellation_scope_changed", "Cancellation binding changed.")
+            outcome = run.cancellation.model_copy(update={"state": state, "error_code": error_code})
+            changes = {"cancellation": outcome}
+            if run.status not in JOB_TERMINAL:
+                changes.update(
+                    error_code=error_code,
+                    message=(
+                        f"Cancellation {state}; actual Azure termination is not confirmed. "
+                        "The cancellation POST will not be replayed."
+                    ),
+                )
+            try:
+                return self._save(actor, stored, **changes)
+            except Problem as exc:
+                if exc.code != "revision_conflict" or attempt:
+                    raise
+                stored = self.get(actor, run.kind, run.id)
 
     def evaluate(self, actor, project_id, body: StartEvaluation, etag):
         digest = operation_hash(project_id, "evaluate", body)

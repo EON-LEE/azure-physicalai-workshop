@@ -47,6 +47,15 @@ param allowedPolicyTypes array = []
 @description('Empty until the deployment operator explicitly approves bootstrap owner UUIDs.')
 param bootstrapOwnerIds array = []
 
+@description('Admission remains blocked until an independently deployed exact-target tick emits fresh heartbeats.')
+param reconciliationEnabled bool = false
+
+@maxLength(20)
+param reconciliationActorIds array = []
+
+@maxLength(20)
+param reconciliationTargets array = []
+
 resource workerIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' existing = {
   name: last(split(workerIdentityResourceId, '/'))
   scope: resourceGroup(split(workerIdentityResourceId, '/')[2], split(workerIdentityResourceId, '/')[4])
@@ -92,6 +101,9 @@ resource worker 'Microsoft.App/containerApps@2025-07-01' = {
           { name: 'LEARNING_WORKER_CAPTURE_CONTAINER', value: captureContainer }
           { name: 'LEARNING_WORKER_ALLOWED_POLICY_TYPES', value: string(allowedPolicyTypes) }
           { name: 'LEARNING_WORKER_BOOTSTRAP_OWNER_IDS', value: string(bootstrapOwnerIds) }
+          { name: 'LEARNING_WORKER_RECONCILIATION_ENABLED', value: string(reconciliationEnabled) }
+          { name: 'LEARNING_WORKER_RECONCILIATION_ACTOR_IDS', value: string(reconciliationActorIds) }
+          { name: 'LEARNING_WORKER_RECONCILIATION_TARGETS', value: string(reconciliationTargets) }
         ]
         probes: [
           {

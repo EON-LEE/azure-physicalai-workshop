@@ -10,6 +10,10 @@ const labels: Record<Job['status'], string> = {
   running: '작업 실행 중', cancelling: '취소 확인 중', succeeded: '검증된 산출물 수신',
   failed: '작업 실패', cancelled: '취소 확인됨', timed_out: '시간 초과', blocked: '진행 차단',
 };
+const cancellationLabels: Record<NonNullable<Job['cancellation']>['state'], string> = {
+  claimed: '취소 전송 여부 미확인', acknowledged: '취소 요청 접수 · 종료 대기',
+  uncertain: '취소 결과 미확인', forbidden: '취소 권한 거부',
+};
 const continuePolling = (resource: Resource<Job>) => !terminalJob(resource.item);
 export function LearningJobPanel({ api, initial, onUpdate }: {
   api: LearningApi; initial: Resource<Job>; onUpdate?(value: Resource<Job>): void;
@@ -45,14 +49,22 @@ export function LearningJobPanel({ api, initial, onUpdate }: {
         <FieldValue label="서버 보고 optimizer steps">{job.metrics.optimizer_steps === null ? 'optimizer step 미수신' : new Intl.NumberFormat('ko-KR').format(job.metrics.optimizer_steps)}</FieldValue>
         <FieldValue label="서버 보고 loss">{job.metrics.loss === null ? 'loss 미수신' : job.metrics.loss}</FieldValue>
         <FieldValue label="원래 작업 기한">{formatDate(job.deadline)}</FieldValue>
+        <FieldValue label="Azure 실제 상태"><code>{job.azure_status ?? job.backend_status ?? '아직 실제 상태를 확인하지 못했습니다'}</code></FieldValue>
+        {job.job_deadline_utc && <FieldValue label="원래 승인에 고정된 절대 기한"><time dateTime={job.job_deadline_utc}>{formatDate(job.job_deadline_utc)}</time></FieldValue>}
       </dl>
+      {job.cancellation && !terminalJob(job) && <div className="inline-note warning" role={job.cancellation.state === 'forbidden' || job.cancellation.state === 'uncertain' ? 'alert' : 'status'}>
+        <strong>{job.cancellation.reason === 'deadline' ? '절대 기한에 따른 취소 요청' : '운영자의 취소 요청'}</strong>
+        <p>{cancellationLabels[job.cancellation.state]} · Azure의 종료는 아직 확인되지 않았습니다. 취소 요청이나 경과 시간만으로 완료 처리하지 않습니다.</p>
+        {job.cancellation.error_code && <code>{job.cancellation.error_code}</code>}
+        <p>서버는 원래 작업을 조회하며 유료 작업이나 불확실한 취소를 다시 제출하지 않습니다.</p>
+      </div>}
       {job.message && <p role="status">{job.message}</p>}
       {job.kind === 'training' && job.status === 'succeeded' && <div className="inline-note"><strong>학습 산출물 검증됨 · 학습 효과는 별도 평가</strong><code>candidate_id: {job.candidate_id}</code></div>}
       {(job.status === 'submission_unknown' || job.status === 'submitting') && <p className="form-hint">새 유료 작업을 만들지 마세요. 원래 작업 ID로 조회하여 제출 여부를 확인합니다.</p>}
       <ErrorNotice error={state.error} title="Azure 작업 상태 갱신 실패" retry={state.refresh} />
       <ErrorNotice error={actionError} title="취소 결과 미확인 · 완료로 처리하지 않음" />
       <div className="button-row"><button type="button" className="button secondary" onClick={state.refresh}><RefreshCw size={15} aria-hidden="true" />작업 상태 확인</button>
-        {!terminalJob(job) && <button type="button" className="button danger-quiet" disabled={cancelling || job.status === 'cancelling'} onClick={() => void cancel()}><Square size={14} aria-hidden="true" />{cancelling ? '취소 요청 중…' : '실제 작업 취소 요청'}</button>}</div>
+        {!terminalJob(job) && <button type="button" className="button danger-quiet" disabled={cancelling || job.status === 'cancelling' || Boolean(job.cancellation)} onClick={() => void cancel()}><Square size={14} aria-hidden="true" />{cancelling ? '취소 요청 중…' : '실제 작업 취소 요청'}</button>}</div>
     </div>
   </section>;
 }

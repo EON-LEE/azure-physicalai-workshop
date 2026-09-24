@@ -10,10 +10,15 @@ from learning.smolvla import azure
 from tests.runtime_support import ACTOR
 from tests.test_learning_results import evaluated_setup
 from tests.test_learning_worker import specification
+from tests.test_worker_deadlines import utc_text
 
 
 def test_worker_calls_actual_smol_client_factory_with_keyword_only_identity(monkeypatch):
+    spec, _ = specification()
     config = example_config()
+    config.update(
+        schema="physicalai.smolvla-azure/v2", job_deadline_utc=utc_text(spec.run.deadline)
+    )
     observed = []
 
     def factory(value, *, caller_client_id):
@@ -34,6 +39,9 @@ def test_worker_generates_and_revalidates_a_real_native_plan_without_submitting_
 ):
     spec, _ = specification()
     config = example_config()
+    config.update(
+        schema="physicalai.smolvla-azure/v2", job_deadline_utc=utc_text(spec.run.deadline)
+    )
     observed = []
 
     class Jobs:
@@ -63,6 +71,7 @@ def test_worker_generates_and_revalidates_a_real_native_plan_without_submitting_
     )
     monkeypatch.setattr(worker, "preflight", lambda *_: None)
     monkeypatch.setattr(worker, "_configuration", lambda *_: config)
+    monkeypatch.setattr(worker, "_enrollment", lambda *_: None)
     receipt = worker.submit(ACTOR, spec)
     assert receipt.status == "submitted"
     assert receipt.candidate is None
@@ -113,7 +122,8 @@ def test_missing_native_named_job_is_unconfirmed_not_recreated_or_faked():
 
     registry = SimpleNamespace(
         job=lambda *_: spec,
-        approved_plan=lambda *_: {"config": {}},
+        job_configuration=lambda *_: None,
+        approved_plan=lambda *_: {"config": {"schema": "physicalai.smolvla-azure/v1"}},
     )
     worker = PolicyLearningWorker(
         registry,

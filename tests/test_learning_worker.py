@@ -72,6 +72,27 @@ def test_private_gateway_uses_its_own_managed_identity_and_does_not_retry_paid_p
     gateway.close()
 
 
+def test_private_gateway_preserves_explicit_forbidden_cancellation_without_retry():
+    spec, _ = specification()
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(403, json={"error": {"code": "private-detail"}})
+
+    gateway = ManagedLearningGateway(
+        "https://test-worker.azurecontainerapps.io",
+        SimpleNamespace(get_token=lambda _: SimpleNamespace(token="test-only-token")),
+        f"api://{AUDIENCE}/.default",
+        transport=httpx.MockTransport(handler),
+    )
+    with pytest.raises(Problem) as failure:
+        gateway.cancel(ACTOR, spec.run)
+    assert failure.value.status == 403 and failure.value.code == "worker_forbidden"
+    assert len(calls) == 1
+    gateway.close()
+
+
 def test_private_worker_blocks_anonymous_delegated_and_owner_spoofing_before_any_job():
     spec, _ = specification()
     settings = WorkerSettings(

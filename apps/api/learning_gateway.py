@@ -66,6 +66,9 @@ class ManagedLearningGateway:
             raise unavailable("Azure learning worker") from exc
         if response.status_code == 404:
             return None
+        if response.status_code == 403:
+            log.error("Learning worker denied %s %s", method, path)
+            raise Problem(403, "worker_forbidden", "The private learning operation was denied.")
         if response.status_code >= 300:
             log.error("Learning worker returned %s for %s %s", response.status_code, method, path)
             raise unavailable("Azure learning worker")

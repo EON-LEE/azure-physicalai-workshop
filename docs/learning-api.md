@@ -179,6 +179,24 @@ before/after trial and retry, including failures; no post-hoc favorable subset.
   by name/tags; they never blindly issue another paid submission. A process crash
   before/after submission cannot create a second job. Terminal snapshots cannot
   be revived. A queued/submit ACK is not training success.
+  `deadline` remains the original server approval bound. Additive
+  `job_deadline_utc` records the earlier immutable operator/native bound;
+  `backend_status` and raw `azure_status` preserve the actual provider receipt.
+  Expired active receipts, not just missing receipts, trigger a durable
+  per-job ETag cancellation reservation before one worker request.
+  `cancellation` contains `request_id`, `reason: user|deadline`, `requested_at`,
+  `state: claimed|acknowledged|uncertain|forbidden` and nullable `error_code`.
+  This is a request/outcome record, never proof of termination. A queued/running
+  receipt after a cancellation ACK keeps the API run `cancelling` while exposing
+  the actual provider state; 403 and uncertain transport remain explicit.
+  Missing receipts after expiry remain unconfirmed/reconcilable, not a terminal
+  local timeout that could hide a late-queued paid job.
+  The separately deployed exact-target worker tick shares a durable Blob cancel
+  fence with the API. New paid admission requires its fresh, immutable-bound
+  enrollment heartbeat; no UI polling/session can substitute for that scheduler.
+  All scheduler switches/owner/target lists default off/empty, and the source
+  template is not evidence of a deployed timer. See the
+  [private worker enrollment contract](../apps/learning_worker/README.md#independent-default-off-deadline-reconciliation).
 - Training success requires an actual Azure ML job ID, verified owner/dataset/
   parent/profile/config provenance, optimizer steps greater than zero, and
   changed model weights. Loss/steps are nullable until actually reported.

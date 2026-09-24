@@ -32,6 +32,9 @@ Environment prefix is `LEARNING_WORKER_`:
   origin/container. A capture URL must exactly match owner/episode/manifest.
 - `ALLOWED_POLICY_TYPES`: JSON array; **empty until license/hardware approval**.
 - `BOOTSTRAP_OWNER_IDS`: JSON array; empty by default.
+- `RECONCILIATION_ENABLED=false`, `RECONCILIATION_ACTOR_IDS=[]` and
+  `RECONCILIATION_TARGETS=[]`: independently deployed deadline monitor enrollment.
+  A model allowlist alone cannot bypass this separate paid-admission gate.
 
 The API has separate `LEARNING_ENABLED=false`, paired
 `LEARNING_WORKER_ENDPOINT`/`LEARNING_WORKER_SCOPE`, empty
@@ -114,7 +117,10 @@ identity-based Azure ML datastore scope checks. It includes:
   "expires_at": "operator-approved UTC deadline",
   "maximum_cost_usd": "explicit ceiling",
   "gpu_hourly_usd": "reviewed price for the exact approved SKU",
-  "config": {"schema": "physicalai.gr00t-azure/v1"}
+  "config": {
+    "schema": "physicalai.smolvla-azure/v2",
+    "job_deadline_utc": "exact-reviewed-UTC-Z-not-after"
+  }
 }
 ```
 
@@ -127,12 +133,83 @@ license or capacity returns an error before submission.
 The registered complete-job timeout must fit both the project budget and the
 remaining original job authorization; leave time for admission and submission.
 An oversized timeout is rejected, never silently extended or rewritten.
+The native `job_deadline_utc` must already equal the canonical UTC-Z rendering
+of `min(original run.deadline, original approval.expires_at)`. Registration
+must occur before approving its config/plan hashes. The worker does not invent,
+repair or renew this timestamp. Native v1 plans remain readable/cancellable
+but cannot start new paid work. Before submission the worker freezes the exact
+configuration alongside its original job claim; subsequent status/cancel never
+adopt a changed project-level approval.
 
 The API's conditional Cosmos claim and the worker's create-only Blob claim
 precede paid submission. An ambiguous request is reconciled by the existing
 job name/tags. It is never retried with a new job name or an upsert of old work.
 Status/cancel remain read/reconcile operations for existing claims rather than
 requiring new model admission. Azure `Completed` alone is not a candidate.
+
+### Independent, default-OFF deadline reconciliation
+
+`python -m apps.learning_worker.reconcile` is a bounded one-shot server tick,
+not a browser timer and not an HTTP endpoint. It accepts only deployment
+configuration, with at most 20 unique exact targets:
+
+```json
+{
+  "actor_id": "explicitly-allowed-actor-uuid",
+  "job_name": "the-exact-deterministic-owned-job-name",
+  "specification_sha256": "the-approved-request-specification-sha256",
+  "configuration_sha256": "the-canonical-complete-native-config-sha256",
+  "job_deadline_utc": "the-same-original-reviewed-UTC-not-after"
+}
+```
+
+These are illustrative field descriptions, not valid enrollment records. The
+actor must also occur in `RECONCILIATION_ACTOR_IDS`; tenant comes only from the
+worker configuration. There are no wildcards, caller paths, owner/job listings,
+history scans, asset downloads, model loads or job submissions in the tick.
+It may record enrollment for a known exact target before its job claim exists,
+but never creates that job.
+
+Paid preflight and the final pre-submit check require a matching durable
+heartbeat from this tick, the same dedicated worker identity, and an age of at
+most 90 seconds (future skew over five seconds is rejected). Flags or a static
+target list without a recent heartbeat do not count as protection. For the
+controlled operator-enrolled workflow, freeze a fixed operator expiry earlier
+than the project's wall horizon, leaving admission/submission margin, so the
+effective deadline is known before the API request. The request ID, specification
+hash, config hash and target must all be approved before paid submission.
+Arbitrary future UI jobs are **not automatically enrolled** and remain blocked.
+
+[`infra/learning-reconciler.bicep`](../../infra/learning-reconciler.bicep) is an
+optional scheduled ACA job using the existing environment, dedicated worker MI,
+and digest-pinned worker image. `enabled=false` creates no resource. If separately
+authorized and deployed, its schedule is once per minute, parallelism/completion
+count one, retry limit zero, CPU 0.5, memory 1 GiB and replica timeout 120 seconds.
+The CLI stops starting additional target checks after 90 seconds. Overlapping
+executions share durable cancellation claims. It exposes no ingress and creates
+no role, identity, secret, network, GPU or AML resource. The HTTP worker must have
+the same explicit targets and `reconciliationEnabled` configuration.
+
+Cancellation reserves an owner/job/config-bound Blob record using conditional
+creation before the only native cancel call, and persists its outcome by ETag.
+Both API/manual cancellation and the independent tick use this same fence.
+Claimed, ambiguous and forbidden attempts are never automatically replayed,
+including after a process restart. A crash between claim and POST cannot be
+distinguished from a lost POST; it remains explicit and needs operator
+reconciliation, not a blind second mutation. An absent receipt does **not**
+consume the cancellation attempt: a later queued receipt remains cancellable.
+SDK cancellation is `begin_cancel(..., polling=False, retry_total=0)` followed by
+a separate read, never treating a cancel ACK as terminal. `CancelRequested`
+remains pending; `Queued`/`Running`/`Unknown`/`NotResponding`/`Paused` are not
+fabricated completion. Uncertain/forbidden cancellation makes the tick fail
+explicitly without retrying or refreshing that target's admission heartbeat.
+
+This source does **not** provision, enable or verify a live scheduler. The parent
+operator must deploy the reviewed image/template, verify actual timed execution
+and MI access, then enroll the exact test-only target before any new paid job.
+Losing the scheduler or permissions remains an operational fault; native v2
+late-start and wall-deadline component guards provide a separate defense, not a
+claim of an Azure spend cap or guaranteed cancellation after an ambiguous POST.
 
 Outputs must come from the fixed private owner/job output prefix. The final
 `result.json`, candidate path, model inventory, actual Azure job ID, raw data

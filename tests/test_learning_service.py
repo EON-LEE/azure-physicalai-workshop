@@ -150,7 +150,7 @@ def test_reconciliation_rejects_foreign_owner_or_changed_job_specification():
     assert len(jobs.submissions) == 1
 
 
-def test_deadline_without_an_actual_backend_receipt_blocks_not_succeeds():
+def test_deadline_without_an_actual_backend_receipt_remains_unconfirmed_not_succeeds():
     learning, store, jobs, request = setup()
     project, _, train = seed_project_and_dataset(store, request)
     started = learning.train(ACTOR, project.value.id, train, project.etag)
@@ -168,7 +168,8 @@ def test_deadline_without_an_actual_backend_receipt_blocks_not_succeeds():
         current.etag,
     )
     result = learning.get_job(ACTOR, started.value.id)
-    assert result.value.status == "blocked"
+    assert result.value.status == "submission_unknown"
+    assert result.value.error_code == "job_receipt_missing"
     assert result.value.candidate_id is None
     assert len(jobs.submissions) == 1
 

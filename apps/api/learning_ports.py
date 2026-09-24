@@ -6,6 +6,7 @@ from uuid import UUID
 from pydantic import AwareDatetime, Field
 
 from apps.api.learning_models import (
+    BackendJobStatus,
     BootstrapReport,
     CaptureReceipt,
     DatasetVersion,
@@ -47,9 +48,10 @@ class BackendJob(Frozen):
     azure_job_id: str = Field(min_length=1, max_length=2048)
     owner_key: Revision
     specification_sha256: Revision
-    status: Literal[
-        "submitted", "running", "cancelling", "succeeded", "failed", "cancelled", "timed_out"
-    ]
+    status: BackendJobStatus
+    job_deadline_utc: AwareDatetime | None = None
+    azure_status: str | None = Field(default=None, max_length=64)
+    cancellation_state: Literal["claimed", "acknowledged", "uncertain", "forbidden"] | None = None
     metrics: TrainingMetrics = Field(default_factory=TrainingMetrics)
     candidate: PolicyCandidate | None = None
     report: PairedReport | BootstrapReport | None = None

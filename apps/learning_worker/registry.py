@@ -2,21 +2,62 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from pathlib import Path, PurePosixPath
+from typing import Literal
 from uuid import UUID
 
-from azure.core.exceptions import AzureError, ResourceExistsError, ResourceNotFoundError
+from azure.core import MatchConditions
+from azure.core.exceptions import (
+    AzureError,
+    ResourceExistsError,
+    ResourceModifiedError,
+    ResourceNotFoundError,
+)
 from azure.storage.blob import BlobServiceClient, ContentSettings
+from pydantic import AwareDatetime, Field, ValidationError
 
 from apps.api.errors import Problem, unavailable
-from apps.api.learning_models import PolicyRelease, TrainingParent
+from apps.api.learning_models import Frozen, PolicyRelease, TrainingParent, fingerprint
 from apps.api.learning_ports import JobSpecification
-from apps.api.models import Principal
+from apps.api.models import Model, Principal, Revision, Stored, utcnow
+
+log = logging.getLogger(__name__)
+
+
+class ReconciliationTarget(Frozen):
+    actor_id: UUID
+    job_name: str = Field(pattern=r"^learning-[a-f0-9-]+$", max_length=100)
+    specification_sha256: Revision
+    configuration_sha256: Revision
+    job_deadline_utc: AwareDatetime
+
+
+class ReconciliationHeartbeat(Frozen):
+    target: ReconciliationTarget
+    worker_client_id: UUID
+    observed_at: AwareDatetime
+
+
+class CancellationClaim(Frozen):
+    owner_key: Revision
+    job_name: str
+    specification_sha256: Revision
+    configuration_sha256: Revision
+    requested_at: AwareDatetime
+    state: Literal["claimed", "acknowledged", "uncertain", "forbidden"] = "claimed"
+    error_code: str | None = None
 
 
 class BlobRegistry:
     def __init__(self, account_url: str, container: str, credential):
-        self.client = BlobServiceClient(account_url, credential=credential)
+        self.client = BlobServiceClient(
+            account_url,
+            credential=credential,
+            connection_timeout=5,
+            read_timeout=10,
+            retry_total=0,
+        )
         self.container = self.client.get_container_client(container)
 
     @staticmethod
@@ -69,7 +110,16 @@ class BlobRegistry:
             raise unavailable("Operator-reviewed Azure learning plan")
         return value
 
-    def claim_job(self, actor, specification):
+    def claim_job(self, actor, specification, configuration):
+        self.put(
+            actor,
+            f"jobs/{specification.run.backend_job_name}/configuration.json",
+            {
+                "specification_sha256": specification.run.specification_sha256,
+                "configuration_sha256": fingerprint(configuration),
+                "configuration": configuration,
+            },
+        )
         return self.put(
             actor,
             f"jobs/{specification.run.backend_job_name}/specification.json",
@@ -79,6 +129,135 @@ class BlobRegistry:
     def job(self, actor, name):
         value = self.get(actor, f"jobs/{name}/specification.json")
         return None if value is None else JobSpecification.model_validate(value)
+
+    def job_configuration(self, actor, specification):
+        value = self.get(actor, f"jobs/{specification.run.backend_job_name}/configuration.json")
+        if value is None:
+            return None
+        if (
+            not isinstance(value, dict)
+            or set(value) != {"specification_sha256", "configuration_sha256", "configuration"}
+            or (
+                value["specification_sha256"] != specification.run.specification_sha256
+                or not isinstance(value["configuration"], dict)
+                or value["configuration_sha256"] != fingerprint(value["configuration"])
+            )
+        ):
+            raise Problem(
+                503, "worker_configuration_corrupted", "Frozen job configuration differs."
+            )
+        return value["configuration"]
+
+    def _read_record(self, actor, suffix, model: type[Model]) -> Stored | None:
+        try:
+            download = self.container.download_blob(self.key(actor, suffix))
+            content = download.readall()
+            if len(content) > 65536:
+                raise Problem(503, "registry_document_size", "Lifecycle record exceeds its bound.")
+            return Stored(value=model.model_validate_json(content), etag=download.properties.etag)
+        except ResourceNotFoundError:
+            return None
+        except (AzureError, ValidationError) as exc:
+            log.exception("Learning lifecycle record read failed")
+            raise unavailable("Private learning lifecycle record") from exc
+
+    def _write_record(self, actor, suffix, value: Model, etag: str | None) -> Stored:
+        kwargs = (
+            {} if etag is None else {"etag": etag, "match_condition": MatchConditions.IfNotModified}
+        )
+        try:
+            result = self.container.upload_blob(
+                name=self.key(actor, suffix),
+                data=value.model_dump_json().encode(),
+                overwrite=etag is not None,
+                content_settings=ContentSettings(content_type="application/json"),
+                **kwargs,
+            )
+            return Stored(value=value, etag=result["etag"])
+        except (ResourceExistsError, ResourceModifiedError) as exc:
+            raise Problem(409, "registry_revision_conflict", "Lifecycle record changed.") from exc
+        except AzureError as exc:
+            log.exception("Learning lifecycle record write failed")
+            raise unavailable("Private learning lifecycle record") from exc
+
+    def heartbeat(self, actor, target):
+        return self._read_record(
+            actor, f"jobs/{target.job_name}/reconciliation.json", ReconciliationHeartbeat
+        )
+
+    def record_heartbeat(self, actor, target, client_id):
+        if target.actor_id != actor.object_id:
+            raise Problem(403, "worker_scope_mismatch", "Reconciliation actor differs.")
+        value = ReconciliationHeartbeat(
+            target=target, worker_client_id=client_id, observed_at=utcnow()
+        )
+        for attempt in range(2):
+            current = self.heartbeat(actor, target)
+            if current is not None:
+                if current.value.target != target or current.value.worker_client_id != client_id:
+                    raise Problem(
+                        409, "reconciliation_binding_changed", "Monitor enrollment is immutable."
+                    )
+                if current.value.observed_at >= value.observed_at:
+                    return current
+            try:
+                return self._write_record(
+                    actor,
+                    f"jobs/{target.job_name}/reconciliation.json",
+                    value,
+                    current.etag if current else None,
+                )
+            except Problem as exc:
+                if exc.code != "registry_revision_conflict" or attempt:
+                    raise
+
+    @staticmethod
+    def _cancellation_binding(actor, specification, configuration):
+        return {
+            "owner_key": actor.owner_key,
+            "job_name": specification.run.backend_job_name,
+            "specification_sha256": specification.run.specification_sha256,
+            "configuration_sha256": fingerprint(configuration),
+        }
+
+    def cancellation(self, actor, specification, configuration):
+        current = self._read_record(
+            actor,
+            f"jobs/{specification.run.backend_job_name}/cancellation.json",
+            CancellationClaim,
+        )
+        if current is not None and any(
+            getattr(current.value, field) != value
+            for field, value in self._cancellation_binding(
+                actor, specification, configuration
+            ).items()
+        ):
+            raise Problem(409, "cancellation_scope_changed", "Cancellation belongs to another job.")
+        return current
+
+    def claim_cancellation(self, actor, specification, configuration):
+        value = CancellationClaim(
+            **self._cancellation_binding(actor, specification, configuration), requested_at=utcnow()
+        )
+        try:
+            return self._write_record(
+                actor, f"jobs/{value.job_name}/cancellation.json", value, None
+            ), True
+        except Problem as exc:
+            if exc.code != "registry_revision_conflict":
+                raise
+            current = self.cancellation(actor, specification, configuration)
+            if current is None:
+                raise unavailable("Existing cancellation claim") from exc
+            return current, False
+
+    def record_cancellation(self, actor, stored, state, error_code=None):
+        if stored.value.owner_key != actor.owner_key or stored.value.state != "claimed":
+            raise Problem(409, "cancellation_scope_changed", "Cancellation cannot be renewed.")
+        updated = stored.value.model_copy(update={"state": state, "error_code": error_code})
+        return self._write_record(
+            actor, f"jobs/{updated.job_name}/cancellation.json", updated, stored.etag
+        )
 
     def release(self, actor, release_id: UUID):
         value = self.get(actor, f"releases/{release_id}.json")

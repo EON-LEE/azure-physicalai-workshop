@@ -31,9 +31,8 @@ def test_private_worker_has_dedicated_identity_and_no_implicit_cloud_or_model_au
     assert "secretRef:" not in text
 
 
-@pytest.fixture
-def compiled(tmp_path):
-    assert SOURCE.is_file()
+def compile_template(source, tmp_path):
+    assert source.is_file()
     compiler = shutil.which("bicep")
     if compiler is None:
         installed = Path.home() / ".azure" / "bin" / "bicep"
@@ -41,9 +40,14 @@ def compiled(tmp_path):
             compiler = str(installed)
     if compiler is None:
         pytest.skip("Offline Bicep compiler not installed; source boundary test still runs.")
-    output = tmp_path / "learning-worker.json"
-    subprocess.run([compiler, "build", str(SOURCE), "--outfile", str(output)], check=True)
+    output = tmp_path / f"{source.stem}.json"
+    subprocess.run([compiler, "build", str(source), "--outfile", str(output)], check=True)
     return json.loads(output.read_text(encoding="utf-8"))
+
+
+@pytest.fixture
+def compiled(tmp_path):
+    return compile_template(SOURCE, tmp_path)
 
 
 def worker(template):
@@ -101,6 +105,9 @@ def test_compiled_settings_have_single_api_caller_and_empty_model_bootstrap_defa
     assert "createArray" in env["LEARNING_WORKER_ALLOWED_API_PRINCIPALS"]
     assert compiled["parameters"]["allowedPolicyTypes"]["defaultValue"] == []
     assert compiled["parameters"]["bootstrapOwnerIds"]["defaultValue"] == []
+    assert compiled["parameters"]["reconciliationEnabled"]["defaultValue"] is False
+    assert compiled["parameters"]["reconciliationActorIds"]["defaultValue"] == []
+    assert compiled["parameters"]["reconciliationTargets"]["defaultValue"] == []
     for field in (
         "TENANT_ID",
         "AUDIENCE",
@@ -111,8 +118,52 @@ def test_compiled_settings_have_single_api_caller_and_empty_model_bootstrap_defa
         "CAPTURE_CONTAINER",
         "ALLOWED_POLICY_TYPES",
         "BOOTSTRAP_OWNER_IDS",
+        "RECONCILIATION_ENABLED",
+        "RECONCILIATION_ACTOR_IDS",
+        "RECONCILIATION_TARGETS",
     ):
         assert f"LEARNING_WORKER_{field}" in env
     probes = container["probes"]
     assert {probe["type"] for probe in probes} == {"Startup", "Liveness", "Readiness"}
     assert all(probe["httpGet"] == {"path": "/healthz", "port": 8080} for probe in probes)
+
+
+def test_optional_scheduler_is_off_scoped_bounded_and_has_no_extra_cloud_authority(tmp_path):
+    source = ROOT / "infra" / "learning-reconciler.bicep"
+    template = compile_template(source, tmp_path)
+    resources = template["resources"]
+    if isinstance(resources, dict):
+        resources = list(resources.values())
+    assert len(resources) == 1
+    resource = resources[0]
+    assert resource["type"] == "Microsoft.App/jobs"
+    assert resource["condition"] == "[parameters('enabled')]"
+    assert template["parameters"]["enabled"]["defaultValue"] is False
+    assert template["parameters"]["reconciliationActorIds"]["defaultValue"] == []
+    assert template["parameters"]["reconciliationTargets"]["defaultValue"] == []
+    assert template["parameters"]["reconciliationTargets"]["maxLength"] == 20
+    config = resource["properties"]["configuration"]
+    assert config["triggerType"] == "Schedule"
+    assert config["replicaTimeout"] == 120 and config["replicaRetryLimit"] == 0
+    assert config["scheduleTriggerConfig"] == {
+        "cronExpression": "* * * * *",
+        "parallelism": 1,
+        "replicaCompletionCount": 1,
+    }
+    container = resource["properties"]["template"]["containers"][0]
+    assert container["command"][-1] == "apps.learning_worker.reconcile"
+    assert "@sha256:" in container["image"]
+    assert container["resources"] == {"cpu": "[json('0.5')]", "memory": "1Gi"}
+    env = {entry["name"]: entry["value"] for entry in container["env"]}
+    # ARM escapes a literal leading '[' rather than evaluating it as an expression.
+    assert env["LEARNING_WORKER_ALLOWED_POLICY_TYPES"] == "[[]"
+    assert env["LEARNING_WORKER_BOOTSTRAP_OWNER_IDS"] == "[[]"
+    text = source.read_text(encoding="utf-8")
+    for forbidden in (
+        "roleAssignments@",
+        "secretRef:",
+        "ingress:",
+        "Simulator.Control",
+        "listKeys(",
+    ):
+        assert forbidden not in text

@@ -27,6 +27,9 @@ JobStatus = Literal[
     "timed_out",
     "blocked",
 ]
+BackendJobStatus = Literal[
+    "submitted", "running", "cancelling", "succeeded", "failed", "cancelled", "timed_out"
+]
 TeachingStatus = Literal[
     "starting",
     "recording",
@@ -597,6 +600,14 @@ class TrainingParent(OwnedRecord):
     registered_by: UUID
 
 
+class JobCancellation(Frozen):
+    request_id: UUID
+    reason: Literal["user", "deadline"]
+    requested_at: AwareDatetime
+    state: Literal["claimed", "acknowledged", "uncertain", "forbidden"] = "claimed"
+    error_code: str | None = None
+
+
 class LearningJob(OwnedRecord):
     kind: Literal["training", "evaluation"]
     project_id: UUID
@@ -605,11 +616,21 @@ class LearningJob(OwnedRecord):
     backend_job_name: str = Field(pattern=r"^learning-[a-f0-9-]+$", max_length=100)
     azure_job_id: str | None = Field(default=None, min_length=1, max_length=2048)
     deadline: AwareDatetime
+    job_deadline_utc: AwareDatetime | None = None
+    backend_status: BackendJobStatus | None = None
+    azure_status: str | None = Field(default=None, max_length=64)
+    cancellation: JobCancellation | None = None
     approved_cost_usd: Decimal
     specification_sha256: Revision
     metrics: TrainingMetrics = Field(default_factory=TrainingMetrics)
     error_code: str | None = None
     message: str | None = None
+
+    @model_validator(mode="after")
+    def effective_deadline_cannot_extend_approval(self):
+        if self.job_deadline_utc is not None and self.job_deadline_utc > self.deadline:
+            raise ValueError("The effective job deadline cannot extend the original approval.")
+        return self
 
 
 class LearningMutation(OwnedRecord):

@@ -66,6 +66,10 @@ LEARNING_MUTABLE = {
         "candidate_id",
         "error_code",
         "message",
+        "job_deadline_utc",
+        "backend_status",
+        "azure_status",
+        "cancellation",
     },
     "evaluation": {
         "updated_at",
@@ -75,6 +79,10 @@ LEARNING_MUTABLE = {
         "report",
         "error_code",
         "message",
+        "job_deadline_utc",
+        "backend_status",
+        "azure_status",
+        "cancellation",
     },
     "mutation": {"updated_at", "status", "error_code"},
     "control_grant": {"updated_at", "consumed_by"},
@@ -239,6 +247,24 @@ class CosmosStore:
                 if current.value.azure_job_id and record.azure_job_id != current.value.azure_job_id:
                     raise Problem(
                         409, "immutable_learning_record", "An Azure job ID cannot be replaced."
+                    )
+                if current.value.job_deadline_utc is not None and (
+                    record.job_deadline_utc != current.value.job_deadline_utc
+                ):
+                    raise Problem(
+                        409, "immutable_learning_record", "The original deadline cannot change."
+                    )
+                previous = current.value.cancellation
+                if previous is not None and (
+                    record.cancellation is None
+                    or any(
+                        getattr(previous, field) != getattr(record.cancellation, field)
+                        for field in ("request_id", "reason", "requested_at")
+                    )
+                    or (previous.state != "claimed" and previous != record.cancellation)
+                ):
+                    raise Problem(
+                        409, "immutable_learning_record", "A cancellation claim cannot be renewed."
                     )
             if record.kind == "teaching":
                 if current.value.status in ("ready", "cancelled", "invalid", "blocked") and changed:

@@ -29,6 +29,27 @@ describe('learning API is private and typed', () => {
       body: JSON.stringify(body),
     }));
   });
+
+  it('preserves actual provider state and durable cancellation metadata in a job response', async () => {
+    const fixture = learningFixture();
+    const pending = { ...fixture.training, item: {
+      ...fixture.training.item, status: 'cancelling' as const,
+      azure_status: 'Queued', backend_status: 'submitted' as const,
+      job_deadline_utc: fixture.training.item.deadline,
+      cancellation: {
+        request_id: fixture.training.item.id, reason: 'deadline' as const,
+        requested_at: fixture.training.item.created_at, state: 'uncertain' as const,
+        error_code: 'job_operation_unconfirmed',
+      },
+    } };
+    const transport = vi.fn().mockResolvedValue(new Response(JSON.stringify(pending), { headers: { 'Content-Type': 'application/json' } }));
+    const client = new ApiClient(async () => 'test-only-access-token', transport);
+    const response = await client.learning.job(pending.item.id);
+    expect(response.item).toMatchObject({
+      azure_status: 'Queued', backend_status: 'submitted',
+      job_deadline_utc: pending.item.deadline, cancellation: pending.item.cancellation,
+    });
+  });
 });
 
 describe('truthful Korean learning experience', () => {
@@ -51,6 +72,29 @@ describe('truthful Korean learning experience', () => {
     expect(screen.getByText('loss 미수신')).toBeInTheDocument();
     expect(screen.queryByText('학습 완료')).not.toBeInTheDocument();
     expect(api.release).not.toHaveBeenCalled();
+  });
+
+  it.each(['uncertain', 'forbidden'] as const)('shows %s deadline cancellation separately from an actually queued Azure job', async (state) => {
+    const fixture = learningFixture();
+    const api = learningApi();
+    const pending = { ...fixture.training, item: {
+      ...fixture.training.item, status: 'cancelling' as const, azure_status: 'Queued',
+      backend_status: 'submitted' as const, job_deadline_utc: fixture.training.item.deadline,
+      cancellation: {
+        request_id: fixture.training.item.id, reason: 'deadline' as const,
+        requested_at: fixture.training.item.created_at, state,
+        error_code: 'test-only-cancel-unconfirmed',
+      },
+    } };
+    api.job.mockResolvedValue(pending);
+    render(<LearningJobPanel api={api} initial={pending} />);
+    expect(await screen.findByText('Queued')).toBeInTheDocument();
+    expect(screen.getByText('절대 기한에 따른 취소 요청')).toBeInTheDocument();
+    expect(screen.getByText(/Azure의 종료는 아직 확인되지 않았습니다/)).toBeInTheDocument();
+    expect(screen.queryByText('취소 확인됨')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '실제 작업 취소 요청' })).toBeDisabled();
+    expect(api.cancelJob).not.toHaveBeenCalled();
+    expect(api.train).not.toHaveBeenCalled();
   });
 
   it('retains failed paired trials and labels no improvement, even if the optimizer job finished', () => {

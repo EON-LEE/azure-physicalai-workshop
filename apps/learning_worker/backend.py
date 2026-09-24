@@ -2,19 +2,31 @@ from __future__ import annotations
 
 import copy
 import importlib
+import logging
 import re
+from datetime import UTC
 from decimal import Decimal
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from azure.core.exceptions import ResourceNotFoundError
-from pydantic import ValidationError
+from azure.core.exceptions import AzureError, ResourceNotFoundError
+from pydantic import AwareDatetime, TypeAdapter, ValidationError
 
 from apps.api.errors import Problem, unavailable
-from apps.api.learning_models import BootstrapReport, PairedReport, TrainingMetrics
+from apps.api.learning_models import (
+    JOB_TERMINAL,
+    BootstrapReport,
+    PairedReport,
+    TrainingMetrics,
+    fingerprint,
+)
 from apps.api.learning_ports import BackendJob, JobSpecification
 from apps.api.models import utcnow
 from apps.learning_worker.policies import implementation
+from apps.learning_worker.registry import ReconciliationTarget
+
+log = logging.getLogger(__name__)
+NATIVE_DEADLINE_SCHEMA = "physicalai.smolvla-azure/v2"
 
 
 class PolicyLearningWorker:
@@ -26,12 +38,18 @@ class PolicyLearningWorker:
         *,
         allowed_policy_types=(),
         sdk_factory=None,
+        reconciliation_enabled=False,
+        reconciliation_actor_ids=frozenset(),
+        reconciliation_targets=(),
     ):
         self.registry = registry
         self.artifacts = artifact_verifier
         self.caller_client_id = caller_client_id
         self.allowed_policy_types = tuple(allowed_policy_types)
         self.sdk_factory = sdk_factory
+        self.reconciliation_enabled = reconciliation_enabled
+        self.reconciliation_actor_ids = frozenset(reconciliation_actor_ids)
+        self.reconciliation_targets = tuple(reconciliation_targets)
 
     def _authorize_specification(self, actor, specification: JobSpecification):
         if (
@@ -41,6 +59,8 @@ class PolicyLearningWorker:
             or specification.project.actor_id != actor.object_id
             or specification.run.project_id != specification.project.id
             or specification.project.tenant_id != actor.tenant_id
+            or specification.run.tenant_id != actor.tenant_id
+            or specification.run.actor_id != actor.object_id
         ):
             raise Problem(403, "worker_scope_mismatch", "Worker request scope is inconsistent.")
         if specification.run.policy_type != specification.project.policy_type:
@@ -62,10 +82,12 @@ class PolicyLearningWorker:
         self._authorize_specification(actor, specification)
         approval = self.registry.approved_plan(actor, specification)
         required = {"expires_at", "maximum_cost_usd", "gpu_hourly_usd", "config"}
-        if not isinstance(approval, dict) or set(approval) != required:
+        if (
+            not isinstance(approval, dict)
+            or set(approval) != required
+            or not isinstance(approval["config"], dict)
+        ):
             raise unavailable("Operator-reviewed job cost and configuration")
-        from pydantic import AwareDatetime, TypeAdapter
-
         try:
             expiry = TypeAdapter(AwareDatetime).validate_python(approval["expires_at"])
             ceiling, hourly = (
@@ -74,9 +96,11 @@ class PolicyLearningWorker:
             )
         except (ValidationError, ValueError, ArithmeticError) as exc:
             raise unavailable("Reviewed job cost admission") from exc
-        remaining = (specification.run.deadline - utcnow()).total_seconds()
+        now = utcnow()
+        deadline = min(specification.run.deadline, expiry)
+        remaining = (deadline - now).total_seconds()
         if (
-            expiry <= utcnow()
+            expiry <= now
             or remaining <= 0
             or not hourly.is_finite()
             or hourly <= 0
@@ -106,6 +130,14 @@ class PolicyLearningWorker:
                 422,
                 "worker_time_budget",
                 "The complete Azure job timeout must fit the original remaining authorization.",
+            )
+        if config.get("schema") != NATIVE_DEADLINE_SCHEMA or config.get(
+            "job_deadline_utc"
+        ) != deadline.astimezone(UTC).isoformat().replace("+00:00", "Z"):
+            raise Problem(
+                409,
+                "worker_deadline_mismatch",
+                "Register the exact original run/operator not-after in the reviewed v2 config.",
             )
         if (
             config.get("tenant_id") != str(actor.tenant_id)
@@ -155,6 +187,60 @@ class PolicyLearningWorker:
             )
         return config
 
+    def _target(self, actor, specification, configuration):
+        return ReconciliationTarget(
+            actor_id=actor.object_id,
+            job_name=specification.run.backend_job_name,
+            specification_sha256=specification.run.specification_sha256,
+            configuration_sha256=fingerprint(configuration),
+            job_deadline_utc=self._job_deadline(specification, configuration),
+        )
+
+    def _authorized_target(self, actor, target):
+        if (
+            not self.reconciliation_enabled
+            or actor.object_id not in self.reconciliation_actor_ids
+            or target.actor_id != actor.object_id
+            or target not in self.reconciliation_targets
+            or not 0 < len(self.reconciliation_targets) <= 20
+        ):
+            raise Problem(
+                503,
+                "job_reconciliation_unenrolled",
+                "An authorized exact job deadline monitor is required before submission.",
+            )
+
+    def _enrollment(self, actor, specification, configuration):
+        target = self._target(actor, specification, configuration)
+        self._authorized_target(actor, target)
+        record = self.registry.heartbeat(actor, target)
+        now = utcnow()
+        if (
+            record is None
+            or record.value.target != target
+            or record.value.worker_client_id != self.caller_client_id
+            or not -5 <= (now - record.value.observed_at).total_seconds() <= 90
+            or now >= target.job_deadline_utc
+        ):
+            raise Problem(
+                503,
+                "job_reconciliation_unenrolled",
+                "The exact deadline monitor has no fresh verified enrollment heartbeat.",
+            )
+
+    @staticmethod
+    def _job_deadline(specification, configuration):
+        value = configuration.get("job_deadline_utc")
+        if value is None and str(configuration.get("schema", "")).endswith("/v1"):
+            return specification.run.deadline
+        try:
+            parsed = TypeAdapter(AwareDatetime).validate_python(value)
+        except ValidationError as exc:
+            raise unavailable("Frozen job deadline") from exc
+        if parsed > specification.run.deadline:
+            raise Problem(409, "worker_deadline_mismatch", "Frozen job deadline exceeds approval.")
+        return parsed
+
     def _sdk(self, config, policy_type, *, model_use=False):
         if self.sdk_factory is not None:
             return self.sdk_factory(config)
@@ -177,13 +263,15 @@ class PolicyLearningWorker:
                 "Model license and hardware admission are not verified.",
             )
         config = self._configuration(actor, specification)
+        self._enrollment(actor, specification, config)
         jobs, _ = self._sdk(config, specification.project.policy_type, model_use=True)
         jobs.preflight()
 
     def submit(self, actor, specification):
         self.preflight(actor, specification)
         config = self._configuration(actor, specification)
-        if not self.registry.claim_job(actor, specification):
+        self._enrollment(actor, specification, config)
+        if not self.registry.claim_job(actor, specification, config):
             existing = self.status(actor, specification.run)
             if existing is None:
                 raise Problem(
@@ -198,22 +286,33 @@ class PolicyLearningWorker:
             digest = create_plan(
                 config, plan, deterministic_job_name=specification.run.backend_job_name
             )
+            self._enrollment(actor, specification, config)
             receipt = jobs.submit(
                 plan,
                 approved_plan_sha256=digest,
                 deterministic_job_name=specification.run.backend_job_name,
             )
-        return self._receipt(actor, specification, receipt)
+        return self._receipt(actor, specification, receipt, configuration=config)
 
-    def _receipt(self, actor, specification, receipt):
+    def _validated_receipt(self, actor, specification, receipt, configuration=None):
         try:
+            status = receipt["status"]
+            if receipt.get("azure_status") in ("NotResponding", "Paused", "Unknown"):
+                status = "running"
+            deadline = (
+                self._job_deadline(specification, configuration)
+                if configuration is not None
+                else None
+            )
             result = BackendJob.model_validate(
                 {
                     "job_name": receipt["job_name"],
                     "azure_job_id": receipt["azure_job_id"],
                     "owner_key": receipt["owner_key"],
                     "specification_sha256": receipt["specification_sha256"],
-                    "status": receipt["status"],
+                    "status": status,
+                    "azure_status": receipt.get("azure_status"),
+                    "job_deadline_utc": deadline,
                     "metrics": {"optimizer_steps": None, "loss": None, "measured_at": None},
                 }
             )
@@ -227,6 +326,16 @@ class PolicyLearningWorker:
             raise Problem(
                 503, "worker_receipt_mismatch", "Azure job tags differ from the durable claim."
             )
+        if (
+            configuration is not None
+            and receipt.get("job_deadline_utc") is not None
+            and (receipt["job_deadline_utc"] != configuration.get("job_deadline_utc"))
+        ):
+            raise Problem(503, "worker_receipt_mismatch", "Azure job deadline tag differs.")
+        return result
+
+    def _receipt(self, actor, specification, receipt, *, configuration=None):
+        result = self._validated_receipt(actor, specification, receipt, configuration)
         if result.status == "succeeded" and specification.run.kind == "training":
             candidate = self.artifacts.completed_candidate(
                 actor, specification, result.azure_job_id
@@ -268,24 +377,170 @@ class PolicyLearningWorker:
                 )
         return result
 
-    def status(self, actor, run):
+    def _job(self, actor, run):
         specification = self.registry.job(actor, run.backend_job_name)
         if specification is None:
             return None
         self._authorize_specification(actor, specification)
-        approval = self.registry.approved_plan(actor, specification)
-        jobs, _ = self._sdk(approval["config"], specification.project.policy_type)
+        if any(
+            getattr(specification.run, field) != getattr(run, field)
+            for field in (
+                "id",
+                "kind",
+                "project_id",
+                "policy_type",
+                "deadline",
+                "backend_job_name",
+                "specification_sha256",
+            )
+        ):
+            raise Problem(
+                409, "worker_job_mismatch", "Requested job differs from its original claim."
+            )
+        return specification
+
+    def _job_configuration(self, actor, specification):
+        config = self.registry.job_configuration(actor, specification)
+        if config is None:
+            config = self.registry.approved_plan(actor, specification)["config"]
+            if not str(config.get("schema", "")).endswith("/v1"):
+                raise unavailable("Original frozen job configuration")
+        self._job_deadline(specification, config)
+        return config
+
+    @staticmethod
+    def _azure_error(error):
+        forbidden = getattr(error, "status_code", None) == 403
+        log.error("Owned Azure learning operation failed: %s", type(error).__name__)
+        return Problem(
+            403 if forbidden else 503,
+            "job_access_forbidden" if forbidden else "job_operation_unconfirmed",
+            "Azure denied this operation."
+            if forbidden
+            else "The Azure operation is unconfirmed; no mutation was retried.",
+        )
+
+    def _read_status(self, jobs, name):
         try:
-            receipt = jobs.status(run.backend_job_name)
+            return jobs.status(name)
         except ResourceNotFoundError:
             return None
-        return self._receipt(actor, specification, receipt)
+        except AzureError as exc:
+            raise self._azure_error(exc) from exc
+        except ValueError as exc:
+            log.error("Owned job read failed immutable scope validation")
+            raise Problem(
+                409, "worker_job_mismatch", "Azure job tags differ from the owned frozen scope."
+            ) from exc
+
+    def _with_cancellation(self, actor, specification, config, result):
+        marker = self.registry.cancellation(actor, specification, config)
+        if marker is None:
+            return result
+        return result.model_copy(
+            update={
+                "cancellation_state": marker.value.state,
+                "error_code": marker.value.error_code or result.error_code,
+                "message": result.message
+                if result.status in JOB_TERMINAL
+                else (
+                    f"Cancellation {marker.value.state}; "
+                    f"Azure reports {result.azure_status or result.status}."
+                ),
+            }
+        )
+
+    def status(self, actor, run):
+        specification = self._job(actor, run)
+        if specification is None:
+            return None
+        config = self._job_configuration(actor, specification)
+        jobs, _ = self._sdk(config, specification.project.policy_type)
+        receipt = self._read_status(jobs, run.backend_job_name)
+        if receipt is None:
+            return None
+        return self._with_cancellation(
+            actor,
+            specification,
+            config,
+            self._receipt(actor, specification, receipt, configuration=config),
+        )
+
+    def _cancel_receipt(self, actor, specification, config, jobs):
+        name = specification.run.backend_job_name
+        raw = self._read_status(jobs, name)
+        if raw is None:
+            raise Problem(404, "worker_job_missing", "The owned Azure job is not yet confirmed.")
+        observed = self._validated_receipt(actor, specification, raw, config)
+        if observed.status in JOB_TERMINAL or observed.status == "cancelling":
+            return raw
+        claim, first = self.registry.claim_cancellation(actor, specification, config)
+        if not first:
+            return raw
+        try:
+            result = jobs.cancel(name)
+            self._validated_receipt(actor, specification, result, config)
+        except AzureError as exc:
+            failure = self._azure_error(exc)
+            self.registry.record_cancellation(
+                actor, claim, "forbidden" if failure.status == 403 else "uncertain", failure.code
+            )
+            raise failure from exc
+        except (Problem, ValueError) as exc:
+            self.registry.record_cancellation(actor, claim, "uncertain", "job_cancel_unconfirmed")
+            if isinstance(exc, Problem):
+                raise
+            raise unavailable("Verified owned cancellation") from exc
+        self.registry.record_cancellation(actor, claim, "acknowledged")
+        return result
 
     def cancel(self, actor, run):
-        specification = self.registry.job(actor, run.backend_job_name)
+        specification = self._job(actor, run)
         if specification is None:
             raise Problem(404, "worker_job_missing", "No owned durable job claim exists.")
+        config = self._job_configuration(actor, specification)
+        jobs, _ = self._sdk(config, specification.project.policy_type)
+        raw = self._cancel_receipt(actor, specification, config, jobs)
+        return self._with_cancellation(
+            actor,
+            specification,
+            config,
+            self._receipt(actor, specification, raw, configuration=config),
+        )
+
+    def reconcile_deadline(self, actor, target):
+        self._authorized_target(actor, target)
+        specification = self.registry.job(actor, target.job_name)
+        if specification is None:
+            return {
+                "job_name": target.job_name,
+                "status": "awaiting_submission",
+                "deadline_expired": utcnow() >= target.job_deadline_utc,
+            }
         self._authorize_specification(actor, specification)
-        approval = self.registry.approved_plan(actor, specification)
-        jobs, _ = self._sdk(approval["config"], specification.project.policy_type)
-        return self._receipt(actor, specification, jobs.cancel(run.backend_job_name))
+        config = self._job_configuration(actor, specification)
+        if self._target(actor, specification, config) != target:
+            raise Problem(409, "worker_job_mismatch", "Monitor target differs from the frozen job.")
+        jobs, _ = self._sdk(config, specification.project.policy_type)
+        raw = self._read_status(jobs, target.job_name)
+        if raw is None:
+            return {
+                "job_name": target.job_name,
+                "status": "unconfirmed",
+                "deadline_expired": utcnow() >= target.job_deadline_utc,
+            }
+        result = self._validated_receipt(actor, specification, raw, config)
+        expired = utcnow() >= target.job_deadline_utc
+        if expired and result.status not in JOB_TERMINAL and result.status != "cancelling":
+            raw = self._cancel_receipt(actor, specification, config, jobs)
+            result = self._validated_receipt(actor, specification, raw, config)
+        result = self._with_cancellation(actor, specification, config, result)
+        return {
+            "job_name": result.job_name,
+            "status": result.status,
+            "azure_status": result.azure_status,
+            "deadline_expired": expired,
+            "job_deadline_utc": target.job_deadline_utc.isoformat(),
+            "cancellation_state": result.cancellation_state,
+            "error_code": result.error_code,
+        }
