@@ -192,6 +192,13 @@ the same explicit targets and `reconciliationEnabled` configuration.
 
 Cancellation reserves an owner/job/config-bound Blob record using conditional
 creation before the only native cancel call, and persists its outcome by ETag.
+Lifecycle writes use `container.get_blob_client(key).upload_blob(...)` and retain
+that write operation's returned ETag. `ContainerClient.upload_blob` returns a
+`BlobClient`, not the write receipt; reading properties afterward would introduce
+a version race. Offline tests exercise the installed Blob SDK over a local HTTP
+transport with real conditional headers and 201/206/409/412 responses, including
+reading and conditionally updating an existing heartbeat without changing its
+original target/deadline. They do not count as Azure deployment verification.
 Both API/manual cancellation and the independent tick use this same fence.
 Claimed, ambiguous and forbidden attempts are never automatically replayed,
 including after a process restart. A crash between claim and POST cannot be

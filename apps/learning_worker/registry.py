@@ -166,8 +166,7 @@ class BlobRegistry:
             {} if etag is None else {"etag": etag, "match_condition": MatchConditions.IfNotModified}
         )
         try:
-            result = self.container.upload_blob(
-                name=self.key(actor, suffix),
+            result = self.container.get_blob_client(self.key(actor, suffix)).upload_blob(
                 data=value.model_dump_json().encode(),
                 overwrite=etag is not None,
                 content_settings=ContentSettings(content_type="application/json"),

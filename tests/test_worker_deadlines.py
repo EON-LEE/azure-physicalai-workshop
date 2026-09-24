@@ -114,6 +114,18 @@ class ConditionalBlobs:
         self.writes = []
 
     def upload_blob(self, name, data, overwrite, *, etag=None, match_condition=None, **kwargs):
+        blob = self.get_blob_client(name)
+        blob.upload_blob(
+            data, overwrite=overwrite, etag=etag, match_condition=match_condition, **kwargs
+        )
+        return blob
+
+    def get_blob_client(self, name):
+        return SimpleNamespace(
+            upload_blob=lambda data, **kwargs: self._upload(name, data, **kwargs)
+        )
+
+    def _upload(self, name, data, overwrite, *, etag=None, match_condition=None, **kwargs):
         with self.lock:
             prior = self.items.get(name)
             if prior is not None and not overwrite:
