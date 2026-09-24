@@ -378,6 +378,11 @@ class GuardedPolicyAdapter:
         limits: SafetyLimits | None = None,
         clock_ns: Callable[[], int] = time.monotonic_ns,
     ) -> None:
+        require(
+            getattr(policy, "execution_timing", "real_time") == "real_time"
+            and getattr(policy, "real_time_admission", True) is True,
+            "The real-time adapter cannot admit a paused-simulation policy",
+        )
         self.policy, self.limits, self.clock_ns = policy, limits or SafetyLimits(), clock_ns
         self.interval_steps = timing(policy.fps, policy.physics_hz)
         self.interval_ns = round(1_000_000_000 / policy.fps)
@@ -429,6 +434,11 @@ class GuardedPolicyAdapter:
     def step(self, observation: PolicyObservation, context: ControlContext) -> JointCommand:
         require(not self.faulted and self.context is not None, "Policy needs an approved reset")
         self.faulted = True
+        require(
+            getattr(observation, "execution_timing", "real_time") == "real_time"
+            and getattr(observation, "real_time_admission", True) is True,
+            "The real-time adapter cannot relabel a frozen paused observation",
+        )
         start = self.clock_ns()
         self._check_context(context, start)
         require(context.binding() == self.context.binding(), "Scene/command binding changed")

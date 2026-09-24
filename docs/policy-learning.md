@@ -293,6 +293,19 @@ Subsequent model/IPC/evaluation producers must explicitly consume these contract
 real-time 80/100 ms gates remain blocked, and no actual paused training or quality
 result is implied by contract or storage tests.
 
+`learning.paused.inference.PausedGuardedPolicyAdapter` provides
+`reset(context)`, `step(observation, context)` and immediate `stop()`. The caller
+runs the single in-flight `step` on its bounded worker, not the simulator thread.
+The adapter preserves the original episode authority across changing observation
+freezes, consumes one fresh action from the unchanged 50-action Smol horizon, and
+checks all nine targets without clipping or a reference-controller fallback.
+Returned latency includes request queue/validation time and is never divided by
+the chunk horizon. A generation change invalidates an in-flight reply; stop does
+not wait for or reset a running model. The simulator must still recheck its
+private frozen state and live authority before every actual physics tick.
+The old real-time adapter now explicitly refuses paused policies/observations;
+its original timing limits and successful v1 behavior are unchanged.
+
 Preflight reads **the actual separate outbound-rule endpoint** through
 `client.workspace_outbound_rules.list(workspace_name=...)`. The default workspace
 GET projection is insufficient. Inactive/missing approved private endpoints
