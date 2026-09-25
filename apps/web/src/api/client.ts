@@ -109,7 +109,16 @@ export class ApiClient implements ConsoleApi {
     this.learning = new LearningClient((path, schema, options = {}) => this.request(
       path, (response) => decode(response, schema), options.signal, options.body,
       options.method ?? 'GET', 'application/json', options.etag,
-    ));
+    ), (path, signal) => this.request(path, async (response) => {
+      await checkResponse(response);
+      if (response.headers.get('Content-Type')?.split(';')[0] !== 'application/json' ||
+        !/^[a-f0-9]{64}$/.test(response.headers.get('X-Report-SHA256') ?? '')) {
+        throw new ApiError('invalid_report', '검증된 원본 보고서의 형식과 SHA를 확인할 수 없습니다.');
+      }
+      const blob = await response.blob();
+      if (blob.size > 32 * 1024 * 1024) throw new ApiError('invalid_report', '원본 보고서가 다운로드 크기 한도를 넘었습니다.');
+      return blob;
+    }, signal));
   }
 
   private async request<T>(path: string, consume: (response: Response) => Promise<T>, signal?: AbortSignal, body?: unknown, method = 'GET', accept = 'application/json', etag?: string): Promise<T> {

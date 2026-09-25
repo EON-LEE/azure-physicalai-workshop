@@ -8,6 +8,7 @@ from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 from apps.api.errors import Problem, unavailable
 from apps.api.learning_models import (
     JOB_TERMINAL,
+    PAUSED_PROFILE_ID,
     PROFILE_ID,
     TEACHING_TERMINAL,
     ArmTeaching,
@@ -61,6 +62,7 @@ from apps.api.models import (
     utcnow,
 )
 from apps.api.service import FactoryService, check_fresh, content_hash
+from apps.api.simulation_reports import SimulationReport, validate_report_binding
 from contracts.validate_environment import validate_environment
 
 log = logging.getLogger(__name__)
@@ -309,7 +311,9 @@ class LearningService:
         updated = replace_record(stored.value, updated_at=utcnow(), **changes)
         return self.store.put_learning(actor.owner_key, updated, stored.etag)
 
-    def _baseline(self, actor: Principal, release_id: UUID) -> PolicyRelease:
+    def _baseline(
+        self, actor: Principal, release_id: UUID, *, execution_timing=None
+    ) -> PolicyRelease:
         local = self.store.get_learning(actor.owner_key, "release", release_id)
         if local:
             release = local.value
@@ -325,7 +329,8 @@ class LearningService:
         if release.owner_key != actor.owner_key or release.id != release_id:
             raise Problem(404, "policy_release_missing", "Reviewed policy not found.")
         self._policy(release.policy_type)
-        if release.control_profile_id != PROFILE_ID:
+        profile = PAUSED_PROFILE_ID if execution_timing == "paused_simulation" else PROFILE_ID
+        if release.control_profile_id != profile or release.execution_timing != execution_timing:
             raise Problem(
                 409, "policy_type_mismatch", "A reviewed compatible learned policy is required."
             )
@@ -700,10 +705,27 @@ class LearningService:
                 raise Problem(503, "missing_evaluation_evidence", "A paired report is required.")
             if receipt.report is not None:
                 project = self.get(actor, "project", run.project_id).value
-                self._timing_admission(project)
                 artifacts = self._dependency(self.artifacts, "Verified learning artifacts")
                 candidate = self.get(actor, "candidate", run.candidate_id).value
-                if run.comparison_kind == "reference_bootstrap":
+                if isinstance(receipt.report, SimulationReport):
+                    baseline = (
+                        None
+                        if run.comparison_kind == "reference_bootstrap"
+                        else self._baseline(
+                            actor, run.baseline_release_id, execution_timing="paused_simulation"
+                        )
+                    )
+                    validate_report_binding(
+                        JobSpecification(
+                            owner_key=actor.owner_key,
+                            project=project,
+                            run=run,
+                            candidate=candidate,
+                            baseline=baseline,
+                        ),
+                        receipt.report,
+                    )
+                elif run.comparison_kind == "reference_bootstrap":
                     validate_bootstrap_report(project, candidate, receipt.report)
                 else:
                     baseline = self._baseline(actor, run.baseline_release_id)
@@ -718,6 +740,16 @@ class LearningService:
             if exc.code != "revision_conflict":
                 raise
             return self.get(actor, run.kind, run.id)
+
+    def report_document(self, actor: Principal, job_id: UUID):
+        stored = self.get(actor, "evaluation", job_id)
+        report = stored.value.report
+        if not isinstance(report, SimulationReport):
+            raise Problem(409, "report_not_verified", "No verified simulation report is recorded.")
+        method = getattr(self.jobs, "report_document", None)
+        if not callable(method):
+            raise unavailable("Owner-scoped verified report download")
+        return report, method(actor, stored.value, report.report_sha256)
 
     def _check_candidate(self, actor, project, run, candidate) -> None:
         parent = (

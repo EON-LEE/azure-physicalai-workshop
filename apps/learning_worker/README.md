@@ -258,6 +258,47 @@ Current API/worker paused execution remains supported-but-unadmitted while
 end-to-end capture, optimizer, runtime and separate physical-report integration
 are completed. Type/fixture/codec checks do not satisfy those live gates.
 
+### Independently verified paused reports
+
+Native paired/bootstrap report v2 is not admitted from a `live_gpu_verified`
+or `quality_gate_passed` flag alone. The worker rereads the original closed
+job config, checks the current identity-only datastore and exact registered
+input versions using read-only Azure ML methods, and verifies the actual
+parent/component job IDs, owner/specification, mode and deadline tags.
+It never runs paid preflight or renews a historical deadline to read evidence.
+
+Only canonical, owner-scoped `azureml://.../datastores/<configured>/paths/...`
+locations are resolved to the approved Blob account/container. The plan hash
+is over parsed canonical JSON; the results hash is over exact `results.json`
+bytes. Actual model files must match the original registered model manifests
+and approved native inputs. Native `evaluate_pair` / `evaluate_bootstrap`
+independently verify the complete recording, every camera/control/heartbeat
+artifact, and the per-physics-tick TaskWatchdog predicate before the entire
+recomputed report is compared with the AML output (apart from its separately
+verified job envelope).
+
+One content-bound verification claim prevents repeated heavy rescoring from
+browser polling. A completed certificate is keyed by owner, job, specification,
+full config, exact report SHA, the running native/adapter verifier source hashes,
+and hashes of every relevant Blob name/size/ETag inventory. Inputs are checked
+before and after verification and again on cache reuse. A changed input or
+verifier invalidates the cache. Failure records are explicitly unverified;
+a lost process after claim requires explicit operator recovery rather than a
+second hidden rescore or a fabricated successful cache entry.
+
+Cosmos receives a compact projection capped at 512 KiB: all forty trial
+identities, models, roles, failures and task-predicate summaries, separate WALL
+and SIM durations, and per-phase sample count / nearest-rank p50 / p95 / maximum.
+Full sample arrays and violation details remain intact in the verified native
+Blob report. The authenticated job report download retrieves only that verified
+artifact and checks its exact SHA; it accepts no caller URL or arbitrary path.
+Summaries are not substitutes for the source proof or real-time qualification.
+
+Capture/dataset ingestion still needs the separately tracked bounded asynchronous
+artifact-operation integration before large real batches can be claimed to work
+end-to-end through the HTTP UI. This report cache does not make that remaining
+large-artifact workflow synchronous, provision a timer, or enable paid admission.
+
 No fake P0 or hand-authored ready candidate is required. Once the license is
 resolved and actual approved weights are already present on the trusted worker,
 an explicitly authorized operator can register **train-only** provenance:

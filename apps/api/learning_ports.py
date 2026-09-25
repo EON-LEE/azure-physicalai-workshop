@@ -23,6 +23,7 @@ from apps.api.learning_models import (
     TrainingRun,
 )
 from apps.api.models import DemonstrationResult, Execution, Identifier, Principal, Revision, Stored
+from apps.api.simulation_reports import SimulationReport
 
 
 class LearningStore(Protocol):
@@ -54,7 +55,7 @@ class BackendJob(Frozen):
     cancellation_state: Literal["claimed", "acknowledged", "uncertain", "forbidden"] | None = None
     metrics: TrainingMetrics = Field(default_factory=TrainingMetrics)
     candidate: PolicyCandidate | None = None
-    report: PairedReport | BootstrapReport | None = None
+    report: PairedReport | BootstrapReport | SimulationReport | None = None
     error_code: str | None = None
     message: str | None = None
 
@@ -89,7 +90,7 @@ class LearningArtifacts(Protocol):
         actor: Principal,
         project: LearningProject,
         run: EvaluationRun,
-        report: PairedReport,
+        report: PairedReport | BootstrapReport | SimulationReport,
     ) -> None: ...
 
 

@@ -176,6 +176,19 @@ def install_learning_routes(app, actor):
     def job(job_id: UUID, user: Actor, backend: Service, response: Response):
         return learning_response(backend.get_job(user, job_id), response)
 
+    @app.get("/api/learning/jobs/{job_id}/report")
+    def report_document(job_id: UUID, user: Actor, backend: Service):
+        report, content = backend.report_document(user, job_id)
+        return Response(
+            content,
+            media_type="application/json",
+            headers={
+                "Cache-Control": "no-store",
+                "Content-Disposition": f'attachment; filename="simulation-report-{job_id}.json"',
+                "X-Report-SHA256": report.report_sha256,
+            },
+        )
+
     @app.post("/api/learning/jobs/{job_id}/cancel", status_code=202)
     def cancel(
         job_id: UUID,

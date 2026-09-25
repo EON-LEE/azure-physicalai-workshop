@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { bootstrapReportSchema, reportSchema } from '../learning/contracts';
+import { simulationReportBody } from '../learning/simulationReports';
 
 export const publicLearningSchema = z.object({
   api_version: z.literal('public-learning-v1'),
@@ -13,7 +14,8 @@ export const publicLearningSchema = z.object({
       optimizer_steps: z.number().int().positive(), model_sha256: z.string(), parent_model_sha256: z.string(),
       dataset_sha256: z.string(), created_at: z.iso.datetime({ offset: true }), loss: z.number().nullable(),
     }),
-    comparison: z.discriminatedUnion('comparison_kind', [
+    comparison: z.union([
+      simulationReportBody.omit({ artifact_id: true }),
       reportSchema.omit({ artifact_id: true }), bootstrapReportSchema.omit({ artifact_id: true }),
     ]),
     execution: z.literal('recorded_evaluation_not_live'),

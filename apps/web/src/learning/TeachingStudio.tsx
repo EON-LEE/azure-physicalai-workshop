@@ -273,7 +273,7 @@ function ProjectWorkspace({ api, project, consoleApi, environments, coachConfigu
   const sessionList = data.filter((entry) => entry.item.kind === 'teaching');
   if (project.item.execution_timing === 'paused_simulation') {
     const plan = project.item.evaluation_plan;
-    return <section className="panel learning-project-summary">
+    return <><section className="panel learning-project-summary">
       <div className="panel-heading"><h2>{project.item.display_name}</h2><Badge tone="amber">NON_REALTIME_SIMULATION</Badge></div>
       <div className="learning-panel-body">
         <p>{project.item.instruction}</p>
@@ -295,7 +295,18 @@ function ProjectWorkspace({ api, project, consoleApi, environments, coachConfigu
         </dl>
         <ErrorNotice error={records.error} title="저장된 작업 기록 갱신 실패" retry={records.refresh} />
       </div>
-    </section>;
+    </section>
+      <section className="panel learning-records"><div className="panel-heading"><h3>저장된 시뮬레이션 작업·평가 기록</h3></div>
+        <div className="learning-panel-body">{data.filter((entry) => entry.item.kind === 'training' || entry.item.kind === 'evaluation').map((entry) => <RecordRow key={`${entry.item.kind}:${entry.item.id}`} entry={entry} select={(value) => {
+          if (value.item.kind === 'training' || value.item.kind === 'evaluation') {
+            setJob({ item: value.item, etag: value.etag });
+            if (value.item.kind === 'evaluation') setEvaluation({ item: value.item, etag: value.etag });
+          }
+        }} />)}</div>
+      </section>
+      {job && <LearningJobPanel key={job.item.id} api={api} initial={job} onUpdate={updateJob} />}
+      {evaluation && <PolicyComparison key={evaluation.item.id} api={api} evaluation={evaluation} />}
+    </>;
   }
   return <>
     <section className="panel learning-project-summary"><div className="panel-heading"><h2>{project.item.display_name}</h2><Badge>{project.item.policy_type} · 검증 전 자동 게시 없음</Badge></div>

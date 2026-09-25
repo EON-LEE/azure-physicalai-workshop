@@ -12,7 +12,10 @@ export type LearningRequest = <T>(
 
 const key = (id: string) => encodeURIComponent(id);
 export class LearningClient implements LearningApi {
-  constructor(private readonly request: LearningRequest) {}
+  constructor(
+    private readonly request: LearningRequest,
+    private readonly download: (path: string, signal?: AbortSignal) => Promise<Blob>,
+  ) {}
   capabilities(signal?: AbortSignal) { return this.request('/api/learning/capabilities', capabilitiesSchema, { signal }); }
   projects(signal?: AbortSignal) { return this.request('/api/learning/projects', resourceList(projectSchema), { signal }); }
   createProject(body: CreateProjectBody, signal?: AbortSignal) { return this.request('/api/learning/projects', resource(projectSchema), { method: 'POST', body, signal }); }
@@ -42,6 +45,7 @@ export class LearningClient implements LearningApi {
     return this.request(`/api/learning/projects/${key(id)}/evaluate`, resource(evaluationSchema), { method: 'POST', body, etag, signal });
   }
   job(id: string, signal?: AbortSignal) { return this.request(`/api/learning/jobs/${key(id)}`, resource(jobSchema), { signal }); }
+  reportDocument(id: string, signal?: AbortSignal) { return this.download(`/api/learning/jobs/${key(id)}/report`, signal); }
   cancelJob(id: string, requestId: string, etag: string, signal?: AbortSignal) {
     return this.request(`/api/learning/jobs/${key(id)}/cancel`, resource(jobSchema), { method: 'POST', body: { request_id: requestId }, etag, signal });
   }

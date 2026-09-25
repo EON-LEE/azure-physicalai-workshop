@@ -46,6 +46,7 @@ export function browserLearning(trace: LearningTrace, enabled: boolean): Learnin
     async train() { mark('train'); return data.training; },
     async evaluate() { mark('evaluate'); return data.evaluation; },
     async job(id) { return id === data.evaluation.item.id ? data.evaluation : data.training; },
+    reportDocument: unsupported,
     cancelJob: unsupported,
     release: unsupported,
     coach: unsupported,

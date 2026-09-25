@@ -23,6 +23,7 @@ export function learningApi(): Mocked<LearningApi> {
     train: vi.fn<LearningApi['train']>().mockImplementation(unexpected),
     evaluate: vi.fn<LearningApi['evaluate']>().mockImplementation(unexpected),
     job: vi.fn<LearningApi['job']>().mockResolvedValue(fixture.training),
+    reportDocument: vi.fn<LearningApi['reportDocument']>().mockImplementation(unexpected),
     cancelJob: vi.fn<LearningApi['cancelJob']>().mockImplementation(unexpected),
     release: vi.fn<LearningApi['release']>().mockImplementation(unexpected),
     coach: vi.fn<LearningApi['coach']>().mockImplementation(unexpected),

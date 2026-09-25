@@ -1,6 +1,8 @@
 from apps.api.errors import Problem
 from apps.api.learning_models import BootstrapReport, PairedReport, TrainingRun
+from apps.api.learning_ports import JobSpecification
 from apps.api.models import Principal
+from apps.api.simulation_reports import SimulationReport, validate_report_binding
 
 
 def learning_publication(configuration, learning):
@@ -44,7 +46,31 @@ def learning_publication(configuration, learning):
     from apps.api.learning_service import validate_bootstrap_report, validate_paired_report
 
     report = evaluation.report
-    if isinstance(report, BootstrapReport):
+    if isinstance(report, SimulationReport):
+        baseline = (
+            None
+            if report.comparison_kind == "reference_bootstrap"
+            else learning._baseline(
+                actor, evaluation.baseline_release_id, execution_timing="paused_simulation"
+            )
+        )
+        if not all(
+            record.matches_timing(project) for record in (evaluation, candidate, training, dataset)
+        ):
+            raise Problem(
+                503, "learning_publication_unavailable", "Published timing lineage differs."
+            )
+        validate_report_binding(
+            JobSpecification(
+                owner_key=actor.owner_key,
+                project=project,
+                run=evaluation,
+                candidate=candidate,
+                baseline=baseline,
+            ),
+            report,
+        )
+    elif isinstance(report, BootstrapReport):
         validate_bootstrap_report(project, candidate, report)
     elif isinstance(report, PairedReport):
         baseline = learning._baseline(actor, evaluation.baseline_release_id)

@@ -549,6 +549,12 @@ class VerifiedArtifacts:
             return candidate
 
     def completed_report(self, actor, specification, azure_job_id, *, required=True):
+        if specification.project.execution_timing == "paused_simulation":
+            from apps.learning_worker.paused_reports import complete_verified_report
+
+            return complete_verified_report(
+                self, actor, specification, azure_job_id, required=required
+            )
         from apps.learning_worker.reports import project_report
 
         with TemporaryDirectory(prefix="physicalai-evaluation-") as folder:
@@ -580,6 +586,65 @@ class VerifiedArtifacts:
             )
             return value
 
+    def _metadata_client(self, config):
+        from azure.ai.ml import MLClient
+
+        return MLClient(
+            self.credential,
+            config["subscription_id"],
+            config["resource_group"],
+            config["workspace"],
+        )
+
+    def _blob_inventory(self, account, container, prefix, *, exact=False):
+        entries, size = {}, 0
+        try:
+            with BlobServiceClient(
+                account,
+                credential=self.credential,
+                connection_timeout=5,
+                read_timeout=10,
+                retry_total=0,
+            ) as client:
+                bucket = client.get_container_client(container)
+                for item in bucket.list_blobs(name_starts_with=prefix):
+                    if not item.name.startswith(prefix):
+                        raise unavailable("Exact scoped artifact inventory")
+                    if exact and item.name != prefix:
+                        continue
+                    if not isinstance(item.etag, str) or not item.etag:
+                        raise unavailable("Artifact ETag inventory")
+                    size += item.size
+                    if len(entries) >= 100000 or size > 32 * 1024**3:
+                        raise Problem(
+                            503, "artifact_budget_exceeded", "Inventory exceeds its bound."
+                        )
+                    entries[item.name] = {"etag": item.etag, "size": item.size}
+        except AzureError as exc:
+            raise unavailable("Private artifact inventory") from exc
+        return fingerprint(entries)
+
+    def _download_file(self, account, container, key, destination):
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        size = 0
+        try:
+            with BlobServiceClient(
+                account,
+                credential=self.credential,
+                connection_timeout=5,
+                read_timeout=10,
+                retry_total=0,
+            ) as client:
+                download = client.get_container_client(container).download_blob(key)
+                with destination.open("xb") as output:
+                    for chunk in download.chunks():
+                        size += len(chunk)
+                        if size > 32 * 1024 * 1024:
+                            raise unavailable("Bounded plan/report document")
+                        output.write(chunk)
+        except AzureError as exc:
+            raise unavailable("Private immutable document") from exc
+
     def verify_candidate(self, actor, project, run, candidate):
         with TemporaryDirectory(prefix="physicalai-verify-model-") as folder:
             root = Path(folder) / "candidate"
@@ -601,6 +666,44 @@ class VerifiedArtifacts:
                 )
 
     def verify_report(self, actor, project, run, report):
+        from apps.api.simulation_reports import SimulationReport
+
+        if isinstance(report, SimulationReport):
+            specification = self.registry.job(actor, run.backend_job_name)
+            if specification is None:
+                raise unavailable("Original evaluation job claim")
+            actual = self.completed_report(actor, specification, run.azure_job_id)
+            if actual != report:
+                raise Problem(503, "report_digest_mismatch", "Verified report projection differs.")
+            return
         index = self.registry.artifact_index(actor, report.artifact_id)
         if index.get("manifest_sha256") != report.report_sha256:
             raise Problem(503, "report_digest_mismatch", "The immutable report digest changed.")
+
+    def report_document(self, actor, specification, report_sha):
+        from apps.api.simulation_reports import SimulationReport
+
+        saved = self.registry.get(
+            actor, f"jobs/{specification.run.backend_job_name}/reports/{report_sha}.json"
+        )
+        if (
+            not isinstance(saved, dict)
+            or saved.get("specification_sha256") != specification.run.specification_sha256
+        ):
+            raise Problem(
+                404, "report_not_verified", "No verified report exists for this owned job."
+            )
+        report = SimulationReport.model_validate(saved["report"])
+        if report.report_sha256 != report_sha:
+            raise Problem(503, "report_digest_mismatch", "Verified report identity changed.")
+        with TemporaryDirectory(prefix="physicalai-report-download-") as folder:
+            root = Path(folder) / "verified"
+            index = self.registry.download(
+                actor, report.artifact_id, root, max_bytes=32 * 1024 * 1024
+            )
+            if index.get("files") != {"report.json": report_sha}:
+                raise Problem(503, "report_digest_mismatch", "Native report inventory changed.")
+            content = (root / "report.json").read_bytes()
+            if hashlib.sha256(content).hexdigest() != report_sha:
+                raise Problem(503, "report_digest_mismatch", "Native report content changed.")
+            return content

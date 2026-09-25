@@ -3,7 +3,7 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, Header, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import Field, ValidationError, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -19,7 +19,8 @@ from apps.api.learning_models import (
     TrainingRun,
 )
 from apps.api.learning_ports import JobSpecification
-from apps.api.models import Model, Principal
+from apps.api.models import Model, Principal, Revision
+from apps.api.simulation_reports import SimulationReport
 from apps.learning_worker.registry import ReconciliationTarget
 
 
@@ -189,6 +190,22 @@ def create_worker(settings: WorkerSettings | None = None, operations=None, ident
             raise Problem(404, "worker_job_missing", "No matching owned job claim exists.")
         return worker.cancel(body.actor, specification.run)
 
+    @app.get("/v1/learning/jobs/{job_name}/report", dependencies=[Depends(controller)])
+    def report_document(
+        job_name: str,
+        report_sha256: Revision,
+        request: Request,
+        actor: Annotated[Principal, Depends(read_actor)],
+    ):
+        worker = request.app.state.worker
+        specification = worker.registry.job(actor, job_name)
+        if specification is None:
+            raise Problem(404, "worker_job_missing", "No owned job claim exists.")
+        content = worker.artifacts.report_document(actor, specification, report_sha256)
+        return Response(
+            content, media_type="application/json", headers={"Cache-Control": "no-store"}
+        )
+
     @app.get("/v1/learning/releases/{release_id}", dependencies=[Depends(controller)])
     def release(
         release_id: UUID, request: Request, actor: Annotated[Principal, Depends(read_actor)]
@@ -256,7 +273,13 @@ def create_worker(settings: WorkerSettings | None = None, operations=None, ident
         run = EvaluationRun.model_validate(body.payload["run"])
         if project.owner_key != body.actor.owner_key or run.owner_key != body.actor.owner_key:
             raise unavailable("Exact persisted evaluation report")
-        model = BootstrapReport if run.comparison_kind == "reference_bootstrap" else PairedReport
+        model = (
+            SimulationReport
+            if project.execution_timing == "paused_simulation"
+            else BootstrapReport
+            if run.comparison_kind == "reference_bootstrap"
+            else PairedReport
+        )
         proposed = model.model_validate(body.payload["report"])
         if run.report is not None and run.report != proposed:
             raise Problem(

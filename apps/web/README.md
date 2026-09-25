@@ -226,6 +226,13 @@ The controls below belong to the separately protected operator area.
   presented as usable. Existing paused project records are read-only with their
   exact bounds/provenance. Real-time 100 ms / 80 ms qualification remains separate
   and is never implied by this mode or by a native SDK schema check.
+- **Paused report summaries:** A verified simulation report displays all forty
+  trial outcomes, measured task predicates, separate WALL/SIM durations and
+  per-phase nearest-rank latency summaries. It is labeled non-real-time,
+  recorded evidence and not a replacement trace. The owner can request the
+  exact verified full JSON through the authenticated job route; temporary
+  download object URLs are revoked. The public viewer only shows explicitly
+  curated summaries, without a private download selector or a real-time claim.
 
 Visible camera views poll at most once per second. Runtime status polls every
 three seconds, nonterminal run details every two seconds, and visible history

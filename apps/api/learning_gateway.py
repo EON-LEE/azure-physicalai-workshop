@@ -41,7 +41,9 @@ class ManagedLearningGateway:
             transport=transport,
         )
 
-    def _request(self, actor: Principal, method: str, path: str, payload=None):
+    def _request(
+        self, actor: Principal, method: str, path: str, payload=None, *, query=None, raw=False
+    ):
         try:
             token = self.credential.get_token(self.scope).token
             response = self.http.request(
@@ -57,7 +59,11 @@ class ManagedLearningGateway:
                     "actor": actor.model_dump(mode="json"),
                     "payload": payload,
                 },
-                params={"tenant_id": str(actor.tenant_id), "actor_id": str(actor.object_id)}
+                params={
+                    **(query or {}),
+                    "tenant_id": str(actor.tenant_id),
+                    "actor_id": str(actor.object_id),
+                }
                 if method == "GET"
                 else None,
             )
@@ -72,6 +78,13 @@ class ManagedLearningGateway:
         if response.status_code >= 300:
             log.error("Learning worker returned %s for %s %s", response.status_code, method, path)
             raise unavailable("Azure learning worker")
+        if raw:
+            if (
+                response.headers.get("content-type", "").split(";")[0] != "application/json"
+                or len(response.content) > 32 * 1024 * 1024
+            ):
+                raise unavailable("Bounded verified report document")
+            return response.content
         try:
             value = response.json()
         except ValueError as exc:
@@ -126,6 +139,24 @@ class ManagedLearningGateway:
                 run.model_dump(mode="json"),
             ),
         )
+
+    def report_document(self, actor, run, report_sha256):
+        result = self._request(
+            actor,
+            "GET",
+            f"/v1/learning/jobs/{run.backend_job_name}/report",
+            query={"report_sha256": report_sha256},
+            raw=True,
+        )
+        if result is None:
+            raise Problem(404, "report_not_verified", "No verified report exists for this owner.")
+        import hashlib
+
+        if hashlib.sha256(result).hexdigest() != report_sha256:
+            raise Problem(
+                503, "report_digest_mismatch", "Verified report bytes changed in transit."
+            )
+        return result
 
     def resolve(self, actor, release_id: UUID):
         result = self._request(actor, "GET", f"/v1/learning/releases/{release_id}")

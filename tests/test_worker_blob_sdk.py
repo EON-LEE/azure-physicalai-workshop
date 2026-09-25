@@ -31,7 +31,7 @@ class OfflineStream:
 
 
 class OfflineResponse(HttpResponse):
-    def __init__(self, request, status, etag, body=b"", code=None):
+    def __init__(self, request, status, etag, body=b"", code=None, content_type=None):
         super().__init__(request, None)
         self.status_code = status
         self.reason = HTTPStatus(status).phrase
@@ -41,7 +41,7 @@ class OfflineResponse(HttpResponse):
                 "ETag": etag,
                 "Last-Modified": "Wed, 23 Sep 2026 12:00:00 GMT",
                 "Content-Length": str(len(body)),
-                "Content-Type": "application/xml" if code else "application/json",
+                "Content-Type": content_type or ("application/xml" if code else "application/json"),
                 "x-ms-blob-type": "BlockBlob",
                 "x-ms-request-id": "test-only-offline-request",
                 **({"x-ms-error-code": code} if code else {}),
@@ -213,3 +213,41 @@ def test_existing_heartbeat_conditionally_updates_without_renewing_target_or_dea
     assert [request.method for request in transport.requests] == ["GET", "PUT"]
     assert transport.requests[1].headers["If-Match"] == '"existing-heartbeat"'
     assert "If-None-Match" not in transport.requests[1].headers
+
+
+def test_report_inventory_uses_actual_sdk_blob_names_sizes_and_etags(monkeypatch):
+    from azure.storage.blob import BlobServiceClient
+
+    from apps.api.learning_models import fingerprint
+    from apps.learning_worker.artifacts import VerifiedArtifacts
+
+    key = "tenants/test/owners/test/evidence/results.json"
+    body = f"""<?xml version="1.0" encoding="utf-8"?>
+<EnumerationResults ServiceEndpoint="https://offline.blob.core.windows.net/"
+ ContainerName="test-only">
+<Prefix>tenants/test/owners/test/evidence/</Prefix><Blobs><Blob><Name>{key}</Name><Properties>
+<Last-Modified>Wed, 23 Sep 2026 12:00:00 GMT</Last-Modified><Etag>"evidence-one"</Etag>
+<Content-Length>42</Content-Length><BlobType>BlockBlob</BlobType>
+</Properties></Blob></Blobs><NextMarker /></EnumerationResults>""".encode()
+    transport = OfflineTransport(
+        [
+            {
+                "status": 200,
+                "etag": '"listing"',
+                "body": body,
+                "content_type": "application/xml",
+            }
+        ]
+    )
+    client = BlobServiceClient(
+        "https://offline.blob.core.windows.net", credential=None, transport=transport, retry_total=0
+    )
+    monkeypatch.setattr(
+        "apps.learning_worker.artifacts.BlobServiceClient", lambda *args, **kwargs: client
+    )
+    verifier = VerifiedArtifacts(None, None, "https://offline.blob.core.windows.net", "test-only")
+    result = verifier._blob_inventory(
+        "https://offline.blob.core.windows.net", "test-only", "tenants/test/owners/test/evidence/"
+    )
+    assert result == fingerprint({key: {"etag": '"evidence-one"', "size": 42}})
+    assert len(transport.requests) == 1 and transport.requests[0].method == "GET"

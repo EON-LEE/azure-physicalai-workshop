@@ -52,6 +52,7 @@ successful placeholder, fixture checkpoint or ACT fallback.
 | `POST /api/learning/projects/{id}/train` | `request_id`, `dataset_id`, `parent_release_id`, optional bootstrap `pretrained_artifact_id`, exact `policy_type`, `optimizer_steps`, `paid_approved: true`, `maximum_cost_usd` |
 | `POST /api/learning/projects/{id}/evaluate` | `request_id`, `candidate_id`, `baseline_release_id`, `evaluation_plan_sha256`, `motion_approved: true`, `paid_approved: true`, `maximum_cost_usd` |
 | `GET /api/learning/jobs/{id}` | Reconciles the actual named job only; never submits or restarts it |
+| `GET /api/learning/jobs/{id}/report` | Owner-only exact verified native paused-report JSON download; no caller URL/path, no unverified artifact |
 | `POST /api/learning/jobs/{id}/cancel` | `request_id`; cancellation state from the actual backend |
 | `GET /api/learning/candidates/{id}` | Verified candidate; not a released skill |
 | `POST /api/policy-releases` | `request_id`, `candidate_id`, `evaluation_run_id`, `release_approved: true`; exact evaluation ETag and passing gates required |
@@ -139,6 +140,39 @@ evaluation captures for training. Paused v2 checkpoint validation is explicit;
 the legacy model path still refuses it. Verified metadata does not convert a
 train-only parent/candidate into a release or make the supported-but-disabled
 paused execution capability active.
+
+Paused report v2 now has a separate source-backed projection. The worker checks
+the original owned parent/component ML job and read-only datastore/data-version
+bindings, downloads the exact reviewed plan/results/models, and invokes the
+native independent physical recorder verifier and task rescore. The complete
+output must match that independently computed result; a success flag, static
+final pose or aggregate-only JSON is insufficient. Exact plan/results, profile,
+criteria, independent scene conditions and verifier-source hashes remain bound.
+
+The API's `SimulationReport` retains all forty attempts and their compact
+role/case/model/failure/task-predicate evidence, actual WALL and SIM durations,
+and each phase's sample count / nearest-rank p50 / p95 / maximum. It carries
+`execution_timing: paused_simulation`, `real_time_admission: false`,
+`native_schema`, `native_plan_sha256`, `results_sha256`, `report_sha256` and
+the verified report artifact ID. The original full arrays remain in immutable
+Blob JSON; the Cosmos projection is bounded to 512 KiB rather than exceeding
+Cosmos's item limit. A summary is not a replacement trace.
+
+Verification uses a durable content-bound claim and completed certificate.
+Owner/job/spec/config/report SHA, pinned verifier code and exact Blob ETag/size
+inventories are rechecked; changes invalidate the cache. Failed/incomplete
+verification stays unverified, and a lost first verification requires explicit
+operator recovery rather than repeated heavy scans on browser polls. Successful
+cache reuse does not manufacture a successful Azure job.
+
+The protected report download returns original `application/json` bytes,
+`Cache-Control: no-store`, `X-Report-SHA256`, and a job-bound attachment filename.
+The private gateway independently checks the downloaded checksum. The public
+learning endpoint may expose only a deployment-curated compact report without
+private artifact selectors, explicitly marked `NON_REALTIME_SIMULATION` and
+recorded-not-live. It never exposes the owner-only full report endpoint.
+Global paused mutation and model admission remain disabled pending actual
+capture/optimizer/learned-physics gates.
 
 ### Varied teaching cases and split isolation
 

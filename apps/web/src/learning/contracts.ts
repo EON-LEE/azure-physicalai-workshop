@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { simulationReportSchema } from './simulationReports';
 
 const id = z.uuid();
 const sha = z.string().regex(/^[a-f0-9]{64}$/);
@@ -156,8 +157,13 @@ export const bootstrapReportSchema = z.object({
 export const evaluationSchema = z.object({
   ...jobBase, kind: z.literal('evaluation'), candidate_id: id, baseline_release_id: id.nullable(),
   comparison_kind: z.enum(['paired_policy', 'reference_bootstrap']),
-  evaluation_plan_sha256: sha, report: z.discriminatedUnion('comparison_kind', [reportSchema, bootstrapReportSchema]).nullable(),
-}).superRefine(consistentTiming);
+  evaluation_plan_sha256: sha, report: z.union([simulationReportSchema, reportSchema, bootstrapReportSchema]).nullable(),
+}).superRefine((value, context) => {
+  consistentTiming(value, context);
+  if (value.report && ('execution_timing' in value.report) !== (value.execution_timing === 'paused_simulation')) {
+    context.addIssue({ code: 'custom', message: 'Report and evaluation job timing must match.' });
+  }
+});
 export const candidateSchema = z.object({
   ...timingMetadata,
   ...base, kind: z.literal('candidate'), project_id: id, dataset_id: id, training_run_id: id,
@@ -244,6 +250,7 @@ export interface LearningApi {
   train(projectId: string, body: TrainingBody, etag: string, signal?: AbortSignal): Promise<Resource<Job>>;
   evaluate(projectId: string, body: { request_id: string; candidate_id: string; baseline_release_id: string | null; comparison_kind?: 'paired_policy' | 'reference_bootstrap'; evaluation_plan_sha256: string; motion_approved: true; paid_approved: true; maximum_cost_usd: string }, etag: string, signal?: AbortSignal): Promise<Resource<Evaluation>>;
   job(id: string, signal?: AbortSignal): Promise<Resource<Job>>;
+  reportDocument(id: string, signal?: AbortSignal): Promise<Blob>;
   cancelJob(id: string, requestId: string, etag: string, signal?: AbortSignal): Promise<Resource<Job>>;
   release(body: { request_id: string; candidate_id: string; evaluation_run_id: string; release_approved: true }, etag: string, signal?: AbortSignal): Promise<Resource<PolicyRelease>>;
   coach(projectId: string, body: { request_id: string; instruction: string; dataset_id: string | null; evaluation_run_id: string | null }, signal?: AbortSignal): Promise<CoachResponse>;

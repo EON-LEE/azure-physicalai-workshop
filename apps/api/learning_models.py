@@ -20,6 +20,7 @@ from pydantic import (
 
 from apps.api.errors import Problem
 from apps.api.models import Identifier, LearnedPolicyType, Model, Principal, Revision, utcnow
+from apps.api.simulation_reports import SimulationReport
 
 PolicyType = Literal["gr00t_n1_5", "gr00t_n1_7", "smolvla", "act_auxiliary"]
 SourceKind = Literal["human_teleop", "reference_controller", "learned"]
@@ -806,12 +807,22 @@ class EvaluationRun(LearningJob):
     baseline_release_id: UUID | None
     comparison_kind: Literal["paired_policy", "reference_bootstrap"] = "paired_policy"
     evaluation_plan_sha256: Revision
-    report: PairedReport | BootstrapReport | None = None
+    report: PairedReport | BootstrapReport | SimulationReport | None = None
 
     @model_validator(mode="after")
     def succeeded_requires_report(self):
         if self.status == "succeeded" and (not self.azure_job_id or not self.report):
             raise ValueError("A completed evaluation requires the entire paired trial report.")
+        return self
+
+    @model_validator(mode="after")
+    def report_timing_matches_job(self):
+        if self.report is not None and (
+            isinstance(self.report, SimulationReport)
+            != (self.execution_timing == "paused_simulation")
+            or self.report.comparison_kind != self.comparison_kind
+        ):
+            raise ValueError("A paused physical report cannot become a real-time evaluation.")
         return self
 
 
@@ -852,7 +863,7 @@ class CoachRecord(OwnedRecord):
     message: str | None = None
 
 
-class PolicyRelease(OwnedRecord):
+class PolicyRelease(OwnedRecord, TimingMetadata):
     kind: Literal["release"] = "release"
     project_id: UUID
     candidate_id: UUID
@@ -867,7 +878,7 @@ class PolicyRelease(OwnedRecord):
     task_id: Identifier
     goal_station_id: Identifier
     instruction: str = Field(min_length=1, max_length=512, pattern=r"^[^\r\n]*\S[^\r\n]*$")
-    control_profile_id: Literal["franka-position-hold-10hz-v1"]
+    control_profile_id: ControlProfileId
     evaluation_plan_sha256: Revision
     reviewed_by: UUID
     comparison_kind: Literal["paired_policy", "reference_bootstrap"] = "paired_policy"

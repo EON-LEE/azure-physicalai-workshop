@@ -22,6 +22,7 @@ from apps.api.learning_models import (
 )
 from apps.api.learning_ports import BackendJob, JobSpecification
 from apps.api.models import utcnow
+from apps.api.simulation_reports import SimulationReport
 from apps.learning_worker.policies import implementation
 from apps.learning_worker.registry import ReconciliationTarget
 
@@ -384,7 +385,9 @@ class PolicyLearningWorker:
                 report = self.artifacts.completed_report(
                     actor, specification, result.azure_job_id, required=result.status == "succeeded"
                 )
-                if report is not None and not isinstance(report, (PairedReport, BootstrapReport)):
+                if report is not None and not isinstance(
+                    report, (PairedReport, BootstrapReport, SimulationReport)
+                ):
                     raise unavailable("Verified complete physical evaluation report")
                 if result.status == "succeeded" and report is None:
                     raise unavailable("Final physical evaluation report")
