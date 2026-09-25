@@ -25,6 +25,7 @@ def test_native_policy_ci_checks_real_package_interfaces_without_cloud_or_weight
         "learning.checks.smolvla_api_check",
         "learning.checks.smolvla_export_check",
         "learning.checks.smolvla_aml_check",
+        "learning.checks.paused_conversion_check",
     ):
         assert f"-m {module}" in job
     assert 'HF_HUB_OFFLINE: "1"' in job

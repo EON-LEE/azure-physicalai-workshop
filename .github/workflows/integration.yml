@@ -83,6 +83,10 @@ jobs:
         run: |
           "$UV_PROJECT_ENVIRONMENT/bin/python" -m learning.checks.smolvla_aml_check \
             --output "$RUNNER_TEMP/native-policy-evidence/aml"
+      - name: Preserve paused simulation and wall clocks through native conversion
+        run: |
+          "$UV_PROJECT_ENVIRONMENT/bin/python" -m learning.checks.paused_conversion_check \
+            --output "$RUNNER_TEMP/native-policy-evidence/paused"
       - name: Retain CPU-only interface evidence, not a learning-quality gate
         if: ${{ always() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -92,5 +96,6 @@ jobs:
             ${{ runner.temp }}/native-policy-evidence/api.json
             ${{ runner.temp }}/native-policy-evidence/export/report.json
             ${{ runner.temp }}/native-policy-evidence/aml/report.json
+            ${{ runner.temp }}/native-policy-evidence/paused/report.json
           if-no-files-found: error
           retention-days: 7
