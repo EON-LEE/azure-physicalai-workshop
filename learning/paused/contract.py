@@ -18,6 +18,8 @@ from learning.contract import (
 
 EXECUTION_TIMING = "paused_simulation"
 CONTROL_PROFILE_ID = "franka-position-hold-10hz-paused-v1"
+CONTROL_PROFILE_V2_ID = "franka-position-hold-10hz-paused-v2"
+_PROFILE_STEP_LIMITS = {CONTROL_PROFILE_ID: 1800, CONTROL_PROFILE_V2_ID: 3600}
 RAW_SCHEMA = "physicalai.demonstrations/v3"
 CONVERSION_SCHEMA = "physicalai.lerobot-conversion/v3"
 MODEL_SCHEMA = "physicalai.smolvla-checkpoint/v2"
@@ -98,7 +100,7 @@ class PausedControlProfile:
         sha256(self.servo_profile_sha256, "new paused servo fingerprint")
         _mode(self.execution_timing, self.real_time_admission)
         require(
-            self.profile_id == CONTROL_PROFILE_ID
+            self.profile_id in _PROFILE_STEP_LIMITS
             and self.velocity_target_mode == "zero"
             and self.gravity_compensation == "physx_measured_arm_only",
             "Wrong paused-simulation profile or held-control semantics",
@@ -112,7 +114,7 @@ class PausedControlProfile:
             "max_hold_wall_ms": 2000,
             "max_interval_wall_ms": 5000,
             "max_episode_wall_ms": 600000,
-            "max_simulation_steps": 1800,
+            "max_simulation_steps": _PROFILE_STEP_LIMITS[self.profile_id],
             "max_heartbeat_wall_ms": 2000,
         }
         for name, exact in expected.items():
@@ -127,6 +129,11 @@ class PausedControlProfile:
     def sha256(self) -> str:
         self.validate()
         return digest(canonical(asdict(self)))
+
+    @property
+    def max_frames(self) -> int:
+        self.validate()
+        return self.max_simulation_steps // self.hold_steps
 
 
 @dataclass(frozen=True)

@@ -243,12 +243,20 @@ The coordinator froze a new **NON_REALTIME_SIMULATION** regime before new
 collection or model selection. `learning.paused` contains its stdlib-only shared
 types and version constants. Its canonical fields are
 `execution_timing="paused_simulation"` and `real_time_admission=false`; it is not
-a renamed or relaxed real-time release. `PausedControlProfile` requires the new
-`franka-position-hold-10hz-paused-v1` servo fingerprint, actual 60 Hz physics,
+a renamed or relaxed real-time release. `PausedControlProfile` binds an explicitly
+versioned paused servo fingerprint, actual 60 Hz physics,
 10 Hz **simulation-time** control and six actual held ticks. Frozen limits are
 2,000 ms each for observation, policy and held-tick phases, intersected with
 the **original** 5,000 ms whole interval and 600-second episode wall deadlines.
-The simulation budget is independently at most 1,800 physics steps / 30 seconds.
+The simulation budget is a closed profile-ID/limit pair: the unchanged default
+`franka-position-hold-10hz-paused-v1` requires exactly `max_simulation_steps=1800`
+(30 simulation seconds), while the explicitly selected
+`franka-position-hold-10hz-paused-v2` requires `max_simulation_steps=3600`
+(60 simulation seconds). Unknown IDs and mixed ID/limit pairs fail closed.
+`CONTROL_PROFILE_ID` remains v1; `CONTROL_PROFILE_V2_ID` names the new profile.
+No other profile fields or wall-clock budgets change. The separate real-time
+profile and both historical 30-second results retain their original meaning;
+v2 does not promote or relabel an earlier failed/incomplete attempt.
 Main-thread heartbeat gaps remain at most 2,000 ms; physical slew, tracking,
 0.2 m/s speed and 4 cm goal limits are not relaxed.
 
@@ -275,6 +283,13 @@ Frames go to `episodes/<episode_id>/frames.jsonl`; original PNGs go to
 binds the new profile, frozen criteria/conditions-plan hashes, explicit capture
 purpose and original `PausedEpisodeBudget`. The dataset records simulation-time
 10 Hz cadence separately from variable original UTC/monotonic timestamps.
+The writer's default frame limit is derived from the validated profile:
+300 for v1 and 600 for v2. An explicit narrower limit remains allowed; a larger
+one is rejected. The default byte budget remains 512 MiB. All six actual control
+records and both original images are retained for every interval; no downsampling,
+dropped frames or lossy resampling extends a capture. Raw v3, checkpoint v2 and
+IPC v2 remain separate artifact-schema versions and continue to bind the whole
+control profile/hash. A v1 capture cannot become v2 by editing its manifest.
 Reference demonstrations have null policy timings, not invented zero-latency
 neural calls. Every complete frame has exactly six real controls; failed append
 attempts fault the writer rather than permit retry-until-success.

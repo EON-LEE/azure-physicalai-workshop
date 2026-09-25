@@ -286,9 +286,7 @@ def _validate(
         path = safe_path(root, expected)
         paths.add(expected)
         require(file_digest(path) == sha256(metadata["sha256"]), "Episode checksum mismatch")
-        count = integer(
-            metadata["frame_count"], "frame count", 2, profile.max_simulation_steps // 6
-        )
+        count = integer(metadata["frame_count"], "frame count", 2, profile.max_frames)
         require(path.stat().st_size <= count * MAX_FRAME_BYTES, "Oversized v3 frame stream")
         frames, previous, freezes = [], None, set()
         with path.open("rb") as stream:
@@ -368,7 +366,7 @@ class PausedEpisodeWriter:
         purpose: str,
         criteria_sha256: str,
         frozen_plan_sha256: str | None,
-        max_frames: int = 300,
+        max_frames: int | None = None,
         max_bytes: int = 512 * 1024 * 1024,
     ) -> None:
         scope.validate()
@@ -389,7 +387,8 @@ class PausedEpisodeWriter:
         else:
             sha256(frozen_plan_sha256, "new frozen conditions plan")
             require(episode.seed not in INTEGRATION_SEEDS, "Integration seed is not training data")
-        integer(max_frames, "frame limit", 2, 300)
+        max_frames = profile.max_frames if max_frames is None else max_frames
+        integer(max_frames, "frame limit", 2, profile.max_frames)
         integer(max_bytes, "byte limit", 1024, 20 * 1024**3)
         require(not root.exists() and not root.is_symlink(), "Never overwrite an existing capture")
         root.mkdir(parents=True)
