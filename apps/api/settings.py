@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     bridge_timeout_seconds: float = Field(default=10, gt=0, le=30)
     approval_ttl_seconds: int = Field(default=300, ge=5, le=3600)
     learning_enabled: bool = False
+    learning_reference_collections_enabled: bool = False
+    learning_paused_training_enabled: bool = False
+    learning_paused_evaluation_enabled: bool = False
+    learning_paused_release_enabled: bool = False
     learning_policy_types: tuple[Literal["gr00t_n1_5", "gr00t_n1_7", "smolvla"], ...] = ()
     learning_bootstrap_principal_ids: frozenset[UUID] = frozenset()
     public_learning_owner_id: UUID | None = None

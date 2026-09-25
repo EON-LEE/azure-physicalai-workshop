@@ -7,6 +7,7 @@ import { formatDate } from '../ui/format';
 import { LiveCamera } from '../views/LiveCamera';
 import { LearningJobPanel } from './LearningJobPanel';
 import { ArtifactOperationPanel } from './ArtifactOperationPanel';
+import { ReferenceCollections } from './ReferenceCollections';
 import { PolicyComparison } from './PolicyComparison';
 import { TeachingControls } from './TeachingControls';
 import {
@@ -38,7 +39,7 @@ export function TeachingStudio({ api, environments, consoleApi }: {
     {capability.data?.simulation_learning && <div className="inline-note warning" role="status">
       <strong>NON_REALTIME_SIMULATION · 별도 시뮬레이션 학습 모드</strong>
       <p>물리를 멈춘 채 관측·추론을 기다립니다. 실시간 100ms/80ms 통과가 아닙니다. 실제 로봇의 실시간 실행 권한으로 사용할 수 없습니다.</p>
-      {!capability.data.simulation_learning.enabled && <p>새 모드의 생성기·검증기·런타임 통합이 아직 승인되지 않았습니다. 학습·시연·모델 실행은 차단됩니다.</p>}
+      {!capability.data.simulation_learning.reference_generation_enabled && <p>기준 시연 생성이 아직 승인되지 않았습니다. 직접 수동 시연과 고객 learned 실행은 별도 승인 전 차단됩니다.</p>}
     </div>}
     {!capability.data && !capability.error && <Loading>학습 API 통합 상태를 확인하는 중…</Loading>}
     {capability.data && !capability.data.enabled && <section className="panel"><EmptyState icon={<ShieldCheck size={27} />} title="학습 기능이 아직 활성화되지 않았습니다">
@@ -56,7 +57,7 @@ export function TeachingStudio({ api, environments, consoleApi }: {
         <button type="button" className="button secondary" onClick={() => setCreate((value) => !value)}><Plus size={15} aria-hidden="true" />새 학습 작업 정의</button></div>
       <ErrorNotice error={projects.error} title="내 학습 프로젝트를 불러오지 못했습니다" retry={projects.refresh} />
       {create && <ProjectForm api={api} environments={environments} policyTypes={capability.data.policy_types} bootstrapAllowed={capability.data.bootstrap_allowed} simulationLearning={capability.data.simulation_learning} onCreated={(value) => { setSelected(value); projects.refresh(); setCreate(false); }} />}
-      {selected && <ProjectWorkspace key={selected.item.id} api={api} project={selected} consoleApi={consoleApi} environments={environments} coachConfigured={capability.data.coach_configured} />}
+      {selected && <ProjectWorkspace key={selected.item.id} api={api} project={selected} consoleApi={consoleApi} environments={environments} coachConfigured={capability.data.coach_configured} simulationLearning={capability.data.simulation_learning} />}
       {!selected && !create && <EmptyState icon={<BookOpen size={28} />} title="학습할 작업을 선택하세요">이미 검토된 P0와 실제 시연 데이터를 연결합니다. 아직 정책이 없는 환경의 초기 P0는 별도의 승인된 부트스트랩 절차가 필요합니다.</EmptyState>}
     </>}
   </div>;
@@ -75,7 +76,7 @@ function ProjectForm({ api, environments, onCreated, bootstrapAllowed, policyTyp
   const [timing, setTiming] = useState<'legacy' | 'paused_simulation'>('legacy');
   const [evaluationSeconds, setEvaluationSeconds] = useState('7200');
   const paused = timing === 'paused_simulation';
-  const timingBlocked = paused && !simulationLearning?.enabled;
+  const timingBlocked = paused && !simulationLearning?.reference_generation_enabled;
   const availableCases = savedTeachingCases(environments);
   const [approvedCases, setApprovedCases] = useState<TeachingCase[]>([]);
   const [caseFilter, setCaseFilter] = useState('');
@@ -229,8 +230,8 @@ function ProjectForm({ api, environments, onCreated, bootstrapAllowed, policyTyp
   </form>;
 }
 
-function ProjectWorkspace({ api, project, consoleApi, environments, coachConfigured }: {
-  api: LearningApi; project: Resource<Project>; consoleApi?: ConsoleApi; environments: EnvironmentRecord[]; coachConfigured: boolean;
+function ProjectWorkspace({ api, project, consoleApi, environments, coachConfigured, simulationLearning }: {
+  api: LearningApi; project: Resource<Project>; consoleApi?: ConsoleApi; environments: EnvironmentRecord[]; coachConfigured: boolean; simulationLearning?: SimulationLearningCapability;
 }) {
   const load = useCallback(async (signal: AbortSignal) => {
     const groups = await Promise.all((['teaching', 'dataset', 'training', 'evaluation', 'candidate', 'release'] as const)
@@ -284,8 +285,8 @@ function ProjectWorkspace({ api, project, consoleApi, environments, coachConfigu
       <div className="panel-heading"><h2>{project.item.display_name}</h2><Badge tone="amber">NON_REALTIME_SIMULATION</Badge></div>
       <div className="learning-panel-body">
         <p>{project.item.instruction}</p>
-        <div className="inline-note warning" role="status"><strong>별도 시뮬레이션 실행 통합 대기</strong>
-          <p>이 작업은 실시간 100ms/80ms 통과가 아닙니다. 새 모델·평가·런타임 검증기 연결 전에는 기존 실시간 조작·학습·게시 경로를 사용하지 않습니다.</p>
+        <div className="inline-note warning" role="status"><strong>별도 시뮬레이션 단계별 승인</strong>
+          <p>이 작업은 실시간 100ms/80ms 통과가 아닙니다. 기준 시연, 학습, 후보 평가, 정책 게시를 각각 승인하며 기존 실시간 조작 경로를 사용하지 않습니다.</p>
         </div>
         {'execution_timing' in plan && <>
           <p>한 회차 상한: {plan.max_simulation_seconds} SIM초 · {plan.max_wall_seconds} WALL초</p>
@@ -303,6 +304,7 @@ function ProjectWorkspace({ api, project, consoleApi, environments, coachConfigu
         <ErrorNotice error={records.error} title="저장된 작업 기록 갱신 실패" retry={records.refresh} />
       </div>
     </section>
+      <ReferenceCollections api={api} project={project} stages={simulationLearning} />
       <section className="panel learning-records"><div className="panel-heading"><h3>저장된 시뮬레이션 작업·평가 기록</h3></div>
         <div className="learning-panel-body">{data.filter((entry) => entry.item.kind === 'training' || entry.item.kind === 'evaluation').map((entry) => <RecordRow key={`${entry.item.kind}:${entry.item.id}`} entry={entry} select={(value) => {
           if (value.item.kind === 'training' || value.item.kind === 'evaluation') {
@@ -312,7 +314,7 @@ function ProjectWorkspace({ api, project, consoleApi, environments, coachConfigu
         }} />)}</div>
       </section>
       {job && <LearningJobPanel key={`job-${job.item.id}`} api={api} initial={job} onUpdate={updateJob} />}
-      {evaluation && <PolicyComparison key={`evaluation-${evaluation.item.id}`} api={api} evaluation={evaluation} />}
+      {evaluation && <PolicyComparison key={`evaluation-${evaluation.item.id}`} api={api} evaluation={evaluation} releaseAllowed={simulationLearning?.release_enabled} />}
     </>;
   }
   return <>

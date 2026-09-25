@@ -11,6 +11,7 @@ const simulationLearning = {
   execution_timing: 'paused_simulation' as const, real_time_admission: false as const,
   supported: true as const, enabled: false as const, status: 'producer_verifier_unavailable' as const,
   message: 'Test only: paused model/report adapters are not admitted.',
+  reference_generation_enabled: false, training_enabled: false, evaluation_enabled: false, release_enabled: false,
 };
 
 function projectRecord() {

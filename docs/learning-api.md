@@ -42,6 +42,9 @@ successful placeholder, fixture checkpoint or ACT fallback.
 | `GET /api/learning/projects` | Owner project list |
 | `GET /api/learning/projects/{id}` | Project with ETag |
 | `POST /api/learning/projects/{id}/teaching-sessions` | `request_id`, `case_id`, `source: human_teleop|reference_controller`, `motion_approved: true`; only a project-approved case may be selected |
+| `POST /api/learning/projects/{id}/reference-collections` | `request_id`, `case_id`, `motion_approved: true`; separately admitted paused REFERENCE motion under an existing operator grant, 202 `ReferenceCollection` |
+| `GET /api/reference-collections/{id}` | Owner-only original command reconciliation; physical completion and verified capture remain separate |
+| `POST /api/reference-collections/{id}/cancel` | No body; durably claims one cancel request, waits for actual runtime termination |
 | `GET /api/teaching-sessions/{id}` | Reconciled `TeachingSession`; physical completion and capture readiness remain separate |
 | `POST /api/teaching-sessions/{id}/arm` | `request_id`, `lease_id`, `epoch`, `sequence`, `deadman: true`, `delta_xyz_m`, `gripper`; returns a server control grant valid for at most one second; never moves |
 | `POST /api/teaching-sessions/{id}/jog` | Same intent plus `grant_id`; server stamps expiry on first admission. Stop-only `deadman:false` requires zero delta/hold and no grant |
@@ -107,15 +110,69 @@ than changing any existing project. Per-episode 30 SIM / 600 WALL limits and
 the immutable native AML absolute deadline remain distinct. An incomplete batch
 cannot be reported as all twenty cases evaluated or as successful improvement.
 
-**Current admission boundary:** the API exposes `simulation_learning` capability
-metadata with `supported: true`, `enabled: false`,
-`status: producer_verifier_unavailable`. Closed types and UI draft fields are not
-proof that the actual runtime, v3 data, v2 model/report producers or verifiers are
-admitted. Paused project/motion/training/evaluation/release mutations return
-explicit 503 before falling through any old real-time path. The UI shows the
-new-mode bounds and blocked status; no environment flag alone enables missing
-adapters. New model/report outputs must be verified through their separate
-committed native producers before this boundary can be opened.
+**Default admission boundary:** `simulation_learning` remains `supported: true`
+and reports separate, default-false stage permissions. The operator may admit
+reference/data preparation with `LEARNING_REFERENCE_COLLECTIONS_ENABLED`;
+`LEARNING_PAUSED_TRAINING_ENABLED`, `LEARNING_PAUSED_EVALUATION_ENABLED`, and
+`LEARNING_PAUSED_RELEASE_ENABLED` independently control their own stages.
+Existing `LEARNING_ENABLED`, model allowlists, bootstrap principal checks,
+immutable inputs, budget/deadline/monitor enrollment and actual runtime
+authority still apply. Configuration is not a hardware or quality result;
+the aggregate capability never implies real-time or customer learned-motion
+admission. Defaults remain off and no source change turns them on in Azure.
+
+Reference admission allows a new paused bootstrap definition with a verified
+train-only parent, not a fabricated P0 release. Starting bounded training
+requires verified train data, licensed/pinned parent, hardware, operator cost
+approval and deadline-monitor enrollment, **not** an already trained quality-passed
+policy. A candidate uses a separately bounded evaluation grant. Release requires
+the complete physical quality evidence and deliberate review. These stages do
+not depend circularly on outcomes that they have not yet produced.
+
+### Reviewed reference collection, not manual paused teaching
+
+The first paused data-generation UI is explicitly `reference_controller`.
+It accepts only an immutable approved case ID and an explicit motion approval;
+it accepts no grant JSON, authorization ID, source override, model path or expiry.
+The old human `TeachingStart`/jog route is unavailable for paused projects and
+is not relabeled as automated teaching. Manual paused control remains unimplemented.
+
+The private worker reads an operator-owned record only at
+`tenants/<tenant>/owners/<owner>/learning/projects/<project_id>/reference-authorizations/<case_id>.json`.
+It is a closed `physicalai.reference-authorization/v1` envelope containing
+the typed `PausedOperatorGrant`, its **original** `grant_document_json`,
+`runtime_catalog_record_sha256`, project/case and profile/criteria/frozen-plan
+hashes, and optional paired G0 proof artifact ID/SHA. The installed record hash
+is SHA256 of exact UTF-8 file bytes, including whitespace/newline; it is not
+the canonical hash used for criteria and scene conditions. Duplicate keys,
+changed raw bytes, wrong purpose/owner/case/task/profile, future/expired grants
+and renewed budgets fail before motion.
+
+The deployment operator must independently install the same pinned authority
+in the simulator. A worker registry lookup is not runtime installation and
+does not create authority: the runtime's `OperatorPausedAuthority` must again
+validate the current source/image/tenant, case, original expiry and command.
+No browser/API route publishes or renews that operator record. Actual safe,
+full reference G0 proof is a deployment prerequisite, not inferred from the
+optional proof pointer or a CPU test.
+
+The API captures a fresh owner-scoped observation, pins the original reference
+command under a conditional claim, and submits only `/v1/simulation-episodes`.
+The expiry is the earliest of the original grant, resolved authority, saved
+case wall ceiling and project ceiling; SIM ticks are bounded by every approved
+case/plan/authority limit. Legacy `execution.max_step_seconds` stays a wall cap
+for the old routes. Retries reconcile the original ID and never repeat motion.
+Cancellation ACKs remain pending; old polls cannot revive terminal motion.
+
+`ReferenceCollection` records retain the approved case, command, source/image
+and exact runtime-record hash, actual WALL/SIM/control receipts and capture
+state. A successful command without error-free matching timing/ticks, actual
+reference actions and measured arrival is not accepted. The asynchronous
+capture verifier additionally checks the original command, runtime source/image
+and complete raw manifest before readiness. Dataset requests may include
+`reference_collection_ids`; only physically succeeded, verified captures are
+eligible. Their source counts remain reference, never human. Omitting this
+new selector preserves the legacy dataset request fingerprint.
 
 The private bridge has separate `SimulationEpisodeCommand` /
 `SimulationEpisodeExecution` API DTOs for `/v1/simulation-episodes` and its

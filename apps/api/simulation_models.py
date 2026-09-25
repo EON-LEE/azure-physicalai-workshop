@@ -24,6 +24,8 @@ class EpisodeTask(Model):
 
 
 class SimulationEpisodeCommand(Model):
+    model_config = ConfigDict(serialize_by_alias=True)
+
     schema_version: Literal["physicalai.simulation-episode-command/v1"] = Field(alias="schema")
     execution_timing: Literal["paused_simulation"]
     real_time_admission: Literal[False]

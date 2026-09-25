@@ -1,20 +1,24 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Download } from 'lucide-react';
 import { isAbort } from '../api/errors';
 import { useRequestScope } from '../hooks/useRequestScope';
 import { Badge, ErrorNotice, FieldValue } from '../ui/common';
-import type { LearningApi } from './contracts';
+import type { LearningApi, PolicyRelease, Resource } from './contracts';
 import type { SimulationReport } from './simulationReports';
 
 const labels = { before: 'P0', after: 'P1', reference: '기준 제어기', candidate: '최초 후보' };
 const number = (value: number) => new Intl.NumberFormat('ko-KR', { maximumFractionDigits: 3 }).format(value);
 
-export function SimulationComparison({ api, jobId, jobStatus, report }: {
+export function SimulationComparison({ api, jobId, jobStatus, report, candidateId, etag, releaseAllowed = false, onReleased }: {
   api: LearningApi; jobId: string; jobStatus: string; report: SimulationReport;
+  candidateId?: string; etag?: string; releaseAllowed?: boolean; onReleased?(value: Resource<PolicyRelease>): void;
 }) {
   const [url, setUrl] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
+  const [reviewed, setReviewed] = useState(false);
+  const [released, setReleased] = useState<Resource<PolicyRelease> | null>(null);
+  const releaseId = useRef(crypto.randomUUID());
   const requestScope = useRequestScope();
   useEffect(() => () => { if (url) URL.revokeObjectURL(url); }, [url]);
   const download = async () => {
@@ -66,7 +70,21 @@ export function SimulationComparison({ api, jobId, jobStatus, report }: {
         </tr>)}</tbody>
       </table></div>
       <p className="form-hint">위치만으로 성공을 만들지 않습니다. 실제 틱의 이동·finger gap 기반 파지와 해제·안정화 증거이며, 접촉 센서를 측정했다고 주장하지 않습니다.</p>
-      <p>별도 시뮬레이션 정책 게시·실행은 아직 승인되지 않았습니다. 이 보고서를 기존 실시간 release로 바꾸지 않습니다.</p>
+      <p>이 보고서는 기존 실시간 release로 바꾸지 않습니다. 모델 품질 검토와 정책 게시, 실제 설치·고객 실행 승인은 별개입니다.</p>
+      {releaseAllowed && <div className="inline-note">
+        <label className="checkbox-label"><input type="checkbox" checked={reviewed} onChange={(event) => setReviewed(event.target.checked)} disabled={busy || Boolean(released)} />실패를 포함한 전체 시뮬레이션 평가와 원본 SHA를 검토했습니다</label>
+        <button type="button" className="button" disabled={!candidateId || !etag || !reviewed || busy || Boolean(released) || jobStatus !== 'succeeded' || !report.quality_gate_passed ||
+          (report.comparison_kind !== 'reference_bootstrap' && report.conclusion !== 'improved')} onClick={async () => {
+          if (!candidateId || !etag) { setError(new Error('게시할 후보와 원래 평가 버전을 확인할 수 없습니다.')); return; }
+          setBusy(true); setError(null);
+          try {
+            const result = await api.release({ request_id: releaseId.current, candidate_id: candidateId, evaluation_run_id: jobId, release_approved: true }, etag);
+            setReleased(result); onReleased?.(result);
+          } catch (failure) { setError(failure); }
+          finally { setBusy(false); }
+        }}>검토한 시뮬레이션 전용 정책 게시</button>
+        {released && <p role="status">시뮬레이션 전용 release: <code>{released.item.id}</code> · runtime 설치와 실제 고객 실행은 별도입니다.</p>}
+      </div>}
       <button type="button" className="button secondary" disabled={busy} onClick={() => void download()}><Download size={16} aria-hidden="true" />{busy ? '검증된 원본을 불러오는 중…' : '전체 원본 보고서 불러오기'}</button>
       {url && <p role="status"><a href={url} download={`simulation-report-${jobId}.json`}>검증된 전체 JSON 저장</a></p>}
       <p className="small-text">원본 SHA256: <code>{report.report_sha256}</code></p>

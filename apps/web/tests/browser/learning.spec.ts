@@ -1,5 +1,29 @@
 import { expect, test } from '@playwright/test';
 
+test('reference-only stage uses deliberate keyboard approval without manual or paid motion', async ({ page }) => {
+  await page.goto('/?scenario=learning-reference&view=learning');
+  await expect(page.getByRole('note')).toContainText('Azure / GPU 동작 검증이 아닙니다');
+  await page.getByLabel('학습 프로젝트', { exact: true }).selectOption({ label: 'TEST-ONLY REFERENCE 작업' });
+  const start = page.getByRole('button', { name: '승인한 REFERENCE 시연 생성' });
+  await expect(start).toBeDisabled();
+  await page.getByLabel('기준 시연 배치').selectOption('train-anchor');
+  await page.getByRole('checkbox', { name: '선택한 배치의 검토된 기준 제어기 이동을 승인합니다' }).focus();
+  await page.keyboard.press('Space');
+  await page.keyboard.press('Tab');
+  await expect(start).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(page.getByText('REFERENCE · running · 캡처 pending')).toBeVisible();
+  await expect(page.getByText('실제 WALL 시간 (ms)')).toBeVisible();
+  await expect(page.getByText('실제 SIM 시간 (초)')).toBeVisible();
+  await expect(page.getByRole('button', { name: '새 직접 시연 세션 시작' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '검증된 데이터로 제한된 학습 제출' })).toBeDisabled();
+  const trace = await page.evaluate(() => window.__learningFixture);
+  expect(trace.referenceRequests).toEqual([{
+    request_id: expect.any(String), case_id: 'train-anchor', motion_approved: true,
+  }]);
+  expect(trace.calls.some((call) => ['teach', 'arm', 'jog', 'train', 'evaluate'].includes(call))).toBe(false);
+});
+
 test('seventy owner environments remain browsable with bounded case rows and retained selection', async ({ page }) => {
   await page.goto('/?scenario=learning-pages&view=learning');
   await expect(page.getByRole('note')).toContainText('Azure / GPU 동작 검증이 아닙니다');

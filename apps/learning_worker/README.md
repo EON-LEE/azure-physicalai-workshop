@@ -32,6 +32,11 @@ Environment prefix is `LEARNING_WORKER_`:
   origin/container. A capture URL must exactly match owner/episode/manifest.
 - `ALLOWED_POLICY_TYPES`: JSON array; **empty until license/hardware approval**.
 - `BOOTSTRAP_OWNER_IDS`: JSON array; empty by default.
+- `REFERENCE_COLLECTIONS_ENABLED=false`: read-only lookup of an operator's
+  exact reference authorization; not a grant-creation or runtime-installation API.
+- `PAUSED_TRAINING_ENABLED=false`, `PAUSED_EVALUATION_ENABLED=false`: separate
+  stage admission, still requiring original native config, artifact, cost,
+  managed-identity, hardware and fresh monitor-enrollment checks.
 - `RECONCILIATION_ENABLED=false`, `RECONCILIATION_ACTOR_IDS=[]` and
   `RECONCILIATION_TARGETS=[]`: independently deployed deadline monitor enrollment.
   A model allowlist alone cannot bypass this separate paid-admission gate.
@@ -100,6 +105,35 @@ python -m pytest tests/test_learning_worker_infra.py -q
 ```
 
 ## Durable claims and SDK adapter
+
+### Reference authority catalog
+
+The protected lookup
+`GET /v1/learning/projects/{project_id}/reference-authorizations/{case_id}`
+is disabled by default. It accepts only a UUID project and validated case
+identifier in the authenticated actor's owner partition. The fixed registry
+path is `projects/<project_id>/reference-authorizations/<case_id>.json`
+under that owner's normal prefix; no URL or caller blob path is accepted.
+There is no write endpoint for authority.
+
+The operator-provisioned envelope is `physicalai.reference-authorization/v1`
+with `operator_grant` matching the runtime's `PausedOperatorGrant`,
+`grant_document_json` retaining the exact installed UTF-8 file,
+`runtime_catalog_record_sha256`, project/case/profile/criteria/frozen-plan
+pins and optional paired `reference_g0_proof_artifact_id` /
+`reference_g0_proof_sha256`. Runtime record hashes cover exact file bytes;
+criteria/scene-plan hashes cover canonical parsed JSON. The service rejects
+duplicate keys and mismatches rather than reserializing away the difference.
+
+The simulator must already have independently loaded that same authority and
+must validate the actual runtime source, image, tenant, case and original
+expiry at dispatch. Publishing a registry record alone cannot make that true.
+The optional proof pointers do not substitute for actual full reference-task
+G0 acceptance or authorize learning. Reference, bounded training, candidate
+evaluation and quality-reviewed release are distinct default-off stages;
+there is no requirement to have a quality-passed P0 before bootstrap training
+can produce one. No flag enables manual paused controls or relabels scripted
+motion as human input.
 
 `PolicyLearningWorker` wraps the learner-owned closed model registry:
 `learning.smolvla.azure.PolicyJobs`/`create_plan` for explicit `smolvla`,

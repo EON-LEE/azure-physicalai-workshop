@@ -24,13 +24,17 @@ from apps.api.learning_models import (
     TrainingRun,
 )
 from apps.api.models import DemonstrationResult, Execution, Identifier, Principal, Revision, Stored
+from apps.api.reference_models import ReferenceCollection
 from apps.api.simulation_reports import SimulationReport
 
 
 class LearningStore(Protocol):
     def get_learning(self, owner: str, kind: str, resource_id: UUID) -> Stored | None: ...
     def put_learning(
-        self, owner: str, record: LearningRecord | ArtifactOperationRecord, etag: str | None
+        self,
+        owner: str,
+        record: LearningRecord | ArtifactOperationRecord | ReferenceCollection,
+        etag: str | None,
     ) -> Stored: ...
     def list_learning(
         self, owner: str, kind: str, project_id: UUID | None = None

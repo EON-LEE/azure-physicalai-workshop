@@ -37,4 +37,8 @@ def azure_learning_service(configuration, factory):
         coach=coach,
         bootstrap_principal_ids=configuration.learning_bootstrap_principal_ids,
         allowed_policy_types=configuration.learning_policy_types,
+        reference_collections_enabled=configuration.learning_reference_collections_enabled,
+        paused_training_enabled=configuration.learning_paused_training_enabled,
+        paused_evaluation_enabled=configuration.learning_paused_evaluation_enabled,
+        paused_release_enabled=configuration.learning_paused_release_enabled,
     ), resources

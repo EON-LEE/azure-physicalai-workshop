@@ -78,6 +78,13 @@ param artifactDatasetBytes int = 21474836480
 @maxValue(100000)
 param artifactMaxFiles int = 100000
 
+@description('Reference/data preparation only; operator enables after actual reference G0 proof.')
+param referenceCollectionsEnabled bool = false
+@description('Bounded paused training admission; never implies learned policy quality.')
+param pausedTrainingEnabled bool = false
+@description('Bounded candidate evaluation admission; not production learned execution.')
+param pausedEvaluationEnabled bool = false
+
 resource workerIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' existing = {
   name: last(split(workerIdentityResourceId, '/'))
   scope: resourceGroup(split(workerIdentityResourceId, '/')[2], split(workerIdentityResourceId, '/')[4])
@@ -132,6 +139,9 @@ resource worker 'Microsoft.App/containerApps@2025-07-01' = {
           { name: 'LEARNING_WORKER_ARTIFACT_CAPTURE_BYTES', value: string(artifactCaptureBytes) }
           { name: 'LEARNING_WORKER_ARTIFACT_DATASET_BYTES', value: string(artifactDatasetBytes) }
           { name: 'LEARNING_WORKER_ARTIFACT_MAX_FILES', value: string(artifactMaxFiles) }
+          { name: 'LEARNING_WORKER_REFERENCE_COLLECTIONS_ENABLED', value: string(referenceCollectionsEnabled) }
+          { name: 'LEARNING_WORKER_PAUSED_TRAINING_ENABLED', value: string(pausedTrainingEnabled) }
+          { name: 'LEARNING_WORKER_PAUSED_EVALUATION_ENABLED', value: string(pausedEvaluationEnabled) }
         ]
         probes: [
           {

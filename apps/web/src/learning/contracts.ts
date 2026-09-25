@@ -117,6 +117,44 @@ export const teachingSchema = z.object({
   verification_status: z.enum(['queued', 'running', 'ready', 'failed', 'timed_out', 'uncertain']).nullable().optional(),
   error_code: z.string().nullable(), message: z.string().nullable(),
 }).superRefine(consistentTiming);
+export const referenceCollectionSchema = z.object({
+  ...base, ...timingMetadata, kind: z.literal('reference_collection'),
+  project_id: id, teaching_case: teachingCaseSchema, source: z.literal('reference_controller'),
+  command_id: id, epoch: id,
+  command: z.object({
+    schema: z.literal('physicalai.simulation-episode-command/v1'),
+    execution_timing: z.literal('paused_simulation'), real_time_admission: z.literal(false),
+    profile_id: z.literal('franka-position-hold-10hz-paused-v1'),
+    controller: z.literal('reference_controller'), authorization_kind: z.literal('reference_collection'),
+    authorization_id: id, wall_expires_at: date, max_simulation_steps: z.number().int().min(6).max(1800).multipleOf(6),
+  }),
+  target_position_m: z.tuple([z.number(), z.number(), z.number()]), goal_tolerance_m: z.number().positive().max(.04),
+  runtime_catalog_record_sha256: sha, source_revision: z.string(), simulator_image_digest: z.string(),
+  status: z.enum(['starting', 'running', 'cancelling', 'succeeded', 'failed', 'cancelled', 'timed_out', 'unconfirmed']),
+  execution: z.object({
+    command_id: id, status: z.string(),
+    final_position: z.tuple([z.number(), z.number(), z.number()]).nullable().optional(),
+    simulation_runtime: z.object({
+      execution_timing: z.literal('paused_simulation'), real_time_admission: z.literal(false),
+      controller: z.literal('reference_controller'), control_profile_sha256: sha,
+      phase: z.enum(['queued', 'observing', 'predicting', 'applying', 'idle', 'stopped']), wall_elapsed_ms: z.number().nonnegative(), simulation_steps: count.max(1800),
+      simulation_elapsed_seconds: z.number().min(0).max(30.000001), policy_predict_calls: z.literal(0),
+      applied_model_sha256: z.null(), applied_action_count: count, reference_route_calls: count,
+    }),
+  }).nullable(),
+  capture_status: z.enum(['pending', 'verifying', 'ready', 'invalid']),
+  capture: captureSchema.nullable(), artifact_operation_id: id.nullable(),
+  error_code: z.string().nullable(), message: z.string().nullable(),
+}).superRefine((value, context) => {
+  consistentTiming(value, context);
+  if (value.execution_timing !== 'paused_simulation' || value.real_time_admission !== false ||
+    (value.execution && (value.execution.command_id !== value.command_id ||
+      value.execution.simulation_runtime.control_profile_sha256 !== value.control_profile_sha256)) ||
+    (value.capture_status === 'ready' && !value.capture)) {
+    context.addIssue({ code: 'custom', message: 'Reference timing, command and evidence must match.' });
+  }
+});
+export type ReferenceCollection = z.infer<typeof referenceCollectionSchema>;
 const jobStatus = z.enum(['submitting', 'submission_unknown', 'submitted', 'running', 'cancelling', 'succeeded', 'failed', 'cancelled', 'timed_out', 'blocked']);
 const jobBase = {
   ...timingMetadata,
@@ -185,14 +223,15 @@ export const candidateSchema = z.object({
   source_commit: z.string(), model_revision: z.string(), control_profile_id: timingProfile,
 }).superRefine(consistentTiming);
 export const releaseSchema = z.object({
+  ...timingMetadata,
   ...base, kind: z.literal('release'), project_id: id, candidate_id: id, evaluation_run_id: id,
   policy_type: z.enum(['gr00t_n1_5', 'gr00t_n1_7', 'smolvla', 'act_auxiliary']), model_sha256: sha, processor_sha256: sha,
   manifest_sha256: sha, artifact_id: id, environment_id: z.string(), revision: sha,
   task_id: z.string(), goal_station_id: z.string(), instruction: z.string(),
-  control_profile_id: profile, evaluation_plan_sha256: sha, reviewed_by: id,
+  control_profile_id: timingProfile, evaluation_plan_sha256: sha, reviewed_by: id,
   comparison_kind: z.enum(['paired_policy', 'reference_bootstrap']),
   environment_cases: z.array(z.object({ environment_id: z.string(), revision: sha })),
-});
+}).superRefine(consistentTiming);
 export const grantSchema = z.object({
   ...base, kind: z.literal('control_grant'), session_id: id, lease_id: id, epoch: id,
   sequence: z.number().int().positive(), delta_xyz_m: z.tuple([z.number(), z.number(), z.number()]),
@@ -202,6 +241,10 @@ export const simulationLearningSchema = z.object({
   execution_timing: z.literal('paused_simulation'), real_time_admission: z.literal(false),
   supported: z.literal(true), enabled: z.boolean(),
   status: z.string(), message: z.string(),
+  reference_generation_enabled: z.boolean().default(false),
+  training_enabled: z.boolean().default(false),
+  evaluation_enabled: z.boolean().default(false),
+  release_enabled: z.boolean().default(false),
 });
 export type SimulationLearningCapability = z.infer<typeof simulationLearningSchema>;
 export const capabilitiesSchema = z.object({
@@ -222,7 +265,7 @@ export const coachSchema = z.object({
   }),
 });
 export const jobSchema = z.discriminatedUnion('kind', [trainingSchema, evaluationSchema]);
-export const recordSchema = z.discriminatedUnion('kind', [projectSchema, teachingSchema, datasetSchema, trainingSchema, evaluationSchema, candidateSchema, releaseSchema]);
+export const recordSchema = z.discriminatedUnion('kind', [projectSchema, teachingSchema, referenceCollectionSchema, datasetSchema, trainingSchema, evaluationSchema, candidateSchema, releaseSchema]);
 export const resource = <T extends z.ZodType>(item: T) => z.object({ item, etag: z.string().min(1) });
 export const resourceList = <T extends z.ZodType>(item: T) => z.object({ items: z.array(resource(item)).max(50) });
 export type Project = z.infer<typeof projectSchema>;
@@ -258,7 +301,10 @@ export interface LearningApi {
   arm(id: string, body: JogBody, etag: string, signal?: AbortSignal): Promise<Resource<Grant>>;
   jog(id: string, body: JogBody, etag: string, signal?: AbortSignal): Promise<Resource<Teaching>>;
   teachingControl(id: string, action: 'finish' | 'cancel', body: { request_id: string; lease_id: string; epoch: string }, etag: string, signal?: AbortSignal): Promise<Resource<Teaching>>;
-  seal(projectId: string, body: { request_id: string; teaching_session_ids: string[] }, etag: string, signal?: AbortSignal): Promise<Resource<Dataset | ArtifactOperation>>;
+  startReference(projectId: string, body: { request_id: string; case_id: string; motion_approved: true }, etag: string, signal?: AbortSignal): Promise<Resource<ReferenceCollection>>;
+  reference(id: string, signal?: AbortSignal): Promise<Resource<ReferenceCollection>>;
+  cancelReference(id: string, signal?: AbortSignal): Promise<Resource<ReferenceCollection>>;
+  seal(projectId: string, body: { request_id: string; teaching_session_ids: string[]; reference_collection_ids?: string[] }, etag: string, signal?: AbortSignal): Promise<Resource<Dataset | ArtifactOperation>>;
   artifactOperation(id: string, signal?: AbortSignal): Promise<Resource<ArtifactOperation>>;
   dataset(id: string, signal?: AbortSignal): Promise<Resource<Dataset>>;
   train(projectId: string, body: TrainingBody, etag: string, signal?: AbortSignal): Promise<Resource<Job>>;

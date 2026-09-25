@@ -5,8 +5,8 @@ import type { Evaluation, LearningApi, PolicyRelease, Resource } from './contrac
 import { SimulationComparison } from './SimulationComparison';
 
 const conclusion = { improved: '개선 확인', not_improved: '개선 미확인', inconclusive: '평가 결론 불충분' };
-export function PolicyComparison({ api, evaluation, onReleased }: {
-  api: LearningApi; evaluation: Resource<Evaluation>; onReleased?(release: Resource<PolicyRelease>): void;
+export function PolicyComparison({ api, evaluation, onReleased, releaseAllowed = false }: {
+  api: LearningApi; evaluation: Resource<Evaluation>; onReleased?(release: Resource<PolicyRelease>): void; releaseAllowed?: boolean;
 }) {
   const [reviewed, setReviewed] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -15,7 +15,8 @@ export function PolicyComparison({ api, evaluation, onReleased }: {
   const requestId = useRef(crypto.randomUUID());
   const report = evaluation.item.report;
   if (report && 'execution_timing' in report) {
-    return <SimulationComparison api={api} jobId={evaluation.item.id} jobStatus={evaluation.item.status} report={report} />;
+    return <SimulationComparison api={api} jobId={evaluation.item.id} jobStatus={evaluation.item.status} report={report}
+      candidateId={evaluation.item.candidate_id} etag={evaluation.etag} releaseAllowed={releaseAllowed} onReleased={onReleased} />;
   }
   const bootstrap = report?.comparison_kind === 'reference_bootstrap';
   const eligible = evaluation.item.status === 'succeeded' && report?.quality_gate_passed && (report.comparison_kind === 'reference_bootstrap' || report.conclusion === 'improved');

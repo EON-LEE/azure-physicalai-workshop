@@ -19,6 +19,7 @@ from apps.api.learning_models import (
     fingerprint,
 )
 from apps.api.models import DemonstrationResult, utcnow
+from apps.api.reference_models import ReferenceCollection
 from apps.learning_worker.policies import implementation
 
 
@@ -272,6 +273,16 @@ class VerifiedArtifacts:
                 )
             episode = validated.episodes[0].metadata
             self._check_case_metadata(project, case, session.source, episode, manifest)
+            if isinstance(session, ReferenceCollection) and (
+                episode.get("provenance", {}).get("code_revision") != session.source_revision
+                or episode.get("provenance", {}).get("simulator_image_digest")
+                != session.simulator_image_digest
+            ):
+                raise Problem(
+                    409,
+                    "capture_provenance_mismatch",
+                    "Reference runtime source/image differs from its grant.",
+                )
             if (
                 episode.get("episode_id") != str(receipt.episode_id)
                 or episode.get("frame_count") != receipt.frame_count

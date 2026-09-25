@@ -1,9 +1,12 @@
 import type { JogBody, LearningApi, LearningRecord, Resource } from '../../src/learning/contracts';
 import { learningFixture } from '../fixtures/learning-data';
+import { referenceFixture } from '../fixtures/reference-collection';
 
-export interface LearningTrace { calls: string[]; inputs: JogBody[]; }
-export function browserLearning(trace: LearningTrace, enabled: boolean): LearningApi {
+export interface LearningTrace { calls: string[]; inputs: JogBody[]; referenceRequests?: Parameters<LearningApi['startReference']>[1][]; }
+export function browserLearning(trace: LearningTrace, enabled: boolean, referenceOnly = false): LearningApi {
   const data = learningFixture();
+  const reference = referenceFixture();
+  let referenceStarted = false;
   let session = data.teaching;
   const mark = (name: string) => trace.calls.push(name);
   const unsupported = async (): Promise<never> => { throw new Error('TEST ONLY: this operation has no injected response.'); };
@@ -16,12 +19,14 @@ export function browserLearning(trace: LearningTrace, enabled: boolean): Learnin
         execution_timing: 'paused_simulation', real_time_admission: false,
         supported: true, enabled: false, status: 'producer_verifier_unavailable',
         message: 'TEST ONLY: the separate paused runtime and report integration is blocked.',
+        reference_generation_enabled: referenceOnly, training_enabled: false, evaluation_enabled: false, release_enabled: false,
       },
     }; },
-    async projects() { mark('projects'); return { items: [data.project] }; },
+    async projects() { mark('projects'); return { items: [referenceOnly ? reference.project : data.project] }; },
     createProject: unsupported,
     async records(_id, kind) {
       const all: Resource<LearningRecord>[] = [data.dataset, data.training, data.evaluation];
+      if (referenceOnly) return { items: kind === 'reference_collection' && referenceStarted ? [reference.collection] : [] };
       return { items: all.filter((entry) => entry.item.kind === kind) };
     },
     async teach(_id, body) {
@@ -32,6 +37,17 @@ export function browserLearning(trace: LearningTrace, enabled: boolean): Learnin
       return session;
     },
     async teaching() { return session; },
+    async startReference(_id, body) {
+      if (!referenceOnly) return unsupported();
+      mark('reference'); (trace.referenceRequests ??= []).push(body);
+      referenceStarted = true;
+      return reference.collection;
+    },
+    async reference() {
+      if (!referenceOnly || !referenceStarted) return unsupported();
+      return reference.collection;
+    },
+    cancelReference: unsupported,
     async arm(_id, body) { mark('arm'); return { ...data.grant, item: { ...data.grant.item, sequence: body.sequence, delta_xyz_m: body.delta_xyz_m, gripper: body.gripper } }; },
     async jog(_id, body) {
       mark('jog'); trace.inputs.push(body);

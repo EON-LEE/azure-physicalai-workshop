@@ -220,12 +220,22 @@ The controls below belong to the separately protected operator area.
   contract, a new-project mode selector shows `NON_REALTIME_SIMULATION`, the
   separate per-case 30 SIM / 600 WALL caps, required profile/criteria/scene-plan
   hashes, and an explicit total evaluation WALL budget (7200-second suggestion,
-  maximum 21600). These are draft authorization bounds, not measured durations
-  or an extension of an old project. Current producer/verifier admission is
-  blocked, so no paused save, teaching, paid job or old real-time control is
-  presented as usable. Existing paused project records are read-only with their
-  exact bounds/provenance. Real-time 100 ms / 80 ms qualification remains separate
+  maximum 21600).   These are draft authorization bounds, not measured durations
+  or an extension of an old project. Stage permissions default off; unavailable
+  reference generation, training, evaluation and release actions remain disabled.
+  Existing records retain their exact bounds/provenance. Real-time 100 ms / 80 ms qualification remains separate
   and is never implied by this mode or by a native SDK schema check.
+- **REFERENCE generation:** The separately admitted NRT path says
+  `reference_controller · 수동 시연 아님`. It requires an explicit case selection
+  and motion checkbox, sends only the request/case/approval, and uses a
+  server-resolved operator record that the runtime must independently authorize.
+  No grant JSON, deadline or raw command is editable in this form. Existing
+  collection records can be reopened and reconciled without another motion POST.
+  Actual WALL/SIM values, cancellation pending state and capture verification
+  are shown separately. Only verified reference captures can be sealed, and
+  they never increase human-teleoperation counts. Manual NRT controls are
+  explicitly unavailable. Paid training and all-case evaluation require their
+  own stage/cost approvals; evaluation motion is a separate checkbox.
 - **Paused report summaries:** A verified simulation report displays all forty
   trial outcomes, measured task predicates, separate WALL/SIM durations and
   per-phase nearest-rank latency summaries. It is labeled non-real-time,

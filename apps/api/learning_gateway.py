@@ -185,6 +185,14 @@ class ManagedLearningGateway:
             raise Problem(404, "policy_release_missing", "No reviewed release is registered.")
         return self._parse(PolicyRelease, result)
 
+    def reference_authorization(self, actor, project_id, case_id):
+        from apps.api.reference_models import ReferenceAuthorization
+
+        result = self._request(
+            actor, "GET", f"/v1/learning/projects/{project_id}/reference-authorizations/{case_id}"
+        )
+        return self._parse(ReferenceAuthorization, result)
+
     def training_parent(self, actor, artifact_id: UUID):
         result = self._request(actor, "GET", f"/v1/learning/training-parents/{artifact_id}")
         if result is None:

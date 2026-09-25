@@ -72,7 +72,7 @@ function call(name: string, signal?: AbortSignal) {
 }
 
 const api: ConsoleApi = {
-  learning: scenario.startsWith('learning') ? browserLearning(learningTrace, scenario !== 'learning-off') : undefined,
+  learning: scenario.startsWith('learning') ? browserLearning(learningTrace, scenario !== 'learning-off', scenario === 'learning-reference') : undefined,
   async getRuntime(signal) {
     call('runtime', signal);
     if (activeRuntime.simulation.status === 'loading' && ++activationPolls >= 2) {

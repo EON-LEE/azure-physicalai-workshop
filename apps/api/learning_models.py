@@ -557,13 +557,22 @@ class TeachingSession(OwnedRecord, TimingMetadata):
 
 
 class CreateDataset(Approval):
-    teaching_session_ids: tuple[UUID, ...] = Field(min_length=1, max_length=1000)
+    teaching_session_ids: tuple[UUID, ...] = Field(default=(), max_length=1000)
+    reference_collection_ids: tuple[UUID, ...] = Field(default=(), max_length=1000)
 
     @model_validator(mode="after")
     def unique_sessions(self):
-        if len(set(self.teaching_session_ids)) != len(self.teaching_session_ids):
+        ids = self.teaching_session_ids + self.reference_collection_ids
+        if not ids or len(ids) > 1000 or len(set(ids)) != len(ids):
             raise ValueError("A teaching session may occur only once in a dataset.")
         return self
+
+    @model_serializer(mode="wrap")
+    def legacy_dataset_request(self, handler: SerializerFunctionWrapHandler):
+        value = handler(self)
+        if not self.reference_collection_ids:
+            value.pop("reference_collection_ids", None)
+        return value
 
 
 class DatasetVersion(OwnedRecord, TimingMetadata):

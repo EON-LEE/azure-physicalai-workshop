@@ -2,7 +2,7 @@ from contextlib import asynccontextmanager
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, Header, Request
+from fastapi import Depends, FastAPI, Header, Path, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import Field, ValidationError, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -39,6 +39,9 @@ class WorkerSettings(BaseSettings):
     reconciliation_actor_ids: frozenset[UUID] = Field(default=frozenset(), max_length=20)
     reconciliation_targets: tuple[ReconciliationTarget, ...] = Field(default=(), max_length=20)
     artifact_ops_enabled: bool = False
+    reference_collections_enabled: bool = False
+    paused_training_enabled: bool = False
+    paused_evaluation_enabled: bool = False
     artifact_actor_ids: frozenset[UUID] = Field(default=frozenset(), max_length=20)
     artifact_max_seconds: int = Field(default=1800, ge=1, le=1800)
     artifact_capture_bytes: int = Field(default=4 * 1024**3, ge=1, le=4 * 1024**3)
@@ -100,6 +103,8 @@ def create_worker(settings: WorkerSettings | None = None, operations=None, ident
                 reconciliation_enabled=configuration.reconciliation_enabled,
                 reconciliation_actor_ids=configuration.reconciliation_actor_ids,
                 reconciliation_targets=configuration.reconciliation_targets,
+                paused_training_enabled=configuration.paused_training_enabled,
+                paused_evaluation_enabled=configuration.paused_evaluation_enabled,
             )
             from apps.learning_worker.artifact_operations import ArtifactOperations
             from apps.learning_worker.artifact_runner import ArtifactRunner
@@ -272,6 +277,20 @@ def create_worker(settings: WorkerSettings | None = None, operations=None, ident
         release_id: UUID, request: Request, actor: Annotated[Principal, Depends(read_actor)]
     ):
         return request.app.state.worker.registry.release(actor, release_id)
+
+    @app.get(
+        "/v1/learning/projects/{project_id}/reference-authorizations/{case_id}",
+        dependencies=[Depends(controller)],
+    )
+    def reference_authorization(
+        project_id: UUID,
+        case_id: Annotated[str, Path(pattern=r"^[a-z][a-z0-9-]{0,63}$")],
+        request: Request,
+        actor: Annotated[Principal, Depends(read_actor)],
+    ):
+        if not configuration.reference_collections_enabled:
+            raise Problem(503, "reference_phase_disabled", "Reference collection is not admitted.")
+        return request.app.state.worker.registry.reference_authorization(actor, project_id, case_id)
 
     @app.get("/v1/learning/training-parents/{artifact_id}", dependencies=[Depends(controller)])
     def parent(

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 from pathlib import Path, PurePosixPath
 from typing import Literal
 from uuid import UUID
@@ -264,6 +265,27 @@ class BlobRegistry:
         if value is None:
             raise Problem(404, "policy_release_missing", "No reviewed policy is registered.")
         return PolicyRelease.model_validate(value)
+
+    def reference_authorization(self, actor, project_id: UUID, case_id: str):
+        from apps.api.reference_models import ReferenceAuthorization
+
+        if not re.fullmatch(r"[a-z][a-z0-9-]{0,63}", case_id):
+            raise Problem(
+                422,
+                "invalid_reference_case",
+                "A reference case must be a fixed approved identifier.",
+            )
+        value = self.get(actor, f"projects/{project_id}/reference-authorizations/{case_id}.json")
+        if value is None:
+            raise Problem(
+                503,
+                "reference_authority_missing",
+                "No operator-installed reference authority exists.",
+            )
+        result = ReferenceAuthorization.model_validate(value)
+        if result.project_id != project_id or result.case_id != case_id:
+            raise Problem(409, "reference_grant_mismatch", "Reference catalog scope differs.")
+        return result
 
     def training_parent(self, actor, artifact_id: UUID):
         value = self.get(actor, f"training-parents/{artifact_id}.json")

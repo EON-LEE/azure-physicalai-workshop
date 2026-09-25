@@ -40,11 +40,13 @@ from apps.api.models import (
     Stored,
     utcnow,
 )
+from apps.api.reference_models import REFERENCE_TERMINAL, ReferenceCollection
 
 log = logging.getLogger(__name__)
 T = TypeVar("T")
 M = TypeVar("M", bound=BaseModel)
 LEARNING_MODELS = {
+    "reference_collection": ReferenceCollection,
     "artifact_operation": ArtifactOperationRecord,
     "project": LearningProject,
     "teaching": TeachingSession,
@@ -59,6 +61,16 @@ LEARNING_MODELS = {
     "coach": CoachRecord,
 }
 LEARNING_MUTABLE = {
+    "reference_collection": {
+        "updated_at",
+        "status",
+        "execution",
+        "capture_status",
+        "capture",
+        "artifact_operation_id",
+        "error_code",
+        "message",
+    },
     "artifact_operation": {
         "updated_at",
         "status",
@@ -328,7 +340,7 @@ class CosmosStore:
     def put_learning(
         self,
         owner: str,
-        record: LearningRecord | ArtifactOperationRecord,
+        record: LearningRecord | ArtifactOperationRecord | ReferenceCollection,
         etag: str | None,
     ) -> Stored:
         model = LEARNING_MODELS[record.kind]
@@ -385,6 +397,33 @@ class CosmosStore:
                 if record.last_sequence < current.value.last_sequence:
                     raise Problem(
                         409, "teaching_sequence", "Teaching input sequence cannot regress."
+                    )
+            if record.kind == "reference_collection":
+                if current.value.status in REFERENCE_TERMINAL and (
+                    record.status != current.value.status
+                    or record.execution != current.value.execution
+                ):
+                    raise Problem(
+                        409,
+                        "immutable_learning_record",
+                        "Terminal reference motion cannot be revived.",
+                    )
+                if current.value.capture_status in ("ready", "invalid") and (
+                    record.capture_status != current.value.capture_status
+                    or record.capture != current.value.capture
+                ):
+                    raise Problem(
+                        409,
+                        "immutable_learning_record",
+                        "Terminal reference capture cannot change.",
+                    )
+                if current.value.artifact_operation_id is not None and (
+                    record.artifact_operation_id != current.value.artifact_operation_id
+                ):
+                    raise Problem(
+                        409,
+                        "immutable_learning_record",
+                        "Original capture operation cannot change.",
                     )
             if record.kind == "mutation" and current.value.status != "claimed" and changed:
                 raise Problem(

@@ -61,12 +61,21 @@ from apps.api.models import (
     Stored,
     utcnow,
 )
+from apps.api.reference_models import (
+    REFERENCE_TERMINAL,
+    ReferenceCollection,
+    StartReferenceCollection,
+)
 from apps.api.service import FactoryService, check_fresh, content_hash
+from apps.api.simulation_models import SimulationEpisodeCommand, SimulationEpisodeExecution
 from apps.api.simulation_reports import SimulationReport, validate_report_binding
-from contracts.validate_environment import validate_environment
+from contracts.validate_environment import (
+    validate_environment,
+    validate_paused_learning_environment,
+)
 
 log = logging.getLogger(__name__)
-R = TypeVar("R", bound=LearningRecord | ArtifactOperationRecord)
+R = TypeVar("R", bound=LearningRecord | ArtifactOperationRecord | ReferenceCollection)
 
 
 def require_etag(stored: Stored, expected: str | None) -> None:
@@ -113,6 +122,10 @@ class LearningService:
         coach=None,
         bootstrap_principal_ids: frozenset[UUID] = frozenset(),
         allowed_policy_types: tuple[LearnedPolicyType, ...] = (),
+        reference_collections_enabled: bool = False,
+        paused_training_enabled: bool = False,
+        paused_evaluation_enabled: bool = False,
+        paused_release_enabled: bool = False,
     ) -> None:
         self.factory = factory
         self.store = store
@@ -124,6 +137,10 @@ class LearningService:
         self.coach = coach
         self.bootstrap_principal_ids = bootstrap_principal_ids
         self.allowed_policy_types = allowed_policy_types
+        self.reference_collections_enabled = reference_collections_enabled
+        self.paused_training_enabled = paused_training_enabled
+        self.paused_evaluation_enabled = paused_evaluation_enabled
+        self.paused_release_enabled = paused_release_enabled
 
     def capabilities(self, actor: Principal | None = None) -> dict:
         integrated = all(
@@ -136,6 +153,7 @@ class LearningService:
                 self.allowed_policy_types,
             )
         )
+        paused_configured = self.enabled and integrated
         return {
             "enabled": self.enabled and integrated,
             "status": "configured"
@@ -159,10 +177,25 @@ class LearningService:
                 "real_time_admission": False,
                 "supported": True,
                 "enabled": False,
-                "status": "producer_verifier_unavailable",
+                "reference_generation_enabled": paused_configured
+                and self.reference_collections_enabled,
+                "training_enabled": paused_configured and self.paused_training_enabled,
+                "evaluation_enabled": paused_configured and self.paused_evaluation_enabled,
+                "release_enabled": paused_configured and self.paused_release_enabled,
+                "status": "staged_configuration_not_verification"
+                if paused_configured
+                and any(
+                    (
+                        self.reference_collections_enabled,
+                        self.paused_training_enabled,
+                        self.paused_evaluation_enabled,
+                        self.paused_release_enabled,
+                    )
+                )
+                else "producer_verifier_unavailable",
                 "message": (
-                    "The separate non-real-time contract is defined, but end-to-end runtime, "
-                    "model and evaluation adapters are not admitted. No fallback or paid work."
+                    "Each simulation-only stage requires separate operator admission and exact "
+                    "runtime/artifact authority. Configuration is not learned-policy proof."
                 ),
             },
         }
@@ -267,9 +300,14 @@ class LearningService:
                 "No verified license and hardware admission exists for this pinned policy type.",
             )
 
-    @staticmethod
-    def _timing_admission(project: LearningProject) -> None:
-        if project.execution_timing == "paused_simulation":
+    def _timing_admission(self, project: LearningProject, stage="reference") -> None:
+        admitted = {
+            "reference": self.reference_collections_enabled,
+            "training": self.paused_training_enabled,
+            "evaluation": self.paused_evaluation_enabled,
+            "release": self.paused_release_enabled,
+        }[stage]
+        if project.execution_timing == "paused_simulation" and not admitted:
             raise Problem(
                 503,
                 "paused_learning_unavailable",
@@ -560,15 +598,30 @@ class LearningService:
             )
         return environment
 
-    def _verify_cases(self, actor, plan, *, goal_station_id, robot_profile):
+    @staticmethod
+    def _check_timing_scene(project, environment):
+        if project.execution_timing == "paused_simulation" and (
+            validate_paused_learning_environment(environment.document)
+            or environment.document["learning_execution"]["profile_id"]
+            != project.control_profile_id
+        ):
+            raise Problem(
+                409,
+                "paused_execution_required",
+                "Every frozen case needs explicit paused authority.",
+            )
+
+    def _verify_cases(self, actor, plan, *, goal_station_id, robot_profile, project=None):
         for case in plan.cases:
-            self._case_environment(
+            environment = self._case_environment(
                 actor,
                 case,
                 goal_station_id=goal_station_id,
                 robot_profile=robot_profile,
                 split="test",
             )
+            if project is not None:
+                self._check_timing_scene(project, environment)
 
     def create_project(self, actor: Principal, body: CreateProject) -> Stored[LearningProject]:
         self._enabled()
@@ -578,6 +631,7 @@ class LearningService:
             return existing
         self._timing_admission(record)
         environment = self._saved_scene(actor, body.environment_id, body.revision)
+        self._check_timing_scene(record, environment)
         if body.goal_station_id not in {item["id"] for item in environment.document["stations"]}:
             raise Problem(422, "unknown_task_goal", "Select a goal in the pinned environment.")
         if body.project_kind == "bootstrap":
@@ -590,27 +644,36 @@ class LearningService:
                     "The exact training-parent model family must match.",
                 )
         else:
-            baseline = self._baseline(actor, body.baseline_release_id)
+            baseline = self._baseline(
+                actor, body.baseline_release_id, execution_timing=body.execution_timing
+            )
             if baseline.task_id != body.task_id or baseline.policy_type != body.policy_type:
                 raise Problem(
                     409, "baseline_task_mismatch", "The baseline belongs to a different task."
                 )
         self._policy(body.policy_type)
+        parent = parent if body.project_kind == "bootstrap" else baseline
+        if not parent.matches_timing(record):
+            raise Problem(
+                409, "parent_timing_mismatch", "The immutable parent timing/provenance differs."
+            )
         robot_profile = environment.document["scene"]["robot_profile"]
         self._verify_cases(
             actor,
             body.evaluation_plan,
             goal_station_id=body.goal_station_id,
             robot_profile=robot_profile,
+            project=record,
         )
         for case in body.teaching_cases:
-            self._case_environment(
+            case_environment = self._case_environment(
                 actor,
                 case,
                 goal_station_id=body.goal_station_id,
                 robot_profile=robot_profile,
                 split=case.split,
             )
+            self._check_timing_scene(record, case_environment)
         return self._claim(actor, record)[0]
 
     def train(
@@ -627,7 +690,7 @@ class LearningService:
         context = self.get(actor, "project", project_id)
         require_etag(context, etag)
         project = context.value
-        self._timing_admission(project)
+        self._timing_admission(project, "training")
         self._policy(project.policy_type)
         if body.policy_type != project.policy_type:
             raise Problem(
@@ -652,12 +715,20 @@ class LearningService:
             self._bootstrap_actor(actor)
             parent = self._training_parent(actor, project.pretrained_artifact_id)
         else:
-            baseline = self._baseline(actor, body.parent_release_id)
+            baseline = self._baseline(
+                actor, body.parent_release_id, execution_timing=project.execution_timing
+            )
         if (parent or baseline).policy_type != project.policy_type:
             raise Problem(
                 409,
                 "policy_type_mismatch",
                 "No cross-family fallback or artifact relabeling is allowed.",
+            )
+        if not (parent or baseline).matches_timing(project) or not dataset.matches_timing(project):
+            raise Problem(
+                409,
+                "training_timing_mismatch",
+                "Dataset and parent must retain the frozen timing pins.",
             )
         if body.optimizer_steps > project.budget.optimizer_steps:
             raise Problem(
@@ -849,7 +920,6 @@ class LearningService:
                 raise Problem(503, "regressing_job_metrics", "Worker step count regressed.")
         if target == "succeeded" and isinstance(run, TrainingRun):
             project = self.get(actor, "project", run.project_id).value
-            self._timing_admission(project)
             artifacts = self._dependency(self.artifacts, "Verified learning artifacts")
             candidate = receipt.candidate
             self._check_candidate(actor, project, run, candidate)
@@ -907,11 +977,305 @@ class LearningService:
             raise unavailable("Owner-scoped verified report download")
         return report, method(actor, stored.value, report.report_sha256)
 
+    def start_reference_collection(self, actor, project_id, body: StartReferenceCollection, etag):
+        digest = operation_hash(project_id, "reference_collection", body)
+        existing = self._existing(actor, "reference_collection", body.request_id, digest)
+        if existing:
+            return self.get_reference_collection(actor, body.request_id)
+        if not self.reference_collections_enabled:
+            raise Problem(503, "reference_phase_disabled", "Reference generation is not admitted.")
+        context = self.get(actor, "project", project_id)
+        require_etag(context, etag)
+        project = context.value
+        if project.execution_timing != "paused_simulation":
+            raise Problem(
+                409,
+                "reference_mode_mismatch",
+                "This route is only for explicit paused reference data.",
+            )
+        case = project.selected_case(body.case_id)
+        environment = self._saved_scene(actor, case.environment_id, case.revision)
+        self._case_environment(
+            actor,
+            case,
+            goal_station_id=project.goal_station_id,
+            robot_profile=environment.document["scene"]["robot_profile"],
+            split=case.split,
+        )
+        if validate_paused_learning_environment(environment.document):
+            raise Problem(
+                409,
+                "paused_execution_required",
+                "The saved case does not authorize paused execution.",
+            )
+        catalog = self._dependency(self.catalog, "Operator-installed reference catalog")
+        authorization = catalog.reference_authorization(actor, project.id, case.case_id)
+        permit = authorization.authorize(actor, project, case)
+        observation = self.factory.bridge.observe(
+            actor.owner_key, case.environment_id, case.revision
+        )
+        self.factory._check_scene(observation, case.environment_id, case.revision)
+        check_fresh(
+            observation, min(2000, environment.document["execution"]["max_observation_age_ms"])
+        )
+        limits = environment.document["learning_execution"]
+        now = utcnow()
+        authorization.authorize(actor, project, case)
+        command = SimulationEpisodeCommand(
+            schema="physicalai.simulation-episode-command/v1",
+            execution_timing="paused_simulation",
+            real_time_admission=False,
+            profile_id=project.control_profile_id,
+            command_id=body.request_id,
+            environment_id=case.environment_id,
+            revision=case.revision,
+            epoch=observation.epoch,
+            state_revision=observation.state_revision,
+            observation_id=observation.observation_id,
+            object_id=observation.object_id,
+            target_station_id=project.goal_station_id,
+            task=permit.task,
+            wall_expires_at=min(
+                permit.wall_expires_at,
+                authorization.operator_grant.expires_at,
+                now
+                + timedelta(
+                    seconds=min(
+                        permit.max_episode_wall_seconds,
+                        limits["max_wall_seconds"],
+                        project.evaluation_plan.max_wall_seconds,
+                    )
+                ),
+            ),
+            max_simulation_steps=min(
+                permit.max_simulation_steps,
+                limits["max_simulation_seconds"] * 60,
+                project.evaluation_plan.max_simulation_seconds * 60,
+            ),
+            controller="reference_controller",
+            authorization_kind="reference_collection",
+            authorization_id=permit.authorization_id,
+        )
+        record = ReferenceCollection(
+            **metadata(actor, body.request_id, digest),
+            **project.timing_fields(),
+            project_id=project.id,
+            teaching_case=case,
+            command_id=command.command_id,
+            epoch=command.epoch,
+            command=command,
+            status="starting",
+            target_position_m=next(
+                item["position_m"]
+                for item in environment.document["stations"]
+                if item["id"] == project.goal_station_id
+            ),
+            goal_tolerance_m=project.evaluation_plan.maximum_axis_error_m,
+            runtime_catalog_record_sha256=authorization.runtime_catalog_record_sha256,
+            source_revision=authorization.operator_grant.source_revision,
+            simulator_image_digest=authorization.operator_grant.simulator_image_digest,
+        )
+        stored, first = self._claim(actor, record)
+        if not first:
+            return stored
+        try:
+            result = self.factory.bridge.dispatch_simulation_episode(actor.owner_key, command)
+        except Problem as exc:
+            return self._save(
+                actor,
+                stored,
+                status="unconfirmed",
+                error_code=exc.code,
+                message="Reference dispatch is unconfirmed; no command is resubmitted.",
+            )
+        return self._apply_reference(actor, stored, result)
+
+    def _apply_reference(self, actor, stored, result: SimulationEpisodeExecution):
+        record, metrics = stored.value, result.simulation_runtime
+        if record.status in REFERENCE_TERMINAL:
+            return stored
+        if (
+            result.command_id != record.command_id
+            or metrics.controller != "reference_controller"
+            or metrics.control_profile_sha256 != record.control_profile_sha256
+            or metrics.applied_model_sha256 is not None
+            or metrics.policy_predict_calls
+            or metrics.simulation_steps > record.command.max_simulation_steps
+        ):
+            raise Problem(
+                503, "reference_receipt_mismatch", "Runtime reference provenance differs."
+            )
+        if result.status == "succeeded" and (
+            result.error is not None
+            or metrics.simulation_steps % 6 != 0
+            or metrics.simulation_steps != metrics.applied_action_count
+            or abs(metrics.simulation_elapsed_seconds - metrics.simulation_steps / 60) > 1e-6
+            or metrics.wall_elapsed_ms
+            > (record.command.wall_expires_at - record.created_at).total_seconds() * 1000
+            or result.final_position is None
+            or result.completed_at is None
+            or result.completed_at < record.created_at
+            or result.completed_at > utcnow()
+            or result.completed_at > record.command.wall_expires_at
+            or metrics.reference_route_calls <= 0
+            or metrics.applied_action_count <= 0
+            or any(
+                abs(actual - target) > record.goal_tolerance_m
+                for actual, target in zip(
+                    result.final_position, record.target_position_m, strict=True
+                )
+            )
+        ):
+            raise Problem(
+                503,
+                "reference_result_unverified",
+                "Actual completed reference evidence is missing.",
+            )
+        status = {"queued": "running", "running": "running"}.get(result.status, result.status)
+        if record.status == "cancelling" and result.status in ("queued", "running", "cancelling"):
+            status = "cancelling"
+        changes = {
+            "status": status,
+            "execution": result,
+            "error_code": result.error.code if result.error else None,
+            "message": result.error.message
+            if result.error
+            else "Reference controller result received; not human teaching.",
+        }
+        if all(getattr(record, key) == value for key, value in changes.items()):
+            return stored
+        return self._save_reference(actor, stored, **changes)
+
+    def _save_reference(self, actor, stored, **changes):
+        try:
+            return self._save(actor, stored, **changes)
+        except Problem as exc:
+            if exc.code != "revision_conflict":
+                raise
+            return self.get(actor, "reference_collection", stored.value.id)
+
+    def get_reference_collection(self, actor, collection_id):
+        stored = self.get(actor, "reference_collection", collection_id)
+        record = stored.value
+        if record.status not in ("succeeded", "failed", "cancelled", "timed_out"):
+            try:
+                result = self.factory.bridge.simulation_episode(actor.owner_key, record.command_id)
+                stored = self._apply_reference(actor, stored, result)
+            except Problem as exc:
+                if exc.status != 404:
+                    raise
+                if utcnow() >= record.command.wall_expires_at:
+                    return self._save(
+                        actor,
+                        stored,
+                        status="timed_out",
+                        error_code="reference_command_unconfirmed",
+                        message="No result was confirmed before the original grant expired.",
+                    )
+                return stored
+        record = stored.value
+        if record.status == "succeeded" and record.capture_status not in ("ready", "invalid"):
+            capture = self.factory.bridge.capture(actor.owner_key, record.command_id)
+            if capture.command_id != record.command_id or capture.epoch != record.epoch:
+                raise Problem(
+                    503, "capture_scope_mismatch", "Reference capture belongs to another command."
+                )
+            if capture.status == "invalid":
+                return self._save_reference(
+                    actor,
+                    stored,
+                    capture_status="invalid",
+                    error_code="reference_capture_invalid",
+                    message=capture.message or "The reference capture failed validation.",
+                )
+            if capture.status == "ready":
+                if capture.receipt is None or capture.receipt.status != "uploaded":
+                    raise Problem(
+                        503, "capture_not_verified", "A complete uploaded capture is required."
+                    )
+                if capture.receipt.episode_id != record.command_id:
+                    raise Problem(
+                        503, "capture_scope_mismatch", "Capture is not the original command."
+                    )
+                project = self.get(actor, "project", record.project_id).value
+                operation_id = uuid5(
+                    NAMESPACE_URL,
+                    f"reference-artifact:{actor.owner_key}:{record.id}:{capture.receipt.manifest_sha256}",
+                )
+                if (
+                    record.artifact_operation_id is not None
+                    and record.artifact_operation_id != operation_id
+                ):
+                    raise Problem(
+                        409, "reference_capture_changed", "The original capture manifest changed."
+                    )
+                operation = self._begin_artifact(
+                    actor,
+                    project,
+                    operation_id,
+                    record.id,
+                    fingerprint(
+                        {"reference": str(record.id), "manifest": capture.receipt.manifest_sha256}
+                    ),
+                    session=record,
+                    receipt=capture.receipt,
+                ).value
+                if operation.status == "ready" and operation.result and operation.result.capture:
+                    receipt = operation.result.capture
+                    if (
+                        receipt.authorized_case(project) != record.teaching_case
+                        or receipt.source != "reference_controller"
+                        or receipt.episode_id != record.command_id
+                        or receipt.manifest_sha256 != capture.receipt.manifest_sha256
+                        or receipt.frame_count != capture.receipt.frame_count
+                    ):
+                        raise Problem(
+                            503, "capture_scope_mismatch", "Verified reference capture differs."
+                        )
+                    return self._save_reference(
+                        actor,
+                        stored,
+                        capture_status="ready",
+                        capture=operation.result.capture,
+                        artifact_operation_id=operation.id,
+                    )
+                return self._save_reference(
+                    actor,
+                    stored,
+                    capture_status="invalid"
+                    if operation.status in ("failed", "timed_out")
+                    else "verifying",
+                    artifact_operation_id=operation.id,
+                    error_code=operation.error_code,
+                    message=operation.message,
+                )
+        return stored
+
+    def cancel_reference_collection(self, actor, collection_id):
+        stored = self.get(actor, "reference_collection", collection_id)
+        if stored.value.status in ("succeeded", "failed", "cancelled", "timed_out", "cancelling"):
+            return stored
+        reserved = self._save(actor, stored, status="cancelling")
+        try:
+            result = self.factory.bridge.cancel_simulation_episode(
+                actor.owner_key, stored.value.command_id
+            )
+            return self._apply_reference(actor, reserved, result)
+        except Problem as exc:
+            return self._save_reference(
+                actor,
+                reserved,
+                error_code=exc.code,
+                message="Reference cancellation is unconfirmed; no cancel POST is replayed.",
+            )
+
     def _check_candidate(self, actor, project, run, candidate) -> None:
         parent = (
             self._training_parent(actor, run.pretrained_artifact_id)
             if project.project_kind == "bootstrap"
-            else self._baseline(actor, run.parent_release_id)
+            else self._baseline(
+                actor, run.parent_release_id, execution_timing=project.execution_timing
+            )
         )
         if candidate is None or (
             candidate.owner_key != actor.owner_key
@@ -1039,11 +1403,12 @@ class LearningService:
         context = self.get(actor, "project", project_id)
         require_etag(context, etag)
         project = context.value
-        self._timing_admission(project)
+        self._timing_admission(project, "evaluation")
         candidate = self.get(actor, "candidate", body.candidate_id).value
         if (
             candidate.project_id != project_id
             or body.baseline_release_id != project.baseline_release_id
+            or not candidate.matches_timing(project)
         ):
             raise Problem(
                 409, "evaluation_scope_mismatch", "Select this project's candidate and P0."
@@ -1065,7 +1430,9 @@ class LearningService:
         if project.project_kind == "bootstrap":
             self._bootstrap_actor(actor)
         else:
-            baseline = self._baseline(actor, body.baseline_release_id)
+            baseline = self._baseline(
+                actor, body.baseline_release_id, execution_timing=project.execution_timing
+            )
         self._cost(project, body.maximum_cost_usd)
         run = EvaluationRun(
             **metadata(actor, body.request_id, digest),
@@ -1106,8 +1473,31 @@ class LearningService:
             raise Problem(409, "release_gate_failed", "A completed paired evaluation is required.")
         candidate = self.get(actor, "candidate", body.candidate_id).value
         project = self.get(actor, "project", candidate.project_id).value
-        self._timing_admission(project)
-        if project.project_kind == "bootstrap":
+        self._timing_admission(project, "release")
+        if isinstance(run.report, SimulationReport):
+            baseline = (
+                None
+                if project.project_kind == "bootstrap"
+                else self._baseline(
+                    actor, run.baseline_release_id, execution_timing="paused_simulation"
+                )
+            )
+            if project.project_kind == "bootstrap":
+                self._bootstrap_actor(actor)
+            validate_report_binding(
+                JobSpecification(
+                    owner_key=actor.owner_key,
+                    project=project,
+                    run=run,
+                    candidate=candidate,
+                    baseline=baseline,
+                ),
+                run.report,
+            )
+            eligible = run.report.quality_gate_passed and (
+                project.project_kind == "bootstrap" or run.report.conclusion == "improved"
+            )
+        elif project.project_kind == "bootstrap":
             self._bootstrap_actor(actor)
             validate_bootstrap_report(project, candidate, run.report)
             eligible = run.report.quality_gate_passed
@@ -1137,7 +1527,7 @@ class LearningService:
             task_id=project.task_id,
             goal_station_id=project.goal_station_id,
             instruction=project.instruction,
-            control_profile_id=project.control_profile_id,
+            **({"control_profile_id": project.control_profile_id} | project.timing_fields()),
             evaluation_plan_sha256=project.evaluation_plan.sha256,
             reviewed_by=actor.object_id,
             comparison_kind=run.comparison_kind,
@@ -1178,6 +1568,12 @@ class LearningService:
         context = self.get(actor, "project", project_id)
         require_etag(context, etag)
         project = context.value
+        if project.execution_timing == "paused_simulation":
+            raise Problem(
+                503,
+                "paused_learning_unavailable",
+                "Manual paused teaching is unavailable; use reviewed reference collection.",
+            )
         self._timing_admission(project)
         case = project.selected_case(body.case_id)
         runtime = self._dependency(self.runtime, "Verified teaching runtime")
@@ -1580,6 +1976,22 @@ class LearningService:
                     409, "capture_case_mismatch", "Ready capture differs from its approved session."
                 )
             captures.append(session.capture)
+        for collection_id in body.reference_collection_ids:
+            collection = self.get(actor, "reference_collection", collection_id).value
+            if (
+                collection.project_id != project_id
+                or collection.status != "succeeded"
+                or collection.capture_status != "ready"
+                or collection.capture is None
+                or collection.source != "reference_controller"
+            ):
+                raise Problem(
+                    409,
+                    "capture_not_ready",
+                    "Reference data must be physically complete and verified.",
+                )
+            collection.capture.authorized_case(project)
+            captures.append(collection.capture)
         episodes = tuple(item.episode_id for item in captures)
         seeds = tuple(item.seed for item in captures)
         if (

@@ -42,6 +42,8 @@ class PolicyLearningWorker:
         reconciliation_enabled=False,
         reconciliation_actor_ids=frozenset(),
         reconciliation_targets=(),
+        paused_training_enabled=False,
+        paused_evaluation_enabled=False,
     ):
         self.registry = registry
         self.artifacts = artifact_verifier
@@ -51,6 +53,8 @@ class PolicyLearningWorker:
         self.reconciliation_enabled = reconciliation_enabled
         self.reconciliation_actor_ids = frozenset(reconciliation_actor_ids)
         self.reconciliation_targets = tuple(reconciliation_targets)
+        self.paused_training_enabled = paused_training_enabled
+        self.paused_evaluation_enabled = paused_evaluation_enabled
 
     def _authorize_specification(self, actor, specification: JobSpecification):
         if (
@@ -276,7 +280,11 @@ class PolicyLearningWorker:
         return jobs, sdk.create_plan
 
     def preflight(self, actor, specification):
-        if specification.project.execution_timing == "paused_simulation":
+        if specification.project.execution_timing == "paused_simulation" and not (
+            self.paused_training_enabled
+            if specification.run.kind == "training"
+            else self.paused_evaluation_enabled
+        ):
             raise Problem(
                 503,
                 "paused_learning_unavailable",

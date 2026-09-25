@@ -116,6 +116,13 @@ def test_compiled_settings_have_single_api_caller_and_empty_model_bootstrap_defa
     assert compiled["parameters"]["reconciliationEnabled"]["defaultValue"] is False
     assert compiled["parameters"]["reconciliationActorIds"]["defaultValue"] == []
     assert compiled["parameters"]["reconciliationTargets"]["defaultValue"] == []
+    for parameter, setting in (
+        ("referenceCollectionsEnabled", "REFERENCE_COLLECTIONS_ENABLED"),
+        ("pausedTrainingEnabled", "PAUSED_TRAINING_ENABLED"),
+        ("pausedEvaluationEnabled", "PAUSED_EVALUATION_ENABLED"),
+    ):
+        assert compiled["parameters"][parameter]["defaultValue"] is False
+        assert parameter in env[f"LEARNING_WORKER_{setting}"]
     for field in (
         "TENANT_ID",
         "AUDIENCE",

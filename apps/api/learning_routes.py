@@ -18,6 +18,7 @@ from apps.api.learning_models import (
 )
 from apps.api.learning_service import LearningService
 from apps.api.models import Principal, Stored
+from apps.api.reference_models import StartReferenceCollection
 
 
 def learning_response(stored: Stored, response: Response) -> dict:
@@ -59,7 +60,15 @@ def install_learning_routes(app, actor):
         project_id: UUID,
         user: Actor,
         backend: Service,
-        kind: Literal["teaching", "dataset", "training", "evaluation", "candidate", "release"],
+        kind: Literal[
+            "teaching",
+            "dataset",
+            "training",
+            "evaluation",
+            "candidate",
+            "release",
+            "reference_collection",
+        ],
     ):
         return {
             "items": [
@@ -82,6 +91,31 @@ def install_learning_routes(app, actor):
         if_match: Match = None,
     ):
         return learning_response(backend.start_teaching(user, project_id, body, if_match), response)
+
+    @app.post("/api/learning/projects/{project_id}/reference-collections", status_code=202)
+    def reference_collection(
+        project_id: UUID,
+        body: StartReferenceCollection,
+        user: Actor,
+        backend: Service,
+        response: Response,
+        if_match: Match = None,
+    ):
+        return learning_response(
+            backend.start_reference_collection(user, project_id, body, if_match), response
+        )
+
+    @app.get("/api/reference-collections/{collection_id}")
+    def get_reference_collection(
+        collection_id: UUID, user: Actor, backend: Service, response: Response
+    ):
+        return learning_response(backend.get_reference_collection(user, collection_id), response)
+
+    @app.post("/api/reference-collections/{collection_id}/cancel")
+    def cancel_reference_collection(
+        collection_id: UUID, user: Actor, backend: Service, response: Response
+    ):
+        return learning_response(backend.cancel_reference_collection(user, collection_id), response)
 
     @app.get("/api/teaching-sessions/{session_id}")
     def teaching(session_id: UUID, user: Actor, backend: Service, response: Response):

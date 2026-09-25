@@ -13,6 +13,7 @@ from apps.api.learning_models import (
     fingerprint,
 )
 from apps.api.models import DemonstrationResult, Principal, Revision
+from apps.api.reference_models import ReferenceCollection
 
 
 class ArtifactPolicy(Frozen):
@@ -32,7 +33,7 @@ class ArtifactWork(Frozen):
     deadline: AwareDatetime
     max_bytes: int = Field(strict=True, ge=1, le=20 * 1024**3)
     max_files: int = Field(strict=True, ge=1, le=100000)
-    session: TeachingSession | None = None
+    session: TeachingSession | ReferenceCollection | None = None
     receipt: DemonstrationResult | None = None
     captures: tuple[CaptureReceipt, ...] = Field(default=(), max_length=1000)
 

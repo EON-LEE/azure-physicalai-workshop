@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import {
   artifactOperationSchema, capabilitiesSchema, coachSchema, datasetSchema, evaluationSchema, grantSchema, jobSchema,
-  projectSchema, recordSchema, releaseSchema, resource, resourceList, teachingSchema,
+  projectSchema, recordSchema, referenceCollectionSchema, releaseSchema, resource, resourceList, teachingSchema,
   type CreateProjectBody, type JogBody, type LearningApi, type LearningRecord, type TrainingBody,
 } from './contracts';
 
@@ -26,6 +26,15 @@ export class LearningClient implements LearningApi {
     return this.request(`/api/learning/projects/${key(id)}/teaching-sessions`, resource(teachingSchema), { method: 'POST', body, etag, signal });
   }
   teaching(id: string, signal?: AbortSignal) { return this.request(`/api/teaching-sessions/${key(id)}`, resource(teachingSchema), { signal }); }
+  startReference(id: string, body: Parameters<LearningApi['startReference']>[1], etag: string, signal?: AbortSignal) {
+    return this.request(`/api/learning/projects/${key(id)}/reference-collections`, resource(referenceCollectionSchema), { method: 'POST', body, etag, signal });
+  }
+  reference(id: string, signal?: AbortSignal) {
+    return this.request(`/api/reference-collections/${key(id)}`, resource(referenceCollectionSchema), { signal });
+  }
+  cancelReference(id: string, signal?: AbortSignal) {
+    return this.request(`/api/reference-collections/${key(id)}/cancel`, resource(referenceCollectionSchema), { method: 'POST', signal });
+  }
   arm(id: string, body: JogBody, etag: string, signal?: AbortSignal) {
     return this.request(`/api/teaching-sessions/${key(id)}/arm`, resource(grantSchema), { method: 'POST', body, etag, signal });
   }
