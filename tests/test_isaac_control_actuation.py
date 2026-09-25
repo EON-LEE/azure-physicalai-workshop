@@ -2,7 +2,7 @@
 
 import importlib
 import sys
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import timedelta
 from types import ModuleType, SimpleNamespace
 
@@ -50,6 +50,18 @@ def hardware(teaching, monkeypatch):
         def __init__(self, **kwargs):
             self.robot = kwargs["robot_articulation"]
             self.forward_calls = 0
+            self.physics_dt = kwargs["physics_dt"]
+            self.rmp_flow = SimpleNamespace(
+                ignore_robot_state_updates=False,
+                maximum_substep_size=0.00334,
+                get_end_effector_pose=lambda joints: (
+                    Array([0.35 + 0.1 * joints[0], 0.25, 0.3]),
+                    None,
+                ),
+            )
+
+        def get_articulation_motion_policy(self):
+            return SimpleNamespace(get_default_physics_dt=lambda: self.physics_dt)
 
         def forward(self, **kwargs):
             self.forward_calls += 1
@@ -268,7 +280,10 @@ def test_actual_teaching_jog_does_not_run_a_route_or_recompute_targets_during_ho
     assert recorder.invalid and not recorder.sealed
 
 
-def test_actual_learned_adapter_applies_model_targets_with_no_reference_controller(hardware):
+@pytest.mark.parametrize("unsafe", [False, True])
+def test_actual_learned_adapter_applies_model_targets_with_no_reference_controller(
+    hardware, monkeypatch, unsafe
+):
     cell, core, teaching_request, clock = hardware
     core, request, _ = request_for((core, teaching_request, clock))
     core.dispatch_policy(ACTOR.owner_key, request)
@@ -277,6 +292,15 @@ def test_actual_learned_adapter_applies_model_targets_with_no_reference_controll
     binding = core.binding(request.command.command_id)
     model = CountingPolicy()
     model.model_sha256 = request.model_sha256
+    adapter = sys.modules["simulation.isaac_adapter"]
+
+    def forbidden_planner(*args, **kwargs):
+        raise AssertionError("A learned target must never use the reference trajectory planner")
+
+    monkeypatch.setattr(adapter, "plan_reference_targets", forbidden_planner)
+    if unsafe:
+        measured = tuple(cell.robot.get_joint_positions())
+        model.predict_chunk = lambda observation: ((0.08,) + measured[1:],) * 16
     port = GuardedPolicyAdapter(model, clock_ns=core.clock_ns)
     executor = PolicyExecutor(
         port,
@@ -289,6 +313,13 @@ def test_actual_learned_adapter_applies_model_targets_with_no_reference_controll
         apply_guard=lambda submit: core.apply_guarded(binding, submit),
     )
     cell.start_learned(request, core, executor, None)
+    if unsafe:
+        with pytest.raises(ValueError):
+            cell.advance()
+        assert not cell.robot.actions and cell.world.current_time_step_index == 0
+        assert cell.controller is None
+        assert executor.metrics().reference_route_calls == 0
+        return
     for _ in range(6):
         cell.advance()
     assert cell.controller is None and cell.route is None
@@ -637,7 +668,8 @@ def test_hidden_parked_scene_mutation_is_not_accepted_as_a_frozen_preview(hardwa
         cell.advance()
 
 
-def test_actual_paused_reference_servo_uses_articulation_actions_and_one_explicit_tick(
+@pytest.fixture
+def paused_hardware(
     hardware,
     paused_core,
 ):
@@ -649,7 +681,16 @@ def test_actual_paused_reference_servo_uses_articulation_actions_and_one_explici
     core.begin_motion(request.command_id)
     cell.spec, cell.scene_epoch = core.spec, core.epoch
     cell.prepare_paused_reference(request, core)
-    targets = cell.paused_reference_targets((0.35, 0.25, 0.31), False)
+    return cell, core, request
+
+
+def test_actual_paused_reference_servo_uses_articulation_actions_and_one_explicit_tick(
+    paused_hardware,
+):
+    cell, _, _ = paused_hardware
+    targets = cell.paused_reference_targets(
+        (0.35, 0.25, 0.31), False, phase="source_approach", control_tick=0
+    )
     applied = cell.apply_paused_tick(targets)
     assert len(cell.robot.actions) == 1
     assert tuple(cell.robot.actions[0].joint_positions) == targets
@@ -658,6 +699,205 @@ def test_actual_paused_reference_servo_uses_articulation_actions_and_one_explici
     assert applied.gravity_efforts == (1.0,) * 7 + (0.0, 0.0)
     assert cell.world.fabric_flags == [True]
     assert cell.paused_goal_reached() is False
+
+
+def test_paused_reference_plans_an_oversized_rmp_endpoint_before_six_exact_applied_targets(
+    paused_hardware,
+):
+    from test_reference_targets import MEASURED_FRAME_1, SECOND_ISSUED
+
+    from simulation.control import validate_position_target
+
+    cell, _, _ = paused_hardware
+    cell.robot.joints = Array(MEASURED_FRAME_1)
+    cell.issued_targets = SECOND_ISSUED
+    requested = list(SECOND_ISSUED[:7])
+    requested[5] -= 0.08  # Synthetic endpoint, not the unrecorded third GPU proposal.
+    calls = []
+
+    def forward(**kwargs):
+        calls.append(kwargs)
+        return Action(Array(requested), Array([0.1] * 7), range(7))
+
+    cell.controller.forward = forward
+    targets = cell.paused_reference_targets(
+        (0.35, 0.25, 0.31), False, phase="source_approach", control_tick=2
+    )
+    validate_position_target(MEASURED_FRAME_1, targets, SECOND_ISSUED)
+    for _ in range(6):
+        applied = cell.apply_paused_tick(targets)
+        assert applied.commanded_joint_targets == targets
+    assert len(calls) == 1 and cell.controller.physics_dt == 0.1
+    assert targets != tuple(requested) + (0.04, 0.04)
+    assert len(cell.robot.actions) == 6
+    assert all(tuple(item.joint_positions) == targets for item in cell.robot.actions)
+    assert all(tuple(item.joint_velocities) == (0.0,) * 9 for item in cell.robot.actions)
+    assert cell.world.current_time_step_index == 6
+    assert abs(cell.world.current_time - 0.1) < 1e-12
+    diagnostic = cell.reference_target_diagnostic
+    assert diagnostic["phase"] == "source_approach" and diagnostic["control_tick"] == 2
+    assert diagnostic["plan"]["targets"] == targets
+    assert diagnostic["last_issued_targets"] == targets
+    assert diagnostic["actual_hold_steps"] == 6
+    assert diagnostic["rmp_ignores_state_updates"] is False
+    assert diagnostic["rmp_maximum_substep_size"] == 0.00334
+    assert diagnostic["raw_rmp_joint_velocities"] == (0.1,) * 7
+
+
+def test_paused_reference_rejection_keeps_bounded_joint_diagnostic_before_any_actuation(
+    paused_hardware,
+    capsys,
+):
+    cell, _, _ = paused_hardware
+    measured = tuple(cell.robot.get_joint_positions())
+    cell.issued_targets = (measured[0] - 0.2,) + measured[1:]
+    with pytest.raises((ValueError, RuntimeError)):
+        cell.paused_reference_targets(
+            (0.35, 0.25, 0.31), False, phase="source_approach", control_tick=2
+        )
+    diagnostic = cell.reference_target_diagnostic
+    assert diagnostic["measured_joint_positions"] == measured
+    assert diagnostic["previous_issued_targets"] == cell.issued_targets
+    assert diagnostic["rmp_dt"] == 0.1
+    assert diagnostic["raw_rmp_joint_positions"][0] == 0.001
+    assert diagnostic["limit_violations"][0]["joint_name"] == "panda_joint1"
+    assert diagnostic["limit_violations"][0]["constraint"] == "slew"
+    assert diagnostic["failure"]
+    assert len(capsys.readouterr().out) < 12_000
+    assert not cell.robot.actions and cell.world.current_time_step_index == 0
+
+
+def test_paused_reference_keeps_immutable_successful_interval_trace_separate_from_next_plan(
+    paused_hardware,
+):
+    cell, _, _ = paused_hardware
+    targets = cell.paused_reference_targets(
+        (0.35, 0.25, 0.31), False, phase="source_approach", control_tick=0
+    )
+    assert cell.reference_target_evidence()["intervals"] == []
+    for _ in range(6):
+        cell.apply_paused_tick(targets)
+    original = cell.reference_target_evidence()
+    assert len(original["intervals"]) == 1
+    assert original["intervals"][0]["last_issued_targets"] == targets
+    assert original["intervals"][0]["actual_hold_steps"] == 6
+    cell.paused_reference_targets(
+        (0.35, 0.25, 0.32), False, phase="source_approach", control_tick=1
+    )
+    later = cell.reference_target_evidence()
+    assert later["latest"]["control_tick"] == 1
+    assert later["intervals"] == original["intervals"]
+    original["intervals"][0]["plan"]["path_fraction"] = -1
+    assert cell.reference_target_evidence()["intervals"][0]["plan"]["path_fraction"] > 0
+
+
+def test_paused_reference_trace_capacity_fails_before_a_new_plan_without_discarding_evidence(
+    paused_hardware, monkeypatch
+):
+    cell, _, _ = paused_hardware
+    assert cell.reference_target_evidence()["max_retained_intervals"] == 300
+    monkeypatch.setattr(sys.modules["simulation.isaac_adapter"], "MAX_REFERENCE_TRACE_INTERVALS", 1)
+    targets = cell.paused_reference_targets(
+        (0.35, 0.25, 0.31), False, phase="source_approach", control_tick=0
+    )
+    for _ in range(6):
+        cell.apply_paused_tick(targets)
+    prior = cell.reference_target_evidence()["intervals"]
+    with pytest.raises(ValueError, match="cannot discard"):
+        cell.paused_reference_targets(
+            (0.35, 0.25, 0.32), False, phase="source_approach", control_tick=1
+        )
+    assert cell.reference_target_evidence()["intervals"] == prior
+    assert cell.world.current_time_step_index == 6
+    assert cell.controller.forward_calls == 1
+
+
+def test_maximum_private_reference_trace_and_all_six_tick_controls_fit_the_receipt_limit(
+    paused_hardware, tmp_path
+):
+    from learning.common import read_json
+    from simulation.probe_control import _persist_receipt
+
+    cell, _, _ = paused_hardware
+    measured = (
+        0.12345678901234567,
+        -0.5123456789012345,
+        0.12345678901234567,
+        -2.8123456789012345,
+        0.12345678901234567,
+        3.0123456789012345,
+        0.7123456789012345,
+        0.02,
+        0.02,
+    )
+    cell.robot.joints = Array(measured)
+    cell.robot.get_joint_velocities = lambda: Array([0.12345678901234567] * 9)
+    cell.issued_targets = measured
+    cell.dynamics.get_generalized_gravity_forces = lambda: [
+        Array([86.12345678901234] * 4 + [11.123456789012345] * 3 + [0.0, 0.0])
+    ]
+    cell.controller.forward = lambda **kw: Action(
+        Array([value + 0.12345678901234567 for value in measured[:7]]),
+        Array([0.9234567890123456] * 7),
+        range(7),
+    )
+    targets = cell.paused_reference_targets(
+        (0.35, 0.25, 0.31), False, phase="source_approach", control_tick=0
+    )
+    controls = [asdict(cell.apply_paused_tick(targets)) for _ in range(6)]
+    trace = cell.reference_target_evidence()["intervals"][0]
+    assert len(trace["limit_violations"]) == 14
+    # Synthetic serialization stress only: 300 full-length records with all
+    # seven arm joints violating both raw-proposal envelopes, never GPU data.
+    interval = {
+        "freeze_id": "12345678-1234-1234-1234-123456789012",
+        "observation_physics_step": 1860,
+        "completed_physics_step": 1866,
+        "observation_wall_ms": 1234.1234567890123,
+        "policy_wall_ms": 1234.1234567890123,
+        "hold_wall_ms": 1234.1234567890123,
+        "interval_wall_ms": 3702.370370367037,
+        "simulated_seconds": 0.10000000000000001,
+        "applied_controls": controls,
+    }
+    report = {
+        "schema": "physicalai.paused-reference-attempt/v1",
+        "physical_status": "failed",
+        "metrics": {"intervals": [interval] * 300},
+        "reference_target_evidence": {
+            "latest": trace,
+            "intervals": [trace] * 300,
+            "max_retained_intervals": 300,
+        },
+        "reserved_other_receipt_metadata": "x" * (64 * 1024),
+    }
+    path = tmp_path / "bounded-receipt.json"
+    _persist_receipt(path, report)
+    size = path.stat().st_size
+    assert size < 4 * 1024 * 1024
+    assert len(read_json(path)["reference_target_evidence"]["intervals"]) == 300
+    print(f"MAX_REFERENCE_RECEIPT_BYTES={size}")
+
+
+@pytest.mark.parametrize(
+    "setting,value",
+    [
+        ("physics_dt", 1 / 60),
+        ("ignore_robot_state_updates", True),
+    ],
+)
+def test_paused_reference_cannot_mask_rmp_horizon_or_measured_feedback_drift(
+    paused_hardware, setting, value
+):
+    cell, _, _ = paused_hardware
+    target = cell.controller if setting == "physics_dt" else cell.controller.rmp_flow
+    setattr(target, setting, value)
+    with pytest.raises(ValueError, match="feedback.*horizon"):
+        cell.paused_reference_targets(
+            (0.35, 0.25, 0.31), False, phase="source_approach", control_tick=0
+        )
+    assert cell.controller.forward_calls == 0
+    assert not cell.robot.actions
 
 
 def test_paused_warmup_publishes_original_first_frame_after_the_last_real_tick(

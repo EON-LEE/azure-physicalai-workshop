@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 import os
 import time
-from dataclasses import replace
+from copy import deepcopy
+from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from io import BytesIO
 from math import dist
@@ -35,7 +36,18 @@ from pxr import Gf, Sdf, UsdGeom, UsdLux, UsdShade
 
 from apps.api.models import MotionPhase
 from learning.capture import resolve_joint_targets
-from learning.contract import AppliedControl, CameraSample, FrameSample, Scope
+from learning.common import finite, integer, require, vector
+from learning.contract import (
+    DEFAULT_JOINT_VELOCITY_LIMITS,
+    JOINT_LOWER,
+    JOINT_NAMES,
+    JOINT_UNITS,
+    JOINT_UPPER,
+    AppliedControl,
+    CameraSample,
+    FrameSample,
+    Scope,
+)
 from learning.inference import PolicyObservation
 from learning.paused import FrozenCameraSample, FrozenPolicyObservation, InitialFrozenPublication
 from simulation.asset_references import validate_usd_bundle
@@ -59,6 +71,12 @@ from simulation.paused_control import FrozenPhysicsState
 from simulation.paused_observation import PausedPublication, PausedPublicationCache
 from simulation.physics_scheduling import physics_scheduling_readback, require_control_scheduling
 from simulation.policy_executor import PolicyExecutor
+from simulation.reference_targets import (
+    MAX_REFERENCE_TRACE_INTERVALS,
+    REFERENCE_LIMIT_FRACTION,
+    plan_reference_targets,
+    reference_tracking_violations,
+)
 from simulation.runtime_contracts import PolicyCommand, TeachingStart
 
 
@@ -111,11 +129,15 @@ class IsaacWorkcell:
         self.parked_state: FrozenPhysicsState | None = None
         self.paused_scene_core = None
         self.paused_publications = PausedPublicationCache()
+        self.reference_target_diagnostic: dict | None = None
+        self._reference_target_trace: list[dict] = []
 
     def load(self, spec: SceneSpec) -> None:
         self._validate_asset_bundle()
         self.stop()
         self.paused_driver = None
+        self.reference_target_diagnostic = None
+        self._reference_target_trace = []
         self.parked_state = None
         self.paused_publications = PausedPublicationCache()
         if self.world is not None and can_reset_in_place(self.spec, spec):
@@ -562,6 +584,8 @@ class IsaacWorkcell:
         self.parked_state = None
         self.policy_executor = None
         self.issued_targets = None
+        self.reference_target_diagnostic = None
+        self._reference_target_trace = []
         self.world.set_simulation_dt(physics_dt=self.dt, rendering_dt=0.0)
         self._configure_cameras()
         configuration = interface_config_loader.load_supported_lula_kinematics_solver_config(
@@ -585,32 +609,162 @@ class IsaacWorkcell:
         self.paused_measured_success = False
         self.world.play()
 
-    def paused_reference_targets(self, point, closed: bool) -> tuple[float, ...]:
+    def paused_reference_targets(
+        self, point: tuple[float, float, float], closed: bool, *, phase: str, control_tick: int
+    ) -> tuple[float, ...]:
         if self.control_mode != "paused_simulation" or self.controller is None:
             raise RuntimeError(
                 "The explicitly authorized paused reference controller is unavailable."
             )
-        joints = tuple(float(value) for value in self.robot.get_joint_positions())
-        self.orientation_target = rotate_toward(
-            self.orientation_target, (0.0, 0.0, 1.0, 0.0), 0.5 / 10
-        )
-        proposed = self.controller.forward(
-            target_end_effector_position=np.array(point),
-            target_end_effector_orientation=np.array(self.orientation_target),
-        )
-        if proposed.joint_positions is None:
-            raise RuntimeError("The reference expert produced no actual position command.")
-        targets = list(joints)
-        selected = (
-            range(len(proposed.joint_positions))
-            if proposed.joint_indices is None
-            else proposed.joint_indices
-        )
-        for index, value in zip(selected, proposed.joint_positions, strict=True):
-            if index < 7 and value is not None:
-                targets[index] = float(value)
-        targets[7:] = move_toward(joints[7:], (0.0, 0.0) if closed else (0.04, 0.04), 0.025 / 10)
-        return validate_position_target(joints, tuple(targets), self.issued_targets)
+        diagnostic = self.reference_target_diagnostic = {
+            "schema": "physicalai.reference-target-diagnostic/v1",
+            "command_id": str(self.control_binding.command_id),
+            "epoch": str(self.scene_epoch),
+            "phase": phase,
+            "control_tick": control_tick,
+            "physics_step": int(self.world.current_time_step_index),
+            "simulation_time": float(self.world.current_time),
+            "physics_dt": self.dt,
+            "joint_names": JOINT_NAMES,
+            "joint_units": JOINT_UNITS,
+            "joint_lower": JOINT_LOWER,
+            "joint_upper": JOINT_UPPER,
+            "hard_step_limits": tuple(value / 10 for value in DEFAULT_JOINT_VELOCITY_LIMITS),
+            "planning_limit_fraction": REFERENCE_LIMIT_FRACTION,
+            "planning_step_limits": tuple(
+                value / 10 * REFERENCE_LIMIT_FRACTION for value in DEFAULT_JOINT_VELOCITY_LIMITS
+            ),
+            "previous_issued_targets": self.issued_targets,
+            "last_issued_targets": None,
+            "actual_hold_steps": 0,
+            "failure": None,
+        }
+        try:
+            require(
+                isinstance(phase, str) and 0 < len(phase) <= 64, "A reference phase is required"
+            )
+            require(
+                len(self._reference_target_trace) < MAX_REFERENCE_TRACE_INTERVALS,
+                "The bounded reference trace cannot discard previous actual intervals",
+            )
+            integer(control_tick, "reference control tick", 0, MAX_REFERENCE_TRACE_INTERVALS - 1)
+            joints = vector(
+                tuple(float(value) for value in self.robot.get_joint_positions()),
+                9,
+                "reference measured joints",
+            )
+            diagnostic["measured_joint_positions"] = joints
+            diagnostic["measured_joint_velocities"] = vector(
+                tuple(float(value) for value in self.robot.get_joint_velocities()),
+                9,
+                "reference measured velocities",
+            )
+            point = vector(point, 3, "reference Cartesian target")
+            diagnostic["cartesian_target"] = point
+            diagnostic["orientation_previous"] = self.orientation_target
+            self.orientation_target = rotate_toward(
+                self.orientation_target, (0.0, 0.0, 1.0, 0.0), 0.5 / 10
+            )
+            diagnostic["orientation_target"] = self.orientation_target
+            policy = self.controller.get_articulation_motion_policy()
+            diagnostic["rmp_dt"] = finite(policy.get_default_physics_dt(), "RMP integration dt")
+            diagnostic["rmp_maximum_substep_size"] = finite(
+                self.controller.rmp_flow.maximum_substep_size, "RMP maximum substep"
+            )
+            diagnostic["rmp_ignores_state_updates"] = (
+                self.controller.rmp_flow.ignore_robot_state_updates
+            )
+            require(
+                diagnostic["rmp_dt"] == 1 / self.control_profile.control_sim_hz
+                and diagnostic["rmp_maximum_substep_size"] > 0
+                and diagnostic["rmp_ignores_state_updates"] is False,
+                "The reference expert requires actual measured feedback "
+                "and the declared 0.1s horizon",
+            )
+            proposed = self.controller.forward(
+                target_end_effector_position=np.array(point),
+                target_end_effector_orientation=np.array(self.orientation_target),
+            )
+            if proposed.joint_positions is None:
+                raise RuntimeError("The reference expert produced no actual position command.")
+            diagnostic["raw_rmp_positions_repr"] = repr(proposed.joint_positions[:9])[:512]
+            require(
+                len(proposed.joint_positions) == 7, "The RMP arm proposal requires seven joints"
+            )
+            require(
+                proposed.joint_velocities is None or len(proposed.joint_velocities) == 7,
+                "RMP arm velocity evidence requires seven joints",
+            )
+            positions = vector(
+                tuple(float(value) for value in proposed.joint_positions), 7, "RMP arm positions"
+            )
+            diagnostic["raw_rmp_joint_positions"] = positions
+            diagnostic["raw_rmp_joint_velocities"] = (
+                vector(
+                    tuple(float(value) for value in proposed.joint_velocities),
+                    7,
+                    "RMP arm velocities",
+                )
+                if proposed.joint_velocities is not None
+                else None
+            )
+            selected = (
+                list(range(7))
+                if proposed.joint_indices is None
+                else proposed.joint_indices.tolist()
+                if hasattr(proposed.joint_indices, "tolist")
+                else list(proposed.joint_indices)
+            )
+            require(
+                sorted(selected) == list(range(7)),
+                "The reference expert must propose all seven distinct arm joints",
+            )
+            targets = list(joints)
+            for index, value in zip(selected, positions, strict=True):
+                integer(index, "reference joint index", 0, 6)
+                targets[index] = value
+            diagnostic["raw_rmp_joint_indices"] = selected
+            targets[7:] = move_toward(
+                joints[7:], (0.0, 0.0) if closed else (0.04, 0.04), 0.025 / 10
+            )
+            diagnostic["requested_targets"] = tuple(targets)
+            diagnostic["limit_violations"] = reference_tracking_violations(
+                joints, tuple(targets), self.issued_targets
+            )
+
+            def forward_kinematics(candidate):
+                position, _ = self.controller.rmp_flow.get_end_effector_pose(
+                    np.array(candidate[:7])
+                )
+                return tuple(float(value) for value in position)
+
+            plan = plan_reference_targets(
+                joints,
+                tuple(targets),
+                self.issued_targets,
+                forward_kinematics=forward_kinematics,
+                max_cartesian_speed_m_s=min(0.1, self.spec.requested_speed),
+            )
+            diagnostic["plan"] = asdict(plan)
+            diagnostic["limiting_joint_names"] = tuple(
+                JOINT_NAMES[index] for index in plan.limiting_joint_indices
+            )
+            return validate_position_target(joints, plan.targets, self.issued_targets)
+        except (RuntimeError, ValueError, TypeError) as exc:
+            diagnostic["failure"] = str(exc)
+            print(
+                "PHYSICALAI_REFERENCE_TARGET "
+                + json.dumps(diagnostic, sort_keys=True, allow_nan=False),
+                flush=True,
+            )
+            raise
+
+    def reference_target_evidence(self) -> dict:
+        return {
+            "latest": deepcopy(self.reference_target_diagnostic),
+            "intervals": deepcopy(self._reference_target_trace),
+            "max_retained_intervals": MAX_REFERENCE_TRACE_INTERVALS,
+        }
 
     def apply_paused_tick(self, targets: tuple[float, ...]) -> AppliedControl:
         self._check_control_scheduling("before_control_tick")
@@ -618,7 +772,11 @@ class IsaacWorkcell:
             raise RuntimeError("The paused episode authority is no longer active.")
         efforts = self._compensate_gravity()
         self._issue_command(targets, (0.0,) * 9)
+        if self.reference_target_diagnostic is not None:
+            self.reference_target_diagnostic["last_issued_targets"] = targets
         self._step_control_physics(render=False)
+        if self.reference_target_diagnostic is not None:
+            self.reference_target_diagnostic["actual_hold_steps"] += 1
         self.steps += 1
         stamp = self.control_core.clock_ns()
         current = self._measured_tcp()
@@ -636,6 +794,18 @@ class IsaacWorkcell:
             tcp=current, part=self.position(), joints=joints
         )
         self.grasp_verified = self.task_watchdog.grasp_verified
+        diagnostic = self.reference_target_diagnostic
+        if diagnostic is not None:
+            diagnostic["completed_physics_step"] = int(self.world.current_time_step_index)
+            diagnostic["last_measured_joint_positions"] = joints
+            diagnostic["last_measured_tcp"] = current
+            diagnostic["peak_hold_tcp_speed_m_s"] = max(
+                diagnostic.get("peak_hold_tcp_speed_m_s", 0.0), speed
+            )
+            diagnostic["grasp_verified"] = self.grasp_verified
+            diagnostic["measured_goal_error_m"] = self.task_watchdog.goal_error_m
+            if diagnostic["actual_hold_steps"] == 6:
+                self._reference_target_trace.append(deepcopy(diagnostic))
         return AppliedControl(
             int(self.world.current_time_step_index), stamp, targets, (0.0,) * 9, efforts
         )

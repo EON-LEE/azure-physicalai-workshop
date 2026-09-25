@@ -26,6 +26,7 @@ def paused_servo_sha256() -> str:
         "paused_control.py",
         "paused_worker.py",
         "paused_teacher.py",
+        "reference_targets.py",
         "paused_runtime.py",
         "paused_capture.py",
         "paused_observation.py",

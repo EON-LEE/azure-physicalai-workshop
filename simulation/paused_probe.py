@@ -204,6 +204,8 @@ def run(args) -> dict:
                     "model_weights_loaded": False,
                     "learning_quality_proven": False,
                 }
+            if hardware is not None:
+                report["reference_target_evidence"] = hardware.reference_target_evidence()
             _persist_receipt(args.output, report)
         finally:
             try:

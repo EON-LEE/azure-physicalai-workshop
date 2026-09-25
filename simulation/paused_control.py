@@ -102,9 +102,17 @@ class PausedEpisode:
         self.controls: list[AppliedControl] = []
         self.intervals: list[dict] = []
         self.failure: str | None = None
+        self.failure_phase: str | None = None
+        self.stop_reason: str | None = None
+
+    def fail(self, message: str) -> None:
+        if self.failure is None:
+            self.failure = message
+            self.failure_phase = self.phase
+        self.phase = "stopped"
 
     def _fail(self, message: str) -> None:
-        self.phase, self.failure = "stopped", message
+        self.fail(message)
         raise RuntimeError(message)
 
     def _guard(self) -> int:
@@ -248,8 +256,10 @@ class PausedEpisode:
         self.phase = "idle"
         return True
 
-    def cancel(self) -> None:
-        self.phase, self.failure = "stopped", "The paused episode was cancelled."
+    def cancel(self, reason: str = "The paused episode was cancelled.") -> None:
+        self.phase = "stopped"
+        if self.stop_reason is None:
+            self.stop_reason = reason
 
     def metrics(self) -> dict:
         return {
@@ -262,4 +272,6 @@ class PausedEpisode:
             "simulation_elapsed_seconds": self.current.world_time - self.initial.world_time,
             "intervals": deepcopy(self.intervals),
             "failure": self.failure,
+            "failure_phase": self.failure_phase,
+            "stop_reason": self.stop_reason,
         }

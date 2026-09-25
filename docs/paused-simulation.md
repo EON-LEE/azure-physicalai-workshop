@@ -48,7 +48,7 @@ Frozen upper bounds, intersected with lower approved environment/command limits:
 Stage transitions, polls and retries cannot renew an original deadline.
 Cancel, changed authority or elapsed wall time wins even when simulation time
 has not moved. A partial or over-budget interval remains a failed attempt;
-no ticks, images or target commands are padded, interpolated or dropped.
+no recorded ticks, images or issued target commands are padded, interpolated or dropped.
 The unchanged joint tracking/slew, zero velocity targets, arm-only measured
 gravity, simulated TCP speed and measured grasp/release/goal guards still apply.
 
@@ -68,6 +68,57 @@ the same state is frozen return the same target. Grasp/release dwell and
 waypoint progression advance only after six actual completed physics ticks
 and their measured conditions, not because camera or model work took wall time.
 Its automated episode authority is separate from short human jog grants.
+
+### Reference-expert target generation
+
+The paused expert is called once per six actual ticks with an actual RMPflow
+integration horizon of 0.1 seconds. Isaac's `ArticulationMotionPolicy` reads
+measured joint positions **and velocities** before RMPflow internally integrates
+its position/velocity proposal. That endpoint is not, by itself, a valid next
+setpoint for the different zero-velocity position-hold servo. The adapter checks
+the actual horizon and measured-state-feedback setting and records the native
+maximum substep size; it does not shorten the horizon to pretend to run at 60 Hz.
+
+`simulation.reference_targets.plan_reference_targets` constructs a uniform arm
+waypoint toward that proposal using the existing `move_toward` helper. It
+intersects the measured-position tracking and previous-issued-target slew
+envelopes with fixed 90% planning limits (0.045 rad per arm joint and 0.0036 m
+per finger). It evaluates at most eight FK candidates, after one origin FK read,
+to bound predicted TCP displacement to `min(0.1, requested_speed) * 0.1` metres.
+The independent pressure-producing gripper target is **not** rescaled when the
+arm path is slowed. Legitimate stationary arm dwell/grasp holds remain valid.
+Malformed/out-of-range proposals, infeasible paths and blocked requested arm
+motion fail explicitly instead of being reported as a successful hold.
+
+All nine generated targets still pass the unchanged shared 0.05 rad / 0.004 m
+hard tracking/slew guard. Each actual tick retains zero velocity targets,
+measured arm-only gravity, the measured 0.2 m/s TCP watchdog and the original
+goal/grasp checks and episode deadlines. The recorded label is the **actual
+issued bounded teacher target**, never the raw RMP endpoint. No learned output
+uses this planner, and the legacy 60 Hz reference path is unchanged.
+
+The private operator receipt includes `reference_target_evidence`: an independent
+latest-attempt snapshot and at most 300 completed-interval snapshots. They retain
+phase/tick, measured q/qdot, previous issued targets, native RMP positions and
+velocities, Cartesian/orientation goals, unchanged limits, limiting joints,
+arm-path fractions, FK displacement and actual issued targets/held ticks.
+Completed snapshots also retain measured TCP speed, grasp and goal evidence.
+The bounded trace never drops an earlier interval to make room; it is neither a
+policy feature nor an added raw-manifest/public-DTO field. Failure diagnostics
+are flushed before rethrow and receipts are persisted before simulator teardown.
+
+`PausedEpisode.metrics()` preserves the **first** failure and its original
+`failure_phase`. A later stop/cancel/cleanup is recorded separately as
+`stop_reason`; it cannot replace a tracking/physics failure with cancellation.
+Capture publication and physical failure remain separate outcomes.
+
+The first actual reference attempt on source `2835191` stopped after 12 physics
+ticks and two complete v3 frames, with the episode marked truncated. At step 86, measured joint 6 was
+3.0285627842 rad and the second issued target was 2.9875681400 rad (a
+0.0409946442 rad tracking gap). The rejected third proposal was not recorded,
+so its exact offending joint is unknown. CPU regressions preserve both observed
+frames and label their additional lag/proposal scenarios as synthetic; they do
+not establish full-task GPU success or learned-policy quality.
 
 ## Reference capture vertical slice
 

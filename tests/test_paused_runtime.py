@@ -43,7 +43,7 @@ def running(paused_core):
         def _measured_tcp(self):
             return (0.35, 0.25, 0.38)
 
-        def paused_reference_targets(self, point, closed):
+        def paused_reference_targets(self, point, closed, *, phase, control_tick):
             return JOINTS
 
         def paused_observation(self, request, core, episode, control_tick):
@@ -170,6 +170,28 @@ def test_partial_hold_cancellation_cannot_publish_fabricated_remaining_ticks(run
     assert recorder.invalid and not recorder.sealed
 
 
+def test_teacher_proposal_failure_survives_runtime_stop_and_capture_cleanup(running):
+    runtime, _, _, hardware, _, _ = running
+
+    def invalid_proposal(*args, **kwargs):
+        raise ValueError("Target exceeds the declared 10Hz joint tracking limit")
+
+    hardware.paused_reference_targets = invalid_proposal
+    runtime.advance()
+    with pytest.raises(ValueError, match="tracking limit"):
+        runtime.advance()
+    runtime.stop()
+    runtime.stop()
+    with pytest.raises(RuntimeError, match="no completed"):
+        runtime.finish_recording(truncated=True)
+    evidence = runtime.episode.metrics()
+    assert evidence["phase"] == "stopped"
+    assert evidence["failure"] == "Target exceeds the declared 10Hz joint tracking limit"
+    assert evidence["stop_reason"] == "Paused runtime stop requested."
+    assert evidence["failure_phase"] == "predicting"
+    assert evidence["simulation_steps"] == 0
+
+
 def test_invalid_completed_hold_cannot_be_dropped_to_publish_only_earlier_valid_frames(running):
     runtime, _, _, hardware, recorder, clock = running
     for _ in range(12):
@@ -197,10 +219,12 @@ def test_invalid_completed_hold_cannot_be_dropped_to_publish_only_earlier_valid_
     assert recorder.invalid and not recorder.sealed
 
 
+@pytest.mark.parametrize("fault", [None, "proposal", "outside_driver"])
 def test_main_runtime_dispatches_real_paused_reference_and_finishes_capture_off_thread(
     paused_core,
     monkeypatch,
     tmp_path,
+    fault,
 ):
     import time
 
@@ -236,7 +260,9 @@ def test_main_runtime_dispatches_real_paused_reference_and_finishes_capture_off_
         def _measured_tcp(self):
             return (0.35, 0.25, 0.38)
 
-        def paused_reference_targets(self, point, closed):
+        def paused_reference_targets(self, point, closed, *, phase, control_tick):
+            if fault == "proposal" and control_tick == 2:
+                raise ValueError("Target exceeds the declared 10Hz joint tracking limit")
             return self.state.joint_positions
 
         def paused_observation(self, command, protocol, episode, control_tick):
@@ -287,10 +313,13 @@ def test_main_runtime_dispatches_real_paused_reference_and_finishes_capture_off_
             )
 
         def paused_goal_reached(self):
-            return self.steps >= 12
+            return self.steps >= 12 and fault is None
 
         def advance(self):
-            return self.paused_driver.advance() if self.paused_driver else False
+            result = self.paused_driver.advance() if self.paused_driver else False
+            if fault == "outside_driver" and self.steps == 12 and not self.paused_driver.done:
+                raise RuntimeError("Native frozen preview retrieval failed.")
+            return result
 
         def stop(self):
             if self.paused_driver:
@@ -346,7 +375,13 @@ def test_main_runtime_dispatches_real_paused_reference_and_finishes_capture_off_
             if core.active_command is None:
                 break
         assert hardware.steps == 12
-        assert core.command(ACTOR.owner_key, request.command_id).status == "succeeded"
+        result = core.command(ACTOR.owner_key, request.command_id)
+        assert result.status == ("failed" if fault else "succeeded")
+        if fault:
+            evidence = hardware.paused_driver.episode.metrics()
+            assert result.error.message == evidence["failure"]
+            assert evidence["failure_phase"] == ("predicting" if fault == "proposal" else "idle")
+            assert evidence["stop_reason"] == "Paused runtime stop requested."
         runtime.capture_worker.thread.join(5)
         runtime.tick()
         assert core.capture(ACTOR.owner_key, request.command_id).status == "ready"
@@ -356,3 +391,7 @@ def test_main_runtime_dispatches_real_paused_reference_and_finishes_capture_off_
         assert hardware.steps == 12
     finally:
         runtime.close()
+    if fault:
+        evidence = hardware.paused_driver.episode.metrics()
+        assert evidence["failure"] == result.error.message
+        assert evidence["phase"] == "stopped"

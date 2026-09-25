@@ -48,6 +48,13 @@ class PausedReferenceRuntime:
     def advance(self) -> bool:
         if self.done:
             return False
+        try:
+            return self._advance()
+        except (RuntimeError, ValueError, TypeError, OSError) as exc:
+            self.fail(str(exc))
+            raise
+
+    def _advance(self) -> bool:
         state = self.hardware.frozen_physics_state(self.core.epoch)
         if self.episode.phase == "idle":
             self.episode.begin_observation(state)
@@ -74,7 +81,11 @@ class PausedReferenceRuntime:
                     raise RuntimeError("The scripted route ended without measured task success.")
                 self.done = self.succeeded = True
                 return True
-            targets = self.hardware.paused_reference_targets(*planned)
+            targets = self.hardware.paused_reference_targets(
+                *planned,
+                phase=self.teacher.route.current.name,
+                control_tick=self.complete_intervals,
+            )
             self.reference_calls += 1
             self.episode.policy_ready(
                 self.episode.freeze_id, self.hardware.frozen_physics_state(self.core.epoch), targets
@@ -118,7 +129,11 @@ class PausedReferenceRuntime:
     def stop(self) -> None:
         self.done = True
         if not self.succeeded:
-            self.episode.cancel()
+            self.episode.cancel("Paused runtime stop requested.")
+
+    def fail(self, message: str) -> None:
+        self.done, self.succeeded = True, False
+        self.episode.fail(message)
 
     def finish_recording(self, *, truncated: bool) -> None:
         if self.recorder is None:

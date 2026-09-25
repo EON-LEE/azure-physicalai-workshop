@@ -187,6 +187,16 @@ class SimulatorRuntime:
         if self.binding is not None and driver is not None:
             self.core.publish_simulation_metrics(self.binding, driver.metrics())
 
+    def _record_paused_failure(self, message: str) -> None:
+        driver = getattr(self.hardware, "paused_driver", None)
+        if (
+            self.binding is not None
+            and driver is not None
+            and driver.binding == self.binding
+            and self.core.matches(self.binding)
+        ):
+            driver.fail(message)
+
     def finish(self, status, message=None) -> None:
         if self.binding is None or not self.core.matches(self.binding):
             return
@@ -199,6 +209,8 @@ class SimulatorRuntime:
                     status, message = "cancelled", "Cancellation won the completion race."
                 elif self.core.deadline_expired():
                     status, message = "timed_out", "Completion exceeded the command deadline."
+        if paused and status in {"failed", "timed_out"}:
+            self._record_paused_failure(message or "The paused episode failed.")
         if status != "succeeded":
             self.hardware.stop()
         position = self.hardware.position()
@@ -265,6 +277,7 @@ class SimulatorRuntime:
                 if self.pending_start is None:
                     self.hardware.request_finish()
             if self.core.deadline_expired():
+                self._record_paused_failure("Simulation command deadline expired.")
                 self.hardware.stop()
                 self.finish("timed_out", "Simulation command deadline expired.")
             self._start_prepared_capture()
@@ -293,6 +306,7 @@ class SimulatorRuntime:
                     self.last_capture = self.clock()
         except (RuntimeError, ValueError, TypeError, OSError, AzureError) as exc:
             log.exception("Isaac scene or command failed")
+            self._record_paused_failure(str(exc))
             self.hardware.stop()
             self.finish("failed", str(exc))
             self.core.fail_scene(str(exc), epoch=self.active_epoch)
