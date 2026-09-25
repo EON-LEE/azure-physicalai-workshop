@@ -29,6 +29,8 @@ def paused_servo_sha256() -> str:
         "reference_targets.py",
         "paused_gripper_servo.py",
         "paused_runtime.py",
+        "paused_learned.py",
+        "paused_deployment.py",
         "paused_capture.py",
         "paused_observation.py",
         "paused_contracts.py",
@@ -54,7 +56,28 @@ def paused_servo_sha256() -> str:
                 "runtime_files": {name: file_digest(base / name) for name in names},
                 "native_contract_files": {
                     name: file_digest(native / name)
-                    for name in ("__init__.py", "contract.py", "capture.py", "inference.py")
+                    for name in (
+                        "__init__.py",
+                        "contract.py",
+                        "capture.py",
+                        "inference.py",
+                        "artifacts.py",
+                        "ipc.py",
+                        "model.py",
+                    )
+                },
+                "shared_policy_files": {
+                    name: file_digest(base.parent / name)
+                    for name in (
+                        "learning/common.py",
+                        "learning/contract.py",
+                        "learning/gr00t/ipc.py",
+                        "learning/gr00t/artifacts.py",
+                        "learning/smolvla/__init__.py",
+                        "learning/smolvla/artifacts.py",
+                        "learning/smolvla/inference.py",
+                        "learning/smolvla/adaptation.py",
+                    )
                 },
                 "protocol_schemas": protocol_schemas(),
                 "frozen_profile_limits": limits,

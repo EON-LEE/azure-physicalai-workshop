@@ -276,9 +276,10 @@ cannot substitute for the actual readback and restoration.
 `SimulationEpisodeCommand` through the new `/v1/simulation-episodes` bridge
 surface; it does not widen `MotionCommand`. The reference controller runs
 through the actual articulation, zero velocity targets, measured arm gravity
-and shared physical guards. Learned paused commands currently fail explicitly
-because this operator entry is reference-only; no learned execution is replaced
-with a scripted route.
+and shared physical guards. The operator reference entry remains reference-only.
+A separately installed learned catalogue can select the learned driver; without
+that provider and its real model socket, learned commands fail explicitly.
+No learned execution is replaced with a scripted route.
 
 An opted-in scene remains physically frozen while idle, while capture I/O is
 pending, and after terminal completion. Scene preparation retains the existing
@@ -337,6 +338,58 @@ episode budget, exact paused profile, explicit source/purpose, frozen criteria
 and case plan. Existing live managed-identity upload validates all files and
 uploads the manifest last. Integration/test captures can never silently become
 training data. Physical completion and capture publication remain distinct.
+
+## Separately installed paused learned runtime
+
+`PausedLearnedRuntime` shares frozen observation, exact-six-tick application,
+capture, deadline and physical-success accounting with the reference driver,
+but never constructs `PausedReferenceTeacher`, RMPflow or a contact-target
+calibration. Its nine predicted joint targets go directly through the same
+hard guards and SDK position/zero-velocity/arm-gravity servo, including the
+explicit paused finger stiffness calibration. Invalid outputs fail without
+clipping, interpolation or reference motion. The model process is separate;
+Isaac imports neither Torch nor a local neural model.
+
+Enable this source path only through **both** `PAUSED_POLICY_CATALOG_FILE`
+and `PAUSED_POLICY_CATALOG_SHA256`. Absence keeps it disabled. The closed
+`physicalai.paused-policy-catalog/v1` file has a bounded `policies` list, each
+containing an existing `PausedOperatorGrant` as `grant`, an absolute
+`model_root`, a protected same-host Unix `socket_path`, and
+`expected_peer_uid`. The file hash covers its exact bytes. This is an installed
+operator record, not a UI-generated grant or a model-path request parameter.
+Its `policy_release` or `evaluation_grant` must bind the exact owner/tenant,
+source/image, task, case revision, model/profile, criteria/conditions and
+original expiry (at most 600 seconds). Evaluation grants require evaluation
+purpose; learned recordings cannot silently become demonstrations for training.
+
+Before admitting an entry, the provider validates the actual v2 candidate
+manifest, checkpoint/processor inventory and simulation-time training lineage.
+Pretrained vendor weights, clock relabeling, changed files or mismatched
+profile/task/criteria are rejected. It creates the real
+`learning.paused.ipc.SocketChunkPolicy` and `PausedGuardedPolicyAdapter`;
+missing or unprotected sockets fail and the native connection checks its
+peer UID. The separate reviewed model-server entry is
+`python -m learning.paused.model`. These source switches do not authorize a
+model job, deployment, GPU allocation or production admission.
+
+One bounded worker performs reset and prediction after the first actual
+observation exists. The main thread keeps checking the frozen physical state
+and advancing heartbeats. Cancellation invalidates the guard generation
+without blocking on the model, and a still-running cancelled call keeps the
+worker slot occupied. First-publication checks on the worker use only the
+thread-safe trusted record and protocol authority, never the Isaac SDK.
+Before application and each held tick the runtime rechecks current
+owner/epoch/command/model/profile/authority and the returned context, freeze,
+observation and original expiry. Dequeuing cannot renew that expiry.
+
+Capture stores actual prediction start/finish times and exact applied targets;
+metrics identify actual applied model SHA, attempted prediction count and
+applied action count, with `reference_route_calls=0`. A failed or cancelled
+prediction reports no applied-model claim before an actual actuator call.
+Shared workers, native IPC/model code and admission validators are included
+in the combined profile fingerprint. Freeze and physically revalidate that
+combined reference/learned profile **before** collecting genuine TRAIN data;
+earlier integration captures cannot be relabelled to it.
 
 ## Operator entry (requires a later explicit GPU authorization)
 

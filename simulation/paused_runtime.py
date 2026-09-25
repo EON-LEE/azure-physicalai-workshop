@@ -1,4 +1,4 @@
-"""Main-thread non-real-time reference episode; no model or real-time fallback."""
+"""Shared main-thread paused episode accounting and the explicit reference controller."""
 
 from __future__ import annotations
 
@@ -10,16 +10,14 @@ from simulation.paused_control import PausedEpisode
 from simulation.paused_teacher import PausedReferenceTeacher
 
 
-class PausedReferenceRuntime:
+class PausedEpisodeRuntime:
     def __init__(self, core, request, hardware, recorder=None) -> None:
         self.core, self.request, self.hardware, self.recorder = core, request, hardware, recorder
-        if request.controller != "reference_controller":
-            raise RuntimeError("A real paused model provider is required; no reference fallback.")
         self.profile = core.paused_profile
         if self.profile is None or core.spec is None:
             raise RuntimeError("A separately approved paused scene/profile is required.")
         self.binding = core.binding(request.command_id)
-        hardware.prepare_paused_reference(request, core)
+        self._prepare_hardware()
         initial = hardware.frozen_physics_state(core.epoch)
         key = (self.binding.owner, request.command_id)
         self.episode = PausedEpisode(
@@ -30,21 +28,38 @@ class PausedReferenceRuntime:
             authorized=lambda: core.actuation_allowed(self.binding),
             clock_ns=core.clock_ns,
         )
-        self.teacher = PausedReferenceTeacher(
-            core.spec,
-            initial=initial,
-            tcp=hardware._measured_tcp(),
-            target_station_id=request.target_station_id,
-            wall_deadline_ns=core.monotonic_deadlines[key],
-            clock_ns=core.clock_ns,
-            task=request.task,
-        )
         self.observation = None
         self.pending_frame: PausedFrameSample | None = None
         self.hold_started_ns = self.hold_deadline_ns = 0
         self.complete_intervals = 0
         self.reference_calls = 0
+        self.policy_started_ns = self.policy_finished_ns = None
         self.done = self.succeeded = False
+
+    def _prepare_hardware(self) -> None:
+        raise NotImplementedError("An explicit paused controller implementation is required.")
+
+    def _predict(self, state) -> bool:
+        raise NotImplementedError("An explicit paused controller implementation is required.")
+
+    def _before_apply(self) -> None:
+        return None
+
+    def _after_apply(self) -> None:
+        return None
+
+    def _stop_controller(self) -> None:
+        return None
+
+    def _accept_targets(self, targets, *, expires_at_ns=None) -> None:
+        self.episode.policy_ready(
+            self.episode.freeze_id,
+            self.hardware.frozen_physics_state(self.core.epoch),
+            targets,
+            expires_at_ns=expires_at_ns,
+        )
+        self.hold_started_ns = self.episode.policy_ready_ns
+        self.hold_deadline_ns = self.episode.operation_deadline_ns
 
     def advance(self) -> bool:
         if self.done:
@@ -72,37 +87,18 @@ class PausedReferenceRuntime:
             observation.validate(self.profile, now_ns=self.core.clock_ns())
             self.observation = observation
             self.episode.observation_ready(self.episode.freeze_id, current)
-            phase = self.teacher.route.current.name if not self.teacher.route.done else None
-            tcp = self.hardware._measured_tcp()
-            planned = self.teacher.target(
-                current,
-                tcp=tcp,
-                finger_gap=sum(current.joint_positions[7:]),
-                route_point=self.hardware.paused_reference_route_point(tcp, phase),
-            )
-            if planned is None:
-                if not self.hardware.paused_goal_reached():
-                    raise RuntimeError("The scripted route ended without measured task success.")
-                self.done = self.succeeded = True
-                return True
-            targets = self.hardware.paused_reference_targets(
-                *planned,
-                phase=phase,
-                control_tick=self.complete_intervals,
-            )
-            self.reference_calls += 1
-            self.episode.policy_ready(
-                self.episode.freeze_id, self.hardware.frozen_physics_state(self.core.epoch), targets
-            )
-            self.hold_started_ns = self.episode.policy_ready_ns
-            self.hold_deadline_ns = self.episode.operation_deadline_ns
-            return False
+            return self._predict(current)
+        if self.episode.phase == "predicting":
+            self.episode.waiting(state)
+            return self._predict(state)
         self.episode.before_tick(state)
         applied = None
 
         def apply():
             nonlocal applied
+            self._before_apply()
             applied = self.hardware.apply_paused_tick(self.episode.targets)
+            self._after_apply()
 
         self.core.apply_guarded(self.binding, apply)
         completed = self.episode.after_tick(
@@ -116,6 +112,8 @@ class PausedReferenceRuntime:
                 interval_deadline_ns=self.episode.interval_deadline_ns,
                 hold_started_ns=self.hold_started_ns,
                 hold_deadline_ns=self.hold_deadline_ns,
+                policy_started_ns=self.policy_started_ns,
+                policy_finished_ns=self.policy_finished_ns,
             )
             if self.pending_frame is not None and self.recorder is not None:
                 self.recorder.append(self.pending_frame)
@@ -132,12 +130,14 @@ class PausedReferenceRuntime:
 
     def stop(self) -> None:
         self.done = True
+        self._stop_controller()
         if not self.succeeded:
             self.episode.cancel("Paused runtime stop requested.")
 
     def fail(self, message: str) -> None:
         self.done, self.succeeded = True, False
         self.episode.fail(message)
+        self._stop_controller()
 
     def finish_recording(self, *, truncated: bool) -> None:
         if self.recorder is None:
@@ -168,11 +168,11 @@ class PausedReferenceRuntime:
         self.recorder.seal()
         self.pending_frame = None
 
-    def metrics(self) -> PausedRuntimeMetrics:
+    def _metric_values(self) -> dict:
         evidence = self.episode.metrics()
-        return PausedRuntimeMetrics(
+        return dict(
             control_profile_sha256=self.profile.sha256,
-            controller="reference_controller",
+            controller=self.request.controller,
             phase="stopped" if self.done else evidence["phase"],
             wall_elapsed_ms=evidence["wall_elapsed_ms"],
             simulation_steps=evidence["simulation_steps"],
@@ -180,3 +180,48 @@ class PausedReferenceRuntime:
             applied_action_count=evidence["simulation_steps"],
             reference_route_calls=self.reference_calls,
         )
+
+    def metrics(self) -> PausedRuntimeMetrics:
+        return PausedRuntimeMetrics(**self._metric_values())
+
+
+class PausedReferenceRuntime(PausedEpisodeRuntime):
+    def __init__(self, core, request, hardware, recorder=None) -> None:
+        if request.controller != "reference_controller":
+            raise RuntimeError("A real paused model provider is required; no reference fallback.")
+        super().__init__(core, request, hardware, recorder)
+        self.teacher = PausedReferenceTeacher(
+            core.spec,
+            initial=self.episode.initial,
+            tcp=hardware._measured_tcp(),
+            target_station_id=request.target_station_id,
+            wall_deadline_ns=self.episode.wall_deadline_ns,
+            clock_ns=core.clock_ns,
+            task=request.task,
+        )
+
+    def _prepare_hardware(self) -> None:
+        self.hardware.prepare_paused_reference(self.request, self.core)
+
+    def _predict(self, state) -> bool:
+        phase = self.teacher.route.current.name if not self.teacher.route.done else None
+        tcp = self.hardware._measured_tcp()
+        planned = self.teacher.target(
+            state,
+            tcp=tcp,
+            finger_gap=sum(state.joint_positions[7:]),
+            route_point=self.hardware.paused_reference_route_point(tcp, phase),
+        )
+        if planned is None:
+            if not self.hardware.paused_goal_reached():
+                raise RuntimeError("The scripted route ended without measured task success.")
+            self.done = self.succeeded = True
+            return True
+        targets = self.hardware.paused_reference_targets(
+            *planned,
+            phase=phase,
+            control_tick=self.complete_intervals,
+        )
+        self.reference_calls += 1
+        self._accept_targets(targets)
+        return False

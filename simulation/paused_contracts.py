@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Literal, Protocol
 from uuid import UUID
 
 from pydantic import AwareDatetime, ConfigDict, Field, field_validator, model_validator
 
 from apps.api.models import Execution, Identifier, Model, Revision
-from learning.paused import PausedControlProfile
+from learning.paused import (
+    FrozenPolicyObservation,
+    InitialFrozenPublication,
+    PausedControlContext,
+    PausedControlProfile,
+)
+from learning.paused.inference import PausedGuardedPolicyAdapter
 from simulation.runtime_contracts import PolicyType, TaskDefinition
 
 
@@ -129,3 +136,16 @@ class PausedEpisodeAuthorizer(Protocol):
     def authorize(
         self, owner: str, request: SimulationEpisodeCommand, profile: PausedControlProfile
     ) -> ResolvedSimulationAuthorization: ...
+
+
+class PausedPolicyProvider(PausedEpisodeAuthorizer, Protocol):
+    def create(
+        self,
+        owner: str,
+        request: SimulationEpisodeCommand,
+        profile: PausedControlProfile,
+        *,
+        publication_guard: Callable[
+            [InitialFrozenPublication, FrozenPolicyObservation, PausedControlContext], bool
+        ],
+    ) -> PausedGuardedPolicyAdapter: ...

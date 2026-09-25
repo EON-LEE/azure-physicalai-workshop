@@ -6,6 +6,7 @@ from uuid import uuid4
 import pytest
 from test_paused_control import state
 
+from learning.paused import InitialFrozenPublication
 from simulation.paused_observation import PausedPublication, PausedPublicationCache
 from tests.learning.test_paused_contract import observation
 
@@ -85,3 +86,40 @@ def test_relabelling_consumed_pixels_with_a_new_uuid_cannot_create_another_first
     take(cache, value)
     with pytest.raises(ValueError, match="old frozen publication"):
         cache.record(replace(value, publication_id=uuid4()))
+
+
+def test_worker_verifies_known_first_publication_without_consuming_or_restamping_it():
+    cache = PausedPublicationCache()
+    value = publication()
+    cache.record(value)
+    observed = replace(
+        observation(),
+        epoch=str(value.frozen_state.epoch),
+        joint_positions=value.frozen_state.joint_positions,
+        joint_sample_ns=value.joint_sample_ns,
+        observation_started_ns=2_100_000_000,
+        observation_completed_ns=2_110_000_000,
+    )
+    proof = InitialFrozenPublication(
+        publication_record_id=str(value.publication_id),
+        publication_record_sha256=value.record_sha256,
+        capture_sha256=observed.capture_sha256,
+        freeze_established_ns=value.freeze_established_ns,
+        published_at_utc=value.captured_at_utc,
+        published_monotonic_ns=value.published_ns,
+        age_at_observation_start_ns=100_000_000,
+    )
+    observed = replace(observed, initial_publication=proof)
+    assert not cache.verifies(proof, observed)
+    take(cache, value)
+    assert cache.verifies(proof, observed)
+    assert cache.verifies(proof, observed)
+    for invalid in (
+        replace(proof, publication_record_id=str(uuid4())),
+        replace(proof, publication_record_sha256="a" * 64),
+        replace(proof, capture_sha256="a" * 64),
+        replace(proof, published_monotonic_ns=value.published_ns + 1),
+    ):
+        assert not cache.verifies(invalid, replace(observed, initial_publication=invalid))
+    assert not cache.verifies(proof, replace(observed, state_revision=observed.state_revision + 1))
+    assert cache.publication == value and cache.consumed

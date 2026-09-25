@@ -58,7 +58,9 @@ class PausedPolicyWorker(Generic[T]):
                 return None
             self.freeze_id = None
             if self.error is not None:
-                raise RuntimeError("The pending policy request failed.") from self.error
+                raise RuntimeError(
+                    f"The pending policy request failed: {self.error}"
+                ) from self.error
             if self.result is None:
                 raise RuntimeError("The policy worker exited without a valid result.")
             result, self.result = self.result, None

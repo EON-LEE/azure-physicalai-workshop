@@ -181,7 +181,12 @@ class PausedEpisode:
         self.phase = "predicting"
 
     def policy_ready(
-        self, freeze_id: UUID, state: FrozenPhysicsState, targets: tuple[float, ...]
+        self,
+        freeze_id: UUID,
+        state: FrozenPhysicsState,
+        targets: tuple[float, ...],
+        *,
+        expires_at_ns: int | None = None,
     ) -> None:
         now = self._guard()
         self._expect("predicting")
@@ -195,6 +200,11 @@ class PausedEpisode:
             self._fail(str(exc))
         self.policy_ready_ns = now
         self.operation_deadline_ns = min(now + PENDING_WALL_NS, self.interval_deadline_ns)
+        if expires_at_ns is not None:
+            integer(expires_at_ns, "original learned target expiry", 1)
+            if now >= expires_at_ns:
+                self._fail("The original learned target expired before actual application.")
+            self.operation_deadline_ns = min(self.operation_deadline_ns, expires_at_ns)
         self.phase = "applying"
 
     def before_tick(self, state: FrozenPhysicsState) -> None:

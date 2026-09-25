@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from threading import RLock
 from uuid import UUID
 
 from learning.common import canonical, digest, integer, sha256, utc
 from learning.contract import Scope
-from learning.paused import FrozenCameraSample
+from learning.paused import FrozenCameraSample, FrozenPolicyObservation, InitialFrozenPublication
 from simulation.paused_control import FrozenPhysicsState
 
 
@@ -82,10 +83,15 @@ class PausedPublication:
 
 class PausedPublicationCache:
     def __init__(self) -> None:
+        self.lock = RLock()
         self.publication: PausedPublication | None = None
         self.consumed = False
 
     def record(self, publication: PausedPublication) -> None:
+        with self.lock:
+            self._record(publication)
+
+    def _record(self, publication: PausedPublication) -> None:
         publication.scope.validate()
         publication.frozen_state.validate()
         sha256(publication.revision, "published environment revision")
@@ -146,6 +152,28 @@ class PausedPublicationCache:
         state: FrozenPhysicsState,
         now_ns: int,
     ) -> PausedPublication:
+        with self.lock:
+            return self._take(
+                scope=scope,
+                environment_id=environment_id,
+                revision=revision,
+                profile_sha256=profile_sha256,
+                state_revision=state_revision,
+                state=state,
+                now_ns=now_ns,
+            )
+
+    def _take(
+        self,
+        *,
+        scope: Scope,
+        environment_id: str,
+        revision: str,
+        profile_sha256: str,
+        state_revision: int,
+        state: FrozenPhysicsState,
+        now_ns: int,
+    ) -> PausedPublication:
         if self.publication is None:
             raise RuntimeError("No contemporaneous frozen publication is available.")
         if self.consumed:
@@ -167,3 +195,32 @@ class PausedPublicationCache:
             raise RuntimeError("Owner, scene, epoch or physical state changed after publication.")
         self.consumed = True
         return value
+
+    def verifies(self, proof: InitialFrozenPublication, observed: FrozenPolicyObservation) -> bool:
+        with self.lock:
+            value = self.publication
+            if value is None or not self.consumed or observed.initial_publication != proof:
+                return False
+            return (
+                observed.control_tick == 0
+                and proof.publication_record_id == str(value.publication_id)
+                and proof.publication_record_sha256 == value.record_sha256
+                and proof.capture_sha256 == observed.capture_sha256
+                and proof.freeze_established_ns == value.freeze_established_ns
+                and proof.published_at_utc == value.captured_at_utc
+                and proof.published_monotonic_ns == value.published_ns
+                and proof.age_at_observation_start_ns
+                == observed.observation_started_ns - value.published_ns
+                and observed.scope == value.scope
+                and observed.environment_id == value.environment_id
+                and observed.revision == value.revision
+                and observed.epoch == str(value.frozen_state.epoch)
+                and observed.control_profile_sha256 == value.profile_sha256
+                and observed.state_revision == value.state_revision
+                and observed.physics_step == value.frozen_state.physics_step
+                and observed.joint_positions == value.frozen_state.joint_positions
+                and observed.joint_sample_ns == value.joint_sample_ns
+                and observed.monotonic_ns == value.published_ns
+                and observed.captured_at_utc == value.captured_at_utc
+                and dict(observed.images) == dict(value.images)
+            )

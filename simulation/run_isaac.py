@@ -32,7 +32,10 @@ from simulation.extensions import SceneRegistry
 from simulation.health import HEARTBEAT
 from simulation.http import BridgeSettings, create_bridge_app
 from simulation.paused_capture import PausedDemonstration, prepare_paused_capture
+from simulation.paused_deployment import load_paused_policy_deployment
+from simulation.paused_learned import PausedLearnedRuntime
 from simulation.paused_runtime import PausedReferenceRuntime
+from simulation.paused_worker import PausedPolicyWorker
 from simulation.physics_scheduling import physics_scheduling_readback, require_control_scheduling
 from simulation.policy_executor import PolicyExecutor
 from simulation.runtime_configuration import load_deployment
@@ -64,6 +67,7 @@ class SimulatorRuntime:
             StartMotion | StartTeaching | StartPolicy | StartSimulationEpisode | None
         ) = None
         self.policy_executor: PolicyExecutor | None = None
+        self.paused_policy_worker = PausedPolicyWorker(clock_ns=core.clock_ns)
         self.binding: CommandBinding | None = None
         self.active_epoch = core.epoch
         self.last_capture = 0.0
@@ -87,7 +91,13 @@ class SimulatorRuntime:
         binding = self.binding
         self.hardware.actuation_guard = partial(self.core.apply_guarded, binding)
         if isinstance(action, StartSimulationEpisode):
-            driver = PausedReferenceRuntime(self.core, action.request, self.hardware, recording)
+            driver = (
+                PausedReferenceRuntime(self.core, action.request, self.hardware, recording)
+                if action.request.controller == "reference_controller"
+                else PausedLearnedRuntime(
+                    self.core, action.request, self.hardware, self.paused_policy_worker, recording
+                )
+            )
             self.hardware.paused_driver = driver
             self.hardware.recording = recording
         elif isinstance(action, StartTeaching):
@@ -114,7 +124,8 @@ class SimulatorRuntime:
         self.policy_executor = None
         if (
             isinstance(action, StartSimulationEpisode)
-            and action.request.controller != "reference_controller"
+            and action.request.controller == "learned"
+            and self.core.paused_policy_provider is None
         ):
             raise RuntimeError(
                 "A real paused policy provider is unavailable; no scripted fallback."
@@ -321,6 +332,7 @@ class SimulatorRuntime:
             self.last_heartbeat = self.clock()
 
     def close(self) -> None:
+        self.paused_policy_worker.cancel()
         self.hardware.stop()
         with self.core.lock:
             if self.binding is None and self.core.active_command is not None:
@@ -382,7 +394,10 @@ def main() -> None:
             "A provisioned TLS certificate and key are required; plaintext is disabled."
         )
     profile, policies = load_deployment()
-    simulation_app = create_simulation_app(sensor_only=profile is not None)
+    paused_profile, paused_policies = load_paused_policy_deployment()
+    simulation_app = create_simulation_app(
+        sensor_only=profile is not None or paused_profile is not None
+    )
     from simulation.isaac_adapter import IsaacWorkcell
 
     hardware = IsaacWorkcell()
@@ -393,6 +408,9 @@ def main() -> None:
         SceneRegistry(),
         control_profile=profile,
         policy_provider=policies,
+        paused_profile=paused_profile,
+        paused_authorizer=paused_policies,
+        paused_policy_provider=paused_policies,
         tenant_id=str(settings.entra_tenant_id),
         capture_status_reader=capture_store.get,
     )

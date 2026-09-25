@@ -32,6 +32,7 @@ from learning.paused import PausedControlProfile
 from simulation.extensions import SceneRegistry, SceneSpec
 from simulation.paused_contracts import (
     PausedEpisodeAuthorizer,
+    PausedPolicyProvider,
     PausedRuntimeMetrics,
     ResolvedSimulationAuthorization,
     SimulationEpisodeCommand,
@@ -105,6 +106,7 @@ class SimulationCore:
         control_profile: ControlProfile | None = None,
         paused_profile: PausedControlProfile | None = None,
         paused_authorizer: PausedEpisodeAuthorizer | None = None,
+        paused_policy_provider: PausedPolicyProvider | None = None,
         policy_provider: PolicyProvider | None = None,
         tenant_id: str | None = None,
         capture_status_reader: Callable[[str, UUID], CaptureStatus | None] | None = None,
@@ -114,6 +116,7 @@ class SimulationCore:
         self.registry = registry
         self.control_profile = control_profile
         self.paused_profile, self.paused_authorizer = paused_profile, paused_authorizer
+        self.paused_policy_provider = paused_policy_provider
         self.policy_provider, self.tenant_id = policy_provider, tenant_id
         self.capture_status_reader = capture_status_reader
         self.clock_ns = clock_ns

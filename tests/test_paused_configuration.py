@@ -23,12 +23,17 @@ def test_paused_fingerprint_includes_all_new_driver_protocol_and_capture_code(mo
         "paused_worker.py",
         "paused_teacher.py",
         "paused_runtime.py",
+        "paused_learned.py",
+        "paused_deployment.py",
         "paused_capture.py",
         "paused_observation.py",
         "paused_contracts.py",
         "isaac_adapter.py",
         "capture_worker.py",
         "run_isaac.py",
+        "ipc.py",
+        "artifacts.py",
+        "model.py",
     } <= set(files)
     monkeypatch.setattr(
         paused_configuration,
