@@ -172,6 +172,24 @@ extents are labelled asset geometry, not current world poses. The recorded
 phase describes the waypoint whose target was issued, even when that call
 advances the route to its next waypoint.
 
+Drive diagnostics preserve stiffness, damping and maximum-effort readbacks
+independently. One unavailable getter or a nonpositive/nonfinite effort entry
+cannot erase otherwise valid gains. Invalid fields retain their bounded original
+readback and per-joint classification; nonfinite numbers are explicitly encoded
+as strings, never zero or a made-up force limit. A nonpositive value is not
+interpreted as measured contact force or proof of an independently driven DOF.
+Collision traversal explicitly includes USD instance proxies, with the same
+64-prim/eight-collider per-finger bounds and no instanceability or geometry edits.
+
+An offline read of the actual `8f34c347` image's baked reference archive
+`72956d2a7f0313d7effcff46c6b43ec616af8d2e1dd2055e4a152ad09767308e`
+confirmed the default asset has a force drive on `panda_finger_joint1` and a
+coupled `panda_finger_joint2` (`PhysxMimicJointAPI:rotX`, gearing -1, referencing
+joint 1), not two authored independent finger drives. The authored joint-1
+values are stiffness 400, damping 80 and maximum force 7.2. These are **asset
+parameters**, not verified effective runtime gains or measured forces. The
+existing nine-target action contract is unchanged.
+
 ## Reference capture vertical slice
 
 `SimulatorRuntime` dispatches only a separately authorized

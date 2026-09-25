@@ -218,11 +218,18 @@ def test_actual_loaded_drive_and_finger_geometry_diagnostics_only_read_native_st
     cell.robot.prim_path = "/World/Robot"
     cell.world.stage = SimpleNamespace(GetPrimAtPath=lambda path: root)
     pxr = sys.modules["pxr"]
+    instance_proxies = object()
+
+    def prim_range(prim, predicate=None):
+        return (root, collider) if predicate is instance_proxies else (root,)
+
     monkeypatch.setattr(
         pxr,
         "Usd",
         SimpleNamespace(
-            TimeCode=SimpleNamespace(Default=lambda: None), PrimRange=lambda prim: (root, collider)
+            TimeCode=SimpleNamespace(Default=lambda: None),
+            PrimRange=prim_range,
+            TraverseInstanceProxies=lambda: instance_proxies,
         ),
         raising=False,
     )
@@ -261,3 +268,61 @@ def test_unavailable_optional_asset_diagnostics_never_invent_drive_or_contact_va
     assert asset["links"]["panda_leftfinger"]["collision_extents"]["status"] == "unavailable"
     targets = cell.paused_reference_targets((0.35, 0.25, 0.3), True, phase="grasp", control_tick=0)
     assert cell.apply_paused_tick(targets).commanded_joint_targets == targets
+
+
+@pytest.mark.parametrize("invalid_effort", [0.0, -1.0, float("inf"), float("nan")])
+def test_invalid_effort_readback_does_not_discard_valid_actual_drive_gains(
+    paused_hardware, invalid_effort
+):
+    cell, core, request = paused_hardware
+    stiffness = tuple(float(index + 1) for index in range(9))
+    damping = tuple(float(index + 11) for index in range(9))
+    limits = (12.0,) * 8 + (invalid_effort,)
+    cell.robot.get_articulation_controller = lambda: SimpleNamespace(
+        get_gains=lambda: (stiffness, damping), get_max_efforts=lambda: limits
+    )
+    cell.prepare_paused_reference(request, core)
+    drives = cell.reference_target_evidence()["gripper_asset"]["drives"]
+    assert drives["status"] == "partial"
+    assert drives["stiffness"] == stiffness and drives["damping"] == damping
+    assert "max_effort" not in drives
+    invalid = drives["fields"]["max_effort"]
+    assert invalid["status"] == "invalid"
+    assert invalid["readback"][:8] == (12.0,) * 8
+    assert invalid["issues"][0]["joint_name"] == "panda_finger_joint2"
+    assert invalid["issues"][0]["classification"] in {"nonpositive_limit", "nonfinite"}
+    from learning.common import canonical
+
+    assert canonical(drives)
+    assert not cell.robot.actions
+
+
+def test_max_effort_getter_error_retains_actual_stiffness_and_damping(paused_hardware):
+    cell, core, request = paused_hardware
+
+    def unavailable():
+        raise RuntimeError("The physics effort-limit buffer is unavailable.")
+
+    cell.robot.get_articulation_controller = lambda: SimpleNamespace(
+        get_gains=lambda: ((20.0,) * 9, (4.0,) * 9), get_max_efforts=unavailable
+    )
+    cell.prepare_paused_reference(request, core)
+    drives = cell.reference_target_evidence()["gripper_asset"]["drives"]
+    assert drives["stiffness"] == (20.0,) * 9
+    assert drives["damping"] == (4.0,) * 9
+    assert drives["fields"]["max_effort"]["status"] == "unavailable"
+    assert "buffer is unavailable" in drives["fields"]["max_effort"]["error"]
+
+
+def test_invalid_one_gain_field_does_not_erase_the_other_actual_gain_or_effort_cap(paused_hardware):
+    cell, core, request = paused_hardware
+    cell.robot.get_articulation_controller = lambda: SimpleNamespace(
+        get_gains=lambda: ((float("nan"),) + (20.0,) * 8, (4.0,) * 9),
+        get_max_efforts=lambda: (12.0,) * 9,
+    )
+    cell.prepare_paused_reference(request, core)
+    drives = cell.reference_target_evidence()["gripper_asset"]["drives"]
+    assert drives["damping"] == (4.0,) * 9
+    assert drives["max_effort"] == (12.0,) * 9
+    assert drives["fields"]["stiffness"]["readback"][0] == "nan"
+    assert drives["fields"]["stiffness"]["issues"][0]["classification"] == "nonfinite"

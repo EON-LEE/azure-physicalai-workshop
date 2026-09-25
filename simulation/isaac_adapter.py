@@ -9,7 +9,7 @@ from copy import deepcopy
 from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from io import BytesIO
-from math import dist
+from math import dist, isfinite
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -620,32 +620,75 @@ class IsaacWorkcell:
         self._gripper_asset_evidence = self._read_gripper_asset_evidence()
         self.world.play()
 
-    def _read_gripper_asset_evidence(self) -> dict:
-        evidence = {"contact_forces_measured": False, "links": {}}
+    @staticmethod
+    def _drive_field_readback(values, name: str) -> dict:
+        require(values is not None and len(values) == 9, "Expected nine actual drive readouts")
+        readback, issues = [], []
+        for index, raw in enumerate(values):
+            require(not isinstance(raw, (bool, str, bytes)), "A drive readout is not numeric")
+            value = float(raw)
+            readback.append(value if isfinite(value) else str(value))
+            classification = (
+                "nonfinite"
+                if not isfinite(value)
+                else "nonpositive_limit"
+                if name == "max_effort" and value <= 0
+                else "negative_gain"
+                if name != "max_effort" and value < 0
+                else None
+            )
+            if classification is not None:
+                issues.append(
+                    {
+                        "joint_index": index,
+                        "joint_name": JOINT_NAMES[index],
+                        "classification": classification,
+                    }
+                )
+        return {
+            "status": "invalid" if issues else "available",
+            "readback": tuple(readback),
+            "issues": issues,
+        }
+
+    def _read_gripper_drive_evidence(self) -> dict:
+        drives = {"source": "loaded_articulation_controller", "fields": {}}
         try:
             controller = self.robot.get_articulation_controller()
-            kp, kd = controller.get_gains()
-            drives = {
-                "stiffness": vector(tuple(float(value) for value in kp), 9, "actual stiffness"),
-                "damping": vector(tuple(float(value) for value in kd), 9, "actual damping"),
-                "max_effort": vector(
-                    tuple(float(value) for value in controller.get_max_efforts()),
-                    9,
-                    "actual maximum efforts",
-                ),
-            }
-            require(
-                all(value >= 0 for value in (*drives["stiffness"], *drives["damping"]))
-                and all(value > 0 for value in drives["max_effort"]),
-                "Actual drive properties are invalid",
-            )
-            evidence["drives"] = {
-                "status": "available",
-                "source": "loaded_articulation_controller",
-                **drives,
-            }
         except (AttributeError, RuntimeError, ValueError, TypeError) as exc:
-            evidence["drives"] = {"status": "unavailable", "error": str(exc)[:512]}
+            return {**drives, "status": "unavailable", "error": str(exc)[:512]}
+        try:
+            kp, kd = controller.get_gains()
+        except (AttributeError, RuntimeError, ValueError, TypeError) as exc:
+            for name in ("stiffness", "damping"):
+                drives["fields"][name] = {"status": "unavailable", "error": str(exc)[:512]}
+        else:
+            for name, values in (("stiffness", kp), ("damping", kd)):
+                try:
+                    drives["fields"][name] = self._drive_field_readback(values, name)
+                except (ValueError, TypeError, OverflowError) as exc:
+                    drives["fields"][name] = {"status": "unavailable", "error": str(exc)[:512]}
+        try:
+            drives["fields"]["max_effort"] = self._drive_field_readback(
+                controller.get_max_efforts(), "max_effort"
+            )
+        except (AttributeError, RuntimeError, ValueError, TypeError, OverflowError) as exc:
+            drives["fields"]["max_effort"] = {"status": "unavailable", "error": str(exc)[:512]}
+        valid = 0
+        for name, field in drives["fields"].items():
+            if field["status"] == "available":
+                drives[name] = field.pop("readback")
+                field.pop("issues")
+                valid += 1
+        drives["status"] = "available" if valid == 3 else "partial" if valid else "unavailable"
+        return drives
+
+    def _read_gripper_asset_evidence(self) -> dict:
+        evidence = {
+            "contact_forces_measured": False,
+            "drives": self._read_gripper_drive_evidence(),
+            "links": {},
+        }
         for name in ("panda_leftfinger", "panda_rightfinger"):
             try:
                 from pxr import Usd, UsdPhysics
@@ -655,12 +698,13 @@ class IsaacWorkcell:
                     raise RuntimeError("The loaded finger asset prim is unavailable.")
                 cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_])
                 bounds = []
-                for index, prim in enumerate(Usd.PrimRange(root)):
-                    if index >= 64 or len(bounds) >= 8:
+                for index, prim in enumerate(Usd.PrimRange(root, Usd.TraverseInstanceProxies())):
+                    if index >= 64:
                         raise RuntimeError(
                             "The finger collision hierarchy exceeds the diagnostic cap."
                         )
                     if prim.HasAPI(UsdPhysics.CollisionAPI):
+                        require(len(bounds) < 8, "The finger collision count exceeds its cap")
                         box = cache.ComputeRelativeBound(prim, root).ComputeAlignedRange()
                         lower = vector(tuple(float(v) for v in box.GetMin()), 3, "collision lower")
                         upper = vector(tuple(float(v) for v in box.GetMax()), 3, "collision upper")
@@ -675,6 +719,7 @@ class IsaacWorkcell:
                 geometry = {
                     "status": "available",
                     "backend": "usd_asset_geometry",
+                    "traversal": "instance_proxies",
                     "frame": "finger_link_local",
                     "collision_extents": bounds,
                 }
