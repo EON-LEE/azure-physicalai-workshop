@@ -147,6 +147,38 @@ new frames only after their six actual held ticks. Any stale/repeated native
 frame, unmatched physical state or phase deadline fails without hidden physics
 steps or relaxed freshness.
 
+The paused camera barrier drains at most **eight non-advancing render calls**,
+all charged to the same original observation deadline (at most two seconds,
+including clock reads, state checks and RGB encoding). The existing real-time
+barrier remains limited to two calls under its original budget. Extra callback
+opportunities cannot extend a deadline, move physics or make an old frame fresh.
+Both camera-native rational times must match each other and the frozen physical
+time within the unchanged half-tick tolerance; a frame one full tick behind is
+still rejected. RGB and native metadata come from the same camera callback.
+
+Before and after every paused render, the runtime rechecks the complete frozen
+joint/object state and reads `SimulationManager.get_simulation_time()`,
+`get_num_physics_steps()` and Fabric `/ExternalSimulationTime.omni:time`.
+Available native clocks must agree with the frozen World time/index and remain
+unchanged throughout the barrier. Optional getter failures are explicitly marked
+`unavailable` with their reasons, never replaced with inferred values; they do
+not mask the original camera failure. The private `camera_publication_evidence`
+receipt retains one latest barrier, its original camera metadata and at most
+eight before/after attempts. It is saved before teardown, including failures
+during scene preparation before an episode exists.
+
+This ordering follows the [Isaac 6 native simulation manager](https://github.com/isaac-sim/IsaacSim/blob/v6.0.0/source/extensions/isaacsim.core.simulation_manager/plugins/isaacsim.core.simulation_manager/PluginInterface.cpp):
+the post-physics callback derives time from the integer physics count, writes
+the external Fabric clock before Hydra submission, then stores its time sample.
+The [camera callback](https://github.com/isaac-sim/IsaacSim/blob/v6.0.0/source/deprecated/isaacsim.sensors.camera/isaacsim/sensors/camera/camera.py)
+evaluates the sensor graph and reads `ReferenceTime` and RGB when a new render
+event is delivered. World and SimulationManager use the same underlying manual
+physics API; this change does not migrate clocks or offset timestamps.
+The actual `b9cb32e` attempt failed at preparation with camera time 1.316666666 s
+and World step 80/time 1.3333334028720856 s. Native manager/Fabric clocks were
+not recorded in that attempt, so delayed publication is a hypothesis, not a
+confirmed GPU root cause. Its teacher planner was never exercised.
+
 The bounded capture worker creates, appends and finalizes
 `learning.paused.capture.PausedEpisodeWriter` on one persistence thread.
 Producer mappings, byte buffers and action vectors are copied into immutable

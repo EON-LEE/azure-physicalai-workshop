@@ -51,7 +51,12 @@ from learning.contract import (
 from learning.inference import PolicyObservation
 from learning.paused import FrozenCameraSample, FrozenPolicyObservation, InitialFrozenPublication
 from simulation.asset_references import validate_usd_bundle
-from simulation.camera_observation import camera_evidence, observation_barrier, render_identity
+from simulation.camera_observation import (
+    camera_evidence,
+    observation_barrier,
+    paused_observation_barrier,
+    render_identity,
+)
 from simulation.control import (
     HoldCapture,
     TaskWatchdog,
@@ -131,6 +136,7 @@ class IsaacWorkcell:
         self.paused_publications = PausedPublicationCache()
         self.reference_target_diagnostic: dict | None = None
         self._reference_target_trace: list[dict] = []
+        self._paused_camera_diagnostic: dict = {}
 
     def load(self, spec: SceneSpec) -> None:
         self._validate_asset_bundle()
@@ -138,6 +144,7 @@ class IsaacWorkcell:
         self.paused_driver = None
         self.reference_target_diagnostic = None
         self._reference_target_trace = []
+        self._paused_camera_diagnostic = {}
         self.parked_state = None
         self.paused_publications = PausedPublicationCache()
         if self.world is not None and can_reset_in_place(self.spec, spec):
@@ -832,6 +839,63 @@ class IsaacWorkcell:
         return output.getvalue()
 
     def _paused_publication(self, core, *, deadline_ns: int | None = None) -> PausedPublication:
+        self._paused_camera_diagnostic = {
+            "schema": "physicalai.paused-camera-barrier/v1",
+            "epoch": str(core.epoch),
+            "failure": None,
+        }
+        try:
+            return self._publish_paused_camera(core, deadline_ns=deadline_ns)
+        except (RuntimeError, ValueError, TypeError) as exc:
+            self._paused_camera_diagnostic["failure"] = str(exc)
+            print(
+                "PHYSICALAI_PAUSED_CAMERA "
+                + json.dumps(self._paused_camera_diagnostic, sort_keys=True, allow_nan=False),
+                flush=True,
+            )
+            raise
+
+    def paused_camera_evidence(self) -> dict:
+        return deepcopy(self._paused_camera_diagnostic)
+
+    def _paused_native_clocks(self) -> dict:
+        import carb
+
+        evidence = {
+            "status": "available",
+            "multitick_enabled": carb.settings.get_settings().get(
+                "/rtx/hydra/supportMultiTickRate"
+            ),
+        }
+        if type(evidence["multitick_enabled"]) is not bool:
+            evidence.update(
+                status="unavailable", multitick_error="The actual multitick setting is unavailable."
+            )
+        try:
+            from isaacsim.core.simulation_manager import SimulationManager
+
+            evidence["simulation_time"] = finite(
+                SimulationManager.get_simulation_time(), "actual native simulation time"
+            )
+            evidence["physics_steps"] = integer(
+                SimulationManager.get_num_physics_steps(), "actual native physics count"
+            )
+        except (ImportError, AttributeError, RuntimeError, ValueError, TypeError) as exc:
+            evidence.update(status="unavailable", manager_error=str(exc)[:512])
+        try:
+            from isaacsim.core.experimental.utils.stage import get_current_stage
+
+            stage = get_current_stage(backend="fabric")
+            prim = stage.GetPrimAtPath("/ExternalSimulationTime")
+            attribute = prim.GetAttribute("omni:time") if prim else None
+            if not attribute:
+                raise RuntimeError("Fabric /ExternalSimulationTime.omni:time is unavailable.")
+            evidence["external_simulation_time"] = finite(attribute.Get(), "actual Fabric time")
+        except (ImportError, AttributeError, RuntimeError, ValueError, TypeError) as exc:
+            evidence.update(status="unavailable", fabric_error=str(exc)[:512])
+        return evidence
+
+    def _publish_paused_camera(self, core, *, deadline_ns: int | None = None) -> PausedPublication:
         if (
             core.paused_profile is None
             or core.tenant_id is None
@@ -847,11 +911,27 @@ class IsaacWorkcell:
         )
         before = self.frozen_physics_state(core.epoch)
         joint_ns = core.clock_ns()
+
+        def verify_frozen():
+            current = self.frozen_physics_state(core.epoch)
+            if current != before:
+                self._paused_camera_diagnostic["changed_frozen_state"] = {
+                    **asdict(current),
+                    "epoch": str(current.epoch),
+                }
+                raise RuntimeError("Physics changed during the frozen camera publication.")
+
+        self._paused_camera_diagnostic["initial_frozen_state"] = {
+            **asdict(before),
+            "epoch": str(before.epoch),
+        }
+        self._paused_camera_diagnostic["freeze_established_ns"] = freeze_ns
+        self._paused_camera_diagnostic["joint_sample_ns"] = joint_ns
         previous = {
             name: render_identity(camera.get_current_frame().get("rendering_frame"))
             for name, camera in self.cameras.items()
         }
-        rendered_ns = observation_barrier(
+        rendered_ns = paused_observation_barrier(
             self.world,
             self.cameras,
             dt=self.dt,
@@ -859,6 +939,9 @@ class IsaacWorkcell:
             clock_ns=core.clock_ns,
             deadline_ns=deadline_ns,
             previous_identities=previous,
+            read_native_clocks=self._paused_native_clocks,
+            verify_frozen=verify_frozen,
+            diagnostics=self._paused_camera_diagnostic,
         )
         rendered_utc = datetime.now(UTC).isoformat().replace("+00:00", "Z")
         images = {}
@@ -877,13 +960,13 @@ class IsaacWorkcell:
                 identity[0],
                 identity[1],
             )
-        if self.frozen_physics_state(core.epoch) != before:
-            raise RuntimeError("Physics changed while publishing the frozen camera pair.")
+        verify_frozen()
         published_ns = core.clock_ns()
         if published_ns >= deadline_ns:
             raise RuntimeError(
                 "Actual frozen camera publication exceeded its original wall deadline."
             )
+        self._paused_camera_diagnostic["published_ns"] = published_ns
         return PausedPublication(
             publication_id=uuid4(),
             scope=Scope(core.tenant_id, core.owner),

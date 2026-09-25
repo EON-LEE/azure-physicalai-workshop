@@ -100,8 +100,16 @@ def test_private_reference_diagnostics_are_saved_before_teardown_on_failure(
         lambda *a, **kw: SimpleNamespace(ready=False, activate=lambda *a: None),
     )
     diagnostic = {"latest": {"failure": "tracking limit", "control_tick": 2}, "intervals": []}
+    camera_evidence = {
+        "failure": "Camera observation is not synchronized",
+        "render_calls": 8,
+        "before": {"native_clocks": {"status": "unavailable", "fabric_error": "missing attribute"}},
+    }
     module = ModuleType("simulation.isaac_adapter")
-    module.IsaacWorkcell = lambda: SimpleNamespace(reference_target_evidence=lambda: diagnostic)
+    module.IsaacWorkcell = lambda: SimpleNamespace(
+        reference_target_evidence=lambda: diagnostic,
+        paused_camera_evidence=lambda: camera_evidence,
+    )
     monkeypatch.setitem(sys.modules, "simulation.isaac_adapter", module)
     persisted = []
 
@@ -120,4 +128,5 @@ def test_private_reference_diagnostics_are_saved_before_teardown_on_failure(
     with pytest.raises(ValueError, match="tracking limit"):
         probe.run(args)
     assert persisted[0]["reference_target_evidence"] == diagnostic
+    assert persisted[0]["camera_publication_evidence"] == camera_evidence
     assert persisted[0]["failure"] == "Target exceeds the declared 10Hz joint tracking limit"

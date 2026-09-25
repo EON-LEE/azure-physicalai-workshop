@@ -44,7 +44,10 @@ class Action:
 @pytest.fixture
 def hardware(teaching, monkeypatch):
     core, request, clock = teaching
-    settings_values = {PHYSICS_THREAD_SETTING: 0}
+    settings_values = {
+        PHYSICS_THREAD_SETTING: 0,
+        "/rtx/hydra/supportMultiTickRate": True,
+    }
 
     class RMP:
         def __init__(self, **kwargs):
@@ -91,6 +94,19 @@ def hardware(teaching, monkeypatch):
             "concatenate": lambda rows: Array(v for row in rows for v in row),
         },
         "isaacsim.core.api": {"World": object},
+        "isaacsim.core.simulation_manager": {
+            "SimulationManager": SimpleNamespace(
+                get_simulation_time=lambda: cell.world.current_time,
+                get_num_physics_steps=lambda: cell.world.current_time_step_index,
+            ),
+        },
+        "isaacsim.core.experimental.utils.stage": {
+            "get_current_stage": lambda *, backend: SimpleNamespace(
+                GetPrimAtPath=lambda path: SimpleNamespace(
+                    GetAttribute=lambda name: SimpleNamespace(Get=lambda: cell.world.current_time)
+                )
+            ),
+        },
         "isaacsim.core.api.materials": {"PhysicsMaterial": object},
         "isaacsim.core.api.objects": {"DynamicCuboid": object, "FixedCuboid": object},
         "isaacsim.core.prims": {"Articulation": object},
