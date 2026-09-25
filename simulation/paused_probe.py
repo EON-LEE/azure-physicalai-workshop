@@ -79,7 +79,13 @@ def run(args) -> dict:
             tenant_id=str(authority.grant.tenant_id),
             capture_status_reader=store.get,
         )
-        runtime = SimulatorRuntime(core, hardware, heartbeat=heartbeat, capture_store=store)
+        runtime = SimulatorRuntime(
+            core,
+            hardware,
+            heartbeat=heartbeat,
+            capture_store=store,
+            reference_preparation=permit,
+        )
         phase = "scene_preparation"
         core.activate(permit.owner, environment)
         preparation_deadline = min(
@@ -212,6 +218,9 @@ def run(args) -> dict:
                 report["reference_target_evidence"] = hardware.reference_target_evidence()
                 report["camera_publication_evidence"] = hardware.paused_camera_evidence()
                 report["gripper_servo"] = hardware.paused_gripper_servo_evidence()
+                report["reference_preparation"] = hardware.reference_preparation_evidence()
+            if runtime is not None:
+                report["paused_startup_timings"] = runtime.paused_startup_timings
             _persist_receipt(args.output, report)
         finally:
             try:

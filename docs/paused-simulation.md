@@ -337,6 +337,27 @@ before a non-advancing render publishes genuinely new native camera identities.
 Both pixel arrays and metadata come from the camera's same `rgb` publication
 callback. A previous frame is not restamped or inferred to have been frozen.
 
+The reference-only operator entry explicitly prepares its cold Lula solver,
+articulation FK wrapper, RMPflow controller and static finger collision geometry
+**before** the unchanged 60-tick warm-up and its final publication. Preparation
+does not call controller `forward`/`reset`, issue articulation actions, change
+gains or advance physics; the complete physical snapshot must remain unchanged.
+The inactive component cache is bound to the tenant/owner, environment/revision,
+epoch, profile, task, exact robot and World instances. It is consumed once by
+the freshly authorized reference command; stop, load/reset or changed binding
+cannot reuse it. The ordinary/learned runtime never implicitly precreates RMPflow.
+
+Command admission still checks actual asset identity and applies/verifies the
+owned gripper calibration. Live gain evidence is reread after application; a
+preparation-time 400 stiffness is never reported as an actual 2,000 readback.
+Only static geometry is reused. Capture backend creation remains on its bounded
+worker without SDK calls. Private `reference_preparation` and
+`paused_startup_timings` record component construction boundaries, capture wait,
+command setup and the original first-publication/joint/camera sample ages, also
+on failure. If any remaining admission work exhausts the unchanged two-second
+sample age, the command still fails instead of restamping pixels or adding
+physics ticks. Cold setup is not retried until a warm cache happens to pass.
+
 Only the first request can consume this known publication once, within two
 seconds of its original camera/joint timestamps and only if owner, environment,
 revision, epoch, native physics index/time and private physical state still

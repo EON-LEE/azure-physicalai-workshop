@@ -110,13 +110,15 @@ def test_private_reference_diagnostics_are_saved_before_teardown_on_failure(
         reference_target_evidence=lambda: diagnostic,
         paused_camera_evidence=lambda: camera_evidence,
         paused_gripper_servo_evidence=lambda: {"status": "not_applied"},
+        reference_preparation_evidence=lambda: {"components": {"duration_ms": 3600}},
     )
     monkeypatch.setitem(sys.modules, "simulation.isaac_adapter", module)
     persisted = []
 
     class Runtime:
         def __init__(self, *args, **kwargs):
-            pass
+            assert kwargs["reference_preparation"] is authorization
+            self.paused_startup_timings = {"capture_preparation_wait_ms": 12.5}
 
         def tick(self):
             raise ValueError("Target exceeds the declared 10Hz joint tracking limit")
@@ -130,4 +132,6 @@ def test_private_reference_diagnostics_are_saved_before_teardown_on_failure(
         probe.run(args)
     assert persisted[0]["reference_target_evidence"] == diagnostic
     assert persisted[0]["camera_publication_evidence"] == camera_evidence
+    assert persisted[0]["reference_preparation"]["components"]["duration_ms"] == 3600
+    assert persisted[0]["paused_startup_timings"]["capture_preparation_wait_ms"] == 12.5
     assert persisted[0]["failure"] == "Target exceeds the declared 10Hz joint tracking limit"

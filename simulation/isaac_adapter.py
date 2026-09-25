@@ -7,7 +7,7 @@ import logging
 import os
 import time
 from copy import deepcopy
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from io import BytesIO
 from math import dist, isfinite
@@ -78,6 +78,7 @@ from simulation.motion import (
     move_toward,
     rotate_toward,
 )
+from simulation.paused_contracts import ResolvedSimulationAuthorization
 from simulation.paused_control import FrozenPhysicsState
 from simulation.paused_gripper_servo import DriveReadback, PausedGripperServo
 from simulation.paused_observation import PausedPublication, PausedPublicationCache
@@ -97,6 +98,17 @@ from simulation.reference_targets import (
     verify_paused_franka_asset,
 )
 from simulation.runtime_contracts import PolicyCommand, TeachingStart
+
+
+@dataclass(frozen=True)
+class PreparedPausedReference:
+    binding: tuple[str, str, str, UUID, str, str, str, str, str | None]
+    world: World
+    robot: Franka
+    kinematics: LulaKinematicsSolver
+    articulation_kinematics: ArticulationKinematicsSolver
+    controller: RMPFlowController
+    asset_evidence: dict
 
 
 class IsaacWorkcell:
@@ -155,6 +167,9 @@ class IsaacWorkcell:
         self._grasp_frame_binding: dict | None = None
         self._paused_gripper_servo: PausedGripperServo | None = None
         self._paused_gripper_state_evidence: dict = {}
+        self._prepared_reference: PreparedPausedReference | None = None
+        self._reference_preparation_required = False
+        self._reference_preparation_evidence: dict = {}
 
     def load(self, spec: SceneSpec) -> None:
         self._validate_asset_bundle()
@@ -165,6 +180,9 @@ class IsaacWorkcell:
         self._paused_camera_diagnostic = {}
         self._gripper_asset_evidence = {}
         self._grasp_frame_binding = None
+        self._prepared_reference = None
+        self._reference_preparation_required = False
+        self._reference_preparation_evidence = {}
         self.parked_state = None
         self.paused_publications = PausedPublicationCache()
         if self.world is not None and can_reset_in_place(self.spec, spec):
@@ -298,6 +316,7 @@ class IsaacWorkcell:
             raise RuntimeError("The reference surface-defect material is not visibly bound.")
 
     def _prepare_episode(self) -> None:
+        self._prepared_reference = None
         self._restore_paused_gripper_servo()
         self.control_mode = "reference"
         self.control_done = True
@@ -596,12 +615,143 @@ class IsaacWorkcell:
             raise RuntimeError("The preview renderer changed a frozen physical scene.")
         self.parked_state = before
 
+    def _reference_components_binding(
+        self, core, task
+    ) -> tuple[str, str, str, UUID, str, str, str, str, str | None]:
+        if (
+            core.paused_profile is None
+            or core.environment is None
+            or core.owner is None
+            or core.epoch != self.scene_epoch
+            or core.spec != self.spec
+        ):
+            raise RuntimeError("The reference preparation scene binding is unavailable or changed.")
+        return (
+            core.owner,
+            core.environment.environment_id,
+            core.environment.revision,
+            core.epoch,
+            core.paused_profile.sha256,
+            task.task_id,
+            task.instruction,
+            task.goal_id,
+            core.tenant_id,
+        )
+
+    def prepare_paused_reference_components(
+        self, core: SimulationCore, authority: ResolvedSimulationAuthorization
+    ) -> None:
+        require(
+            isinstance(authority, ResolvedSimulationAuthorization)
+            and authority.controller == "reference_controller"
+            and authority.authorization_kind == "reference_collection",
+            "Nonactuating reference preparation requires explicit reference authority",
+        )
+        binding = self._reference_components_binding(core, authority.task)
+        require(
+            (authority.owner, authority.environment_id, authority.revision) == binding[:3]
+            and authority.control_profile_sha256 == core.paused_profile.sha256
+            and authority.profile_id == core.paused_profile.profile_id
+            and authority.wall_expires_at > core.clock_utc()
+            and core.active_command is None
+            and self.control_done
+            and self.controller is None
+            and self.recording is None
+            and self.paused_publications.publication is None,
+            "Reference preparation requires the approved unarmed scene before publication",
+        )
+        self.spec.require_paused_authority()
+        if self._prepared_reference is not None:
+            require(
+                self._prepared_reference.binding == binding
+                and self._prepared_reference.robot is self.robot
+                and self._prepared_reference.world is self.world,
+                "Cached reference preparation changed its loaded robot binding",
+            )
+            return
+        self._reference_preparation_required = True
+        started_ns = core.clock_ns()
+        before = self.frozen_physics_state(core.epoch)
+        details = self._reference_preparation_evidence["components"] = {
+            "started_ns": started_ns,
+            "epoch": str(core.epoch),
+            "profile_sha256": core.paused_profile.sha256,
+            "physics_step": before.physics_step,
+            "nonactuating_components_only": True,
+        }
+        try:
+            configuration = interface_config_loader.load_supported_lula_kinematics_solver_config(
+                "Franka"
+            )
+            kinematics = LulaKinematicsSolver(**configuration)
+            articulation_kinematics = ArticulationKinematicsSolver(
+                self.robot, kinematics, "right_gripper"
+            )
+            details["kinematics_ready_ns"] = core.clock_ns()
+            controller = RMPFlowController(
+                name="paused-reference-expert",
+                robot_articulation=self.robot,
+                physics_dt=1 / core.paused_profile.control_sim_hz,
+            )
+            details["controller_ready_ns"] = core.clock_ns()
+            asset_evidence = self._read_gripper_asset_evidence()
+            details["asset_evidence_ready_ns"] = core.clock_ns()
+            details["drive_readback_before_warmup"] = deepcopy(asset_evidence["drives"])
+            if self.frozen_physics_state(core.epoch) != before:
+                raise RuntimeError("Nonactuating reference preparation changed the physical scene.")
+            if self._reference_components_binding(core, authority.task) != binding:
+                raise RuntimeError("Reference preparation changed owner, epoch or profile.")
+            self._prepared_reference = PreparedPausedReference(
+                binding,
+                self.world,
+                self.robot,
+                kinematics,
+                articulation_kinematics,
+                controller,
+                {
+                    "links": deepcopy(asset_evidence["links"]),
+                    "contact_forces_measured": False,
+                },
+            )
+        finally:
+            details["completed_ns"] = core.clock_ns()
+            details["duration_ms"] = (details["completed_ns"] - started_ns) / 1e6
+
+    def reference_preparation_evidence(self) -> dict:
+        return deepcopy(self._reference_preparation_evidence)
+
     def prepare_paused_reference(self, request, core: SimulationCore) -> None:
         if request.controller != "reference_controller" or core.paused_profile is None:
             raise RuntimeError(
                 "A paused learned episode cannot select the scripted reference servo."
             )
-        self._prepare_paused_servo(request, core)
+        prepared = self._prepared_reference
+        if self._reference_preparation_required:
+            if (
+                prepared is None
+                or prepared.binding != self._reference_components_binding(core, request.task)
+                or prepared.robot is not self.robot
+                or prepared.world is not self.world
+            ):
+                raise RuntimeError(
+                    "Reference preparation cache is consumed or has a stale binding."
+                )
+            self._prepared_reference = None
+        details = self._reference_preparation_evidence["command_start"] = {
+            "started_ns": core.clock_ns(),
+            "cache_reused": prepared is not None,
+        }
+        try:
+            self._start_prepared_reference(request, core, prepared)
+        finally:
+            details["completed_ns"] = core.clock_ns()
+            details["duration_ms"] = (details["completed_ns"] - details["started_ns"]) / 1e6
+            publication = self.paused_publications.publication
+            if publication is not None:
+                details["publication_age_ns"] = details["completed_ns"] - publication.published_ns
+
+    def _start_prepared_reference(self, request, core, prepared) -> None:
+        self._prepare_paused_servo(request, core, prepared=prepared)
         if is_pick_place_task(request.task, self.spec, request.target_station_id):
             try:
                 variant_sets = self.world.stage.GetPrimAtPath(self.robot.prim_path).GetVariantSets()
@@ -618,23 +768,34 @@ class IsaacWorkcell:
                 raise ValueError(
                     "The verified reference grasp calibration asset is unavailable."
                 ) from exc
-        self.controller = RMPFlowController(
-            name="paused-reference-expert",
-            robot_articulation=self.robot,
-            physics_dt=1 / core.paused_profile.control_sim_hz,
+        self.controller = (
+            prepared.controller
+            if prepared is not None
+            else RMPFlowController(
+                name="paused-reference-expert",
+                robot_articulation=self.robot,
+                physics_dt=1 / core.paused_profile.control_sim_hz,
+            )
         )
         _, rotation = self.articulation_kinematics.compute_end_effector_pose()
         self.orientation_target = tuple(float(value) for value in rot_matrix_to_quat(rotation))
-        self._gripper_asset_evidence = self._read_gripper_asset_evidence()
+        self._gripper_asset_evidence = (
+            {**deepcopy(prepared.asset_evidence), "drives": self._read_gripper_drive_evidence()}
+            if prepared is not None
+            else self._read_gripper_asset_evidence()
+        )
         self.world.play()
 
     def prepare_paused_learned(self, request, core: SimulationCore) -> None:
         if request.controller != "learned" or request.model_sha256 is None:
             raise RuntimeError("An explicitly authorized paused learned model is required.")
+        self._prepared_reference = None
         self._prepare_paused_servo(request, core)
         self.world.play()
 
-    def _prepare_paused_servo(self, request, core: SimulationCore) -> None:
+    def _prepare_paused_servo(
+        self, request, core: SimulationCore, *, prepared: PreparedPausedReference | None = None
+    ) -> None:
         if core.paused_profile is None:
             raise RuntimeError("A separately approved paused servo profile is required.")
         self.spec.require_paused_authority()
@@ -657,13 +818,17 @@ class IsaacWorkcell:
         self._reference_target_trace = []
         self.world.set_simulation_dt(physics_dt=self.dt, rendering_dt=0.0)
         self._configure_cameras()
-        configuration = interface_config_loader.load_supported_lula_kinematics_solver_config(
-            "Franka"
-        )
-        self.kinematics = LulaKinematicsSolver(**configuration)
-        self.articulation_kinematics = ArticulationKinematicsSolver(
-            self.robot, self.kinematics, "right_gripper"
-        )
+        if prepared is not None:
+            self.kinematics = prepared.kinematics
+            self.articulation_kinematics = prepared.articulation_kinematics
+        else:
+            configuration = interface_config_loader.load_supported_lula_kinematics_solver_config(
+                "Franka"
+            )
+            self.kinematics = LulaKinematicsSolver(**configuration)
+            self.articulation_kinematics = ArticulationKinematicsSolver(
+                self.robot, self.kinematics, "right_gripper"
+            )
         self.last_effector_position = self._measured_tcp()
         self.task_watchdog = TaskWatchdog(self.position(), self.spec.station(self.target).position)
         self.grasp_verified = False
@@ -1332,6 +1497,27 @@ class IsaacWorkcell:
 
     def paused_observation(self, request, core, episode, control_tick):
         if control_tick == 0:
+            original = self.paused_publications.publication
+            self._reference_preparation_evidence["first_observation"] = {
+                "attempted_ns": core.clock_ns(),
+                "observation_started_ns": episode.interval_started_ns,
+                "publication_id": str(original.publication_id) if original is not None else None,
+                "published_ns": original.published_ns if original is not None else None,
+                "publication_age_ns": (
+                    episode.interval_started_ns - original.published_ns
+                    if original is not None
+                    else None
+                ),
+            }
+            if original is not None:
+                evidence = self._reference_preparation_evidence["first_observation"]
+                evidence["joint_sample_ns"] = original.joint_sample_ns
+                evidence["camera_sample_ns"] = {
+                    name: image.monotonic_ns for name, image in original.images
+                }
+                evidence["oldest_sample_age_ns"] = episode.interval_started_ns - min(
+                    original.joint_sample_ns, *(image.monotonic_ns for _, image in original.images)
+                )
             publication = self.paused_publications.take(
                 scope=Scope(core.tenant_id, core.owner),
                 environment_id=request.environment_id,
@@ -1882,6 +2068,7 @@ class IsaacWorkcell:
         return output.getvalue()
 
     def stop(self) -> None:
+        self._prepared_reference = None
         if self.world is not None:
             self.world.pause()
         self.controller = None

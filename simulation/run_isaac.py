@@ -32,6 +32,7 @@ from simulation.extensions import SceneRegistry
 from simulation.health import HEARTBEAT
 from simulation.http import BridgeSettings, create_bridge_app
 from simulation.paused_capture import PausedDemonstration, prepare_paused_capture
+from simulation.paused_contracts import ResolvedSimulationAuthorization
 from simulation.paused_deployment import load_paused_policy_deployment
 from simulation.paused_learned import PausedLearnedRuntime
 from simulation.paused_runtime import PausedReferenceRuntime
@@ -56,11 +57,19 @@ class SimulatorRuntime:
         clock: Callable[[], float] = time.monotonic,
         capture_factory: Callable[[CaptureBinding], CaptureBackend] | None = None,
         capture_store: CaptureStatusStore | None = None,
+        reference_preparation: ResolvedSimulationAuthorization | None = None,
     ) -> None:
         self.core, self.hardware = core, hardware
         self.heartbeat, self.clock = heartbeat, clock
         self.capture_factory = capture_factory
         self.capture_store = capture_store
+        if reference_preparation is not None and (
+            not isinstance(reference_preparation, ResolvedSimulationAuthorization)
+            or reference_preparation.controller != "reference_controller"
+        ):
+            raise ValueError("Reference components require an explicit reference authority.")
+        self.reference_preparation = reference_preparation
+        self.paused_startup_timings: dict = {}
         self.capture_worker: CaptureWorker | None = None
         self.capture_workers: dict[UUID, CaptureWorker] = {}
         self.pending_start: (
@@ -91,6 +100,7 @@ class SimulatorRuntime:
         binding = self.binding
         self.hardware.actuation_guard = partial(self.core.apply_guarded, binding)
         if isinstance(action, StartSimulationEpisode):
+            self.paused_startup_timings["hardware_started_ns"] = self.core.clock_ns()
             driver = (
                 PausedReferenceRuntime(self.core, action.request, self.hardware, recording)
                 if action.request.controller == "reference_controller"
@@ -100,6 +110,7 @@ class SimulatorRuntime:
             )
             self.hardware.paused_driver = driver
             self.hardware.recording = recording
+            self.paused_startup_timings["hardware_ready_ns"] = self.core.clock_ns()
         elif isinstance(action, StartTeaching):
             self.hardware.start_teaching(action.request, self.core, recording)
             session = self.core.teaching_sessions[(binding.owner, action.request.session_id)]
@@ -122,6 +133,13 @@ class SimulatorRuntime:
         )
         self.binding = self.core.binding(command.command_id)
         self.policy_executor = None
+        if isinstance(action, StartSimulationEpisode):
+            self.paused_startup_timings = {
+                "episode_started_ns": self.core.command_started_ns[
+                    (self.binding.owner, self.binding.command_id)
+                ],
+                "capture_preparation_started_ns": self.core.clock_ns(),
+            }
         if (
             isinstance(action, StartSimulationEpisode)
             and action.request.controller == "learned"
@@ -188,6 +206,12 @@ class SimulatorRuntime:
             return
         with self.core.lock:
             if self.capture_worker.prepared.is_set() and self.core.actuation_allowed(self.binding):
+                if isinstance(self.pending_start, StartSimulationEpisode):
+                    now = self.core.clock_ns()
+                    self.paused_startup_timings["capture_preparation_ready_ns"] = now
+                    self.paused_startup_timings["capture_preparation_wait_ms"] = (
+                        now - self.paused_startup_timings["capture_preparation_started_ns"]
+                    ) / 1e6
                 self._begin_hardware(self.pending_start, self.capture_worker)
                 self.pending_start = None
 
@@ -263,6 +287,10 @@ class SimulatorRuntime:
                 self.hardware.paused_scene_core = (
                     self.core if action.spec.learning_execution is not None else None
                 )
+                if self.reference_preparation is not None:
+                    self.hardware.prepare_paused_reference_components(
+                        self.core, self.reference_preparation
+                    )
                 if self.core.control_profile is not None or (
                     self.core.paused_profile is not None
                     and action.spec.learning_execution is not None
