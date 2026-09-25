@@ -350,6 +350,42 @@ private frozen state and live authority before every actual physics tick.
 The old real-time adapter now explicitly refuses paused policies/observations;
 its original timing limits and successful v1 behavior are unchanged.
 
+Paused checkpoints use the separate `learning.paused.artifacts` validator.
+Checkpoint v2 retains the complete upstream weight/processor/CUDA/update lineage
+checks and additionally binds simulation-time raw v3/conversion v3, the exact new
+profile, frozen criteria and conditions plan. `pretrained` remains train-only;
+it cannot be served as a nine-joint candidate. The real-time Smol validator and
+IPC v1 refuse these v2 artifacts.
+
+The real model entry is `learning.paused.model.LocalPausedSmolVLAPolicy`.
+It shares the pinned actual `SmolVLAPolicy.from_pretrained(..., strict=True,
+local_files_only=True)` implementation, local backbone and saved normalization
+processors; it never creates a stand-in model. Only two decoded RGB tensors,
+nine measured joints and the approved instruction become neural inputs. Private
+freeze evidence, IDs, task outcomes and seeds remain outside those features.
+The native 50-action output is checked as `[1, 50, 9]`, with one fresh action
+consumed by the paused guard.
+
+```bash
+python -m learning.paused.model \
+  --model-root /approved/paused-candidate \
+  --backbone-root /approved/backbone \
+  --model-sha256 "$MODEL_MANIFEST_SHA256" \
+  --binding /approved/paused-binding.json \
+  --socket-path /run/physicalai/paused-policy.sock \
+  --allowed-client-uid "$SIMULATOR_UID"
+```
+
+The binding explicitly includes scope, the paused profile, criteria/conditions
+SHAs and the canonical non-real-time flags. `learning.paused.ipc.SocketChunkPolicy`
+uses the protected Linux socket and peer UID, independent Smol request/response
+v2, exact freeze/context/content binding and the original two-second operation
+deadline across serialization, connect, every read/write and validation.
+The server rejects replayed sequences and exits on invalid/late requests rather
+than supplying a reference action. This command path has CPU codec, actual
+Linux socket and schema tests; a trained paused checkpoint/CUDA execution is
+still required before claiming real model operation or quality.
+
 Preflight reads **the actual separate outbound-rule endpoint** through
 `client.workspace_outbound_rules.list(workspace_name=...)`. The default workspace
 GET projection is insufficient. Inactive/missing approved private endpoints

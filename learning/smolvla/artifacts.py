@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import asdict
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from learning.common import (
     canonical,
@@ -23,6 +24,9 @@ from learning.gr00t.artifacts import _no_dynamic_configuration, task_contract
 from learning.smolvla import ACTION_HORIZON, POLICY_TYPE, UPSTREAM
 from learning.smolvla.adaptation import IMAGE_SIZE, validate_franka_config
 
+if TYPE_CHECKING:
+    from learning.paused.contract import PausedControlProfile
+
 MODEL_SCHEMA = "physicalai.smolvla-checkpoint/v1"
 
 
@@ -40,7 +44,7 @@ def model_contract(
     *,
     checkpoint: Path,
     scope: Scope,
-    profile: ControlProfile,
+    profile: ControlProfile | PausedControlProfile,
     task: DemonstrationSource,
     backbone_manifest_sha256: str,
     role: str,
@@ -98,6 +102,24 @@ def validate_model(
     expected_model_sha256: str,
     for_inference: bool = True,
 ) -> dict:
+    return _validate_model(
+        root,
+        expected_scope=expected_scope,
+        expected_model_sha256=expected_model_sha256,
+        for_inference=for_inference,
+    )
+
+
+def _validate_model(
+    root: Path,
+    *,
+    expected_scope: Scope,
+    expected_model_sha256: str,
+    for_inference: bool,
+    model_schema: str = MODEL_SCHEMA,
+    profile_type: type[ControlProfile] | type[PausedControlProfile] = ControlProfile,
+    extra_fields: frozenset[str] = frozenset(),
+) -> dict:
     expected_scope.validate()
     require(
         file_digest(safe_path(root, "model.json")) == sha256(expected_model_sha256),
@@ -121,18 +143,19 @@ def validate_model(
             "action_horizon",
             "n_action_steps",
             "image_size",
-        },
+        }
+        | extra_fields,
         "Smol model manifest",
     )
     require(
-        model["schema"] == MODEL_SCHEMA
+        model["schema"] == model_schema
         and model["policy_type"] == POLICY_TYPE
         and model["upstream"] == UPSTREAM,
         "Wrong explicit Smol family/model/backbone/license pins",
     )
     require(model["scope"] == asdict(expected_scope), "Smol model tenant/owner scope mismatch")
-    ControlProfile(
-        **keys(model["control_profile"], set(ControlProfile.__dataclass_fields__), "servo profile")
+    profile_type(
+        **keys(model["control_profile"], set(profile_type.__dataclass_fields__), "servo profile")
     ).validate()
     DemonstrationSource(
         kind="reference_controller",

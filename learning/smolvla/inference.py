@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from io import BytesIO
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from learning.common import ContractError, read_json, require
 from learning.contract import ControlProfile, DemonstrationSource, Scope
@@ -11,6 +12,9 @@ from learning.inference import PolicyObservation
 from learning.offline import require_lerobot
 from learning.smolvla import ACTION_HORIZON, POLICY_TYPE
 from learning.smolvla.artifacts import validate_backbone, validate_model
+
+if TYPE_CHECKING:
+    from learning.paused.contract import PausedControlProfile
 
 
 class LocalSmolVLAPolicy:
@@ -26,10 +30,29 @@ class LocalSmolVLAPolicy:
         model_sha256: str,
         expected_control_profile_sha256: str,
     ) -> None:
-        self.metadata = validate_model(
-            root, expected_scope=scope, expected_model_sha256=model_sha256
+        metadata = validate_model(root, expected_scope=scope, expected_model_sha256=model_sha256)
+        self._load(
+            root,
+            backbone_root=backbone_root,
+            scope=scope,
+            model_sha256=model_sha256,
+            expected_control_profile_sha256=expected_control_profile_sha256,
+            metadata=metadata,
+            profile=ControlProfile(**metadata["control_profile"]),
         )
-        self.profile = ControlProfile(**self.metadata["control_profile"])
+
+    def _load(
+        self,
+        root: Path,
+        *,
+        backbone_root: Path,
+        scope: Scope,
+        model_sha256: str,
+        expected_control_profile_sha256: str,
+        metadata: dict,
+        profile: ControlProfile | PausedControlProfile,
+    ) -> None:
+        self.metadata, self.profile = metadata, profile
         require(
             self.profile.sha256 == expected_control_profile_sha256, "Unapproved Smol servo profile"
         )
