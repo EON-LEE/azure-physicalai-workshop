@@ -100,7 +100,8 @@ class PausedControlProfile:
         sha256(self.servo_profile_sha256, "new paused servo fingerprint")
         _mode(self.execution_timing, self.real_time_admission)
         require(
-            self.profile_id in _PROFILE_STEP_LIMITS
+            isinstance(self.profile_id, str)
+            and self.profile_id in _PROFILE_STEP_LIMITS
             and self.velocity_target_mode == "zero"
             and self.gravity_compensation == "physx_measured_arm_only",
             "Wrong paused-simulation profile or held-control semantics",

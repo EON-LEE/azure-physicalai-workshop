@@ -7,6 +7,7 @@ from math import dist, hypot
 
 from learning.common import integer, require, sha256, token, utc, vector
 from learning.contract import bounded_joints
+from learning.paused.contract import PausedControlProfile
 
 PREDICATE_VERSION = "physicalai.measured-grasp-transport/v1"
 PREDICATE_SOURCE = {
@@ -87,9 +88,20 @@ class MeasuredTaskPredicate:
         return self.settled_seconds >= 0.3
 
 
-def evaluate_task_states(states: list[TaskState], *, initial, goal) -> dict:
+def evaluate_task_states(
+    states: list[TaskState],
+    *,
+    initial,
+    goal,
+    profile: PausedControlProfile | None = None,
+) -> dict:
+    max_steps = 1800
+    if profile is not None:
+        profile.validate()
+        max_steps = profile.max_simulation_steps
     require(
-        isinstance(states, list) and 2 <= len(states) <= 1801, "Missing actual per-tick task trace"
+        isinstance(states, list) and 2 <= len(states) <= max_steps + 1,
+        "Missing actual per-tick task trace",
     )
     predicate = MeasuredTaskPredicate(initial, goal)
     first = states[0]

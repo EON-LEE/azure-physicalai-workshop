@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import struct
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -12,6 +13,7 @@ from learning.checks.fixtures import JOINTS, PROVENANCE, SCOPE, png
 from learning.common import file_digest, require, write_json
 from learning.contract import AppliedControl, DemonstrationSource, EpisodeSpec
 from learning.paused import (
+    CONTROL_PROFILE_V2_ID,
     FrozenCameraSample,
     FrozenPolicyObservation,
     PausedControlProfile,
@@ -21,8 +23,12 @@ from learning.paused.capture import PausedEpisodeBudget, PausedEpisodeWriter
 from learning.paused.dataset import convert_dataset, validate_conversion
 
 
-def create_fixture(root: Path) -> None:
-    profile = PausedControlProfile("f" * 64)
+def create_fixture(
+    root: Path, *, profile: PausedControlProfile | None = None, full_episode: bool = False
+) -> None:
+    profile = profile or PausedControlProfile("f" * 64)
+    count = profile.max_frames if full_episode else 3
+    wall_interval_ms = 500 if full_episode else 2000
     writer = PausedEpisodeWriter(
         root,
         dataset_id="cpu-paused-fixture",
@@ -36,14 +42,16 @@ def create_fixture(root: Path) -> None:
             instruction="Test the converter without claiming a physical task.",
             goal_id="rejected",
         ),
-        budget=PausedEpisodeBudget(1_000_000_000, 601_000_000_000, 0, 1800),
+        budget=PausedEpisodeBudget(1_000_000_000, 601_000_000_000, 0, profile.max_simulation_steps),
         purpose="demonstration",
         criteria_sha256="d" * 64,
         frozen_plan_sha256="e" * 64,
     )
-    for index in range(3):
-        start = 1_000_000_000 + index * 2_000_000_000
-        utc_start = datetime(2026, 9, 20, tzinfo=UTC) + timedelta(seconds=2 * index)
+    for index in range(count):
+        start = 1_000_000_000 + index * wall_interval_ms * 1_000_000
+        utc_start = datetime(2026, 9, 20, tzinfo=UTC) + timedelta(
+            milliseconds=wall_interval_ms * index
+        )
         stamp = (utc_start + timedelta(milliseconds=100)).isoformat().replace("+00:00", "Z")
         joints = (index * 0.001, *JOINTS[1:])
         observation = FrozenPolicyObservation(
@@ -58,7 +66,7 @@ def create_fixture(root: Path) -> None:
             joint_positions=joints,
             images={
                 name: FrozenCameraSample(
-                    png(color=80 + index),
+                    png(color=80 + index % 176),
                     index,
                     index * 6,
                     start + 100_000_000,
@@ -94,15 +102,23 @@ def create_fixture(root: Path) -> None:
             hold_started_ns=start + 100_000_000,
             hold_deadline_ns=start + 2_100_000_000,
         )
-        writer.append(replace(value, terminated=index == 2))
+        writer.append(replace(value, terminated=index == count - 1))
     writer.finalize()
 
 
-def run(output: Path) -> dict:
+def run(output: Path, *, profile_version: int = 1, full_episode: bool = False) -> dict:
+    require(profile_version in (1, 2), "Choose the explicit supported paused profile version")
+    profile = (
+        PausedControlProfile("f" * 64)
+        if profile_version == 1
+        else PausedControlProfile(
+            "f" * 64, profile_id=CONTROL_PROFILE_V2_ID, max_simulation_steps=3600
+        )
+    )
     require(not output.exists(), "Choose a new CPU-only check directory")
     output.mkdir(parents=True)
     source, converted = output / "raw", output / "dataset"
-    create_fixture(source)
+    create_fixture(source, profile=profile, full_episode=full_episode)
     result = convert_dataset(
         source,
         converted,
@@ -120,18 +136,24 @@ def run(output: Path) -> dict:
     timestamps = []
     for path in tables:
         timestamps.extend(parquet.read_table(path, columns=["timestamp"])["timestamp"].to_pylist())
+    count = profile.max_frames if full_episode else 3
+    expected = [
+        struct.unpack("<f", struct.pack("<f", index / profile.control_sim_hz))[0]
+        for index in range(count)
+    ]
     require(
-        len(timestamps) == 3
-        and all(abs(a - b) <= 1e-7 for a, b in zip(timestamps, (0.0, 0.1, 0.2), strict=True)),
+        timestamps == expected,
         "Actual LeRobot timestamps differ from the measured fixture simulation clock",
     )
     report = {
         "check": "pinned-lerobot-0.4.4-paused-v3-cpu-conversion",
         "test_only": True,
         "observation_source": "test_fixture",
+        "control_profile_id": profile.profile_id,
+        "max_simulation_steps": profile.max_simulation_steps,
         "converted_frames": len(timestamps),
         "simulation_timestamps": timestamps,
-        "original_wall_interval_seconds": 2.0,
+        "original_wall_interval_seconds": 0.5 if full_episode else 2.0,
         "conversion_sha256": file_digest(converted / "conversion.json"),
         "source_timing_sha256": result["source_timing_sha256"],
         "policy_weights_loaded": False,
@@ -147,4 +169,12 @@ def run(output: Path) -> dict:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", required=True, type=Path)
-    print(json.dumps(run(parser.parse_args().output), indent=2))
+    parser.add_argument("--profile-version", type=int, choices=(1, 2), default=1)
+    parser.add_argument("--full-episode", action="store_true")
+    args = parser.parse_args()
+    print(
+        json.dumps(
+            run(args.output, profile_version=args.profile_version, full_episode=args.full_episode),
+            indent=2,
+        )
+    )

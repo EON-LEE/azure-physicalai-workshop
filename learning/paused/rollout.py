@@ -43,6 +43,7 @@ from learning.paused.evaluation import _trial, expected_model, roles, validate_p
 from learning.paused.task import PREDICATE_SOURCE, TaskState, evaluate_task_states
 
 RUNTIME_SCHEMA = "physicalai.paused-evaluation-runtime/v1"
+MAX_TASK_STATE_BYTES = 8192
 
 
 def validate_runtime(runtime: dict, plan: dict, *, require_live: bool = True) -> None:
@@ -134,10 +135,23 @@ def _grant(plan: dict, runtime: dict, grant: dict) -> list[tuple[str, dict]]:
     )
     token(grant["evaluation_run_id"], "evaluation run ID")
     sha256(grant["operator_principal_sha256"], "operator principal hash")
-    integer(grant["max_episode_wall_seconds"], "episode wall cap", 1, 600)
-    integer(grant["max_episode_physics_steps"], "episode physics cap", 6, 1800)
+    profile = PausedControlProfile(**plan["control_profile"])
+    profile.validate()
+    integer(
+        grant["max_episode_wall_seconds"],
+        "episode wall cap",
+        1,
+        profile.max_episode_wall_ms // 1000,
+    )
+    integer(
+        grant["max_episode_physics_steps"],
+        "episode physics cap",
+        profile.hold_steps,
+        profile.max_simulation_steps,
+    )
     require(
-        grant["max_episode_physics_steps"] % 6 == 0, "Episode physics cap must contain full holds"
+        grant["max_episode_physics_steps"] % profile.hold_steps == 0,
+        "Episode physics cap must contain full holds",
     )
     total = integer(
         grant["max_total_wall_seconds"], "total explicit operator wall budget", 1, 86400
@@ -230,7 +244,7 @@ def derive_trial(
                 "Actual task/control tick time or model/reference route binding differs",
             )
     task = evaluate_task_states(
-        states, initial=case["initial_pose_m"], goal=case["expected_pose_m"]
+        states, initial=case["initial_pose_m"], goal=case["expected_pose_m"], profile=profile
     )
     require(set(final_images) == set(CAMERAS), "Both final real camera frames are required")
     final_sha, end = {}, last.monotonic_ns
@@ -429,7 +443,9 @@ class PausedRolloutRecorder:
         shutil.copytree(capture_root, path / "capture", symlinks=False)
         with (path / "task-states.jsonl").open("xb") as stream:
             for state in states:
-                stream.write(canonical(asdict(state)) + b"\n")
+                line = canonical(asdict(state)) + b"\n"
+                require(len(line) <= MAX_TASK_STATE_BYTES, "Task trace exceeds row bounds")
+                stream.write(line)
         cameras = {}
         for name, image in final_images.items():
             with (path / f"{name}.png").open("xb") as stream:
@@ -562,6 +578,32 @@ class PausedRolloutRecorder:
         return self.root / "results.json"
 
 
+def _read_task_states(
+    path: Path, expected_sha256: str, profile: PausedControlProfile
+) -> list[TaskState]:
+    profile.validate()
+    maximum_count = profile.max_simulation_steps + 1
+    require(
+        path.stat().st_size <= maximum_count * MAX_TASK_STATE_BYTES,
+        "Oversized actual task-state trace",
+    )
+    require(file_digest(path) == sha256(expected_sha256), "Task-state trace changed")
+    states = []
+    with path.open("rb") as stream:
+        while line := stream.readline(MAX_TASK_STATE_BYTES + 1):
+            require(
+                len(line) <= MAX_TASK_STATE_BYTES and len(states) < maximum_count,
+                "Task trace exceeds episode bounds",
+            )
+            states.append(
+                TaskState(
+                    **keys(parse_json(line), set(TaskState.__dataclass_fields__), "task state")
+                )
+            )
+    require(len(states) >= 2, "Missing actual per-tick task trace")
+    return states
+
+
 def _verify(root: Path, result: dict, plan: dict, scope: Scope, *, require_live: bool) -> None:
     keys(
         result,
@@ -653,20 +695,9 @@ def _verify(root: Path, result: dict, plan: dict, scope: Scope, *, require_live:
             and raw.episodes[0].metadata["provenance"] == result["runtime"]["provenance"],
             "Recorded raw dataset runtime/criteria/conditions changed",
         )
-        task_file = path / "task-states.jsonl"
-        require(task_file.stat().st_size <= 1801 * 8192, "Oversized actual task-state trace")
-        require(file_digest(task_file) == attempt["task_states_sha256"], "Task-state trace changed")
-        states = []
-        with task_file.open("rb") as stream:
-            for line in stream:
-                require(
-                    len(line) <= 8192 and len(states) <= 1800, "Task trace exceeds episode bounds"
-                )
-                states.append(
-                    TaskState(
-                        **keys(parse_json(line), set(TaskState.__dataclass_fields__), "task state")
-                    )
-                )
+        states = _read_task_states(
+            path / "task-states.jsonl", attempt["task_states_sha256"], profile
+        )
         cameras = {}
         fields = set(FrozenCameraSample.__dataclass_fields__) - {"png"}
         for name, meta in keys(attempt["final_images"], set(CAMERAS), "final images").items():

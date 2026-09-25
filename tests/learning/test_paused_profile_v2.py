@@ -28,13 +28,15 @@ def selected_profile(version=2):
     return PausedControlProfile("f" * 64, profile_id=V2_PROFILE_ID, max_simulation_steps=3600)
 
 
-def capture_writer(root, *, version=2, **kwargs):
+def capture_writer(
+    root, *, version=2, purpose="demonstration", seed=10001, split="train", **kwargs
+):
     profile = selected_profile(version)
     return PausedEpisodeWriter(
         root,
         dataset_id=f"profile-v{version}-fixture",
         scope=SCOPE,
-        episode=EpisodeSpec("budget-fixture", "paused-case", "b" * 64, 10001, "train"),
+        episode=EpisodeSpec("budget-fixture", "paused-case", "b" * 64, seed, split),
         provenance=PROVENANCE,
         profile=profile,
         demonstration=DemonstrationSource(
@@ -49,7 +51,7 @@ def capture_writer(root, *, version=2, **kwargs):
             initial_physics_step=0,
             simulation_step_deadline=profile.max_simulation_steps,
         ),
-        purpose="demonstration",
+        purpose=purpose,
         criteria_sha256="d" * 64,
         frozen_plan_sha256="e" * 64,
         **kwargs,
@@ -162,6 +164,9 @@ def test_v2_profile_is_an_explicit_closed_pair_without_changing_legacy_defaults(
         (V2_PROFILE_ID, 3606),
         (V2_PROFILE_ID, 3600.0),
         ("franka-position-hold-10hz-paused-v3", 3600),
+        (None, 3600),
+        ([], 3600),
+        ({}, 3600),
     ],
 )
 def test_unknown_or_mixed_profile_budget_is_rejected(profile_id, steps):

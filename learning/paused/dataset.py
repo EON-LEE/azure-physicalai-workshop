@@ -146,7 +146,7 @@ def validate_conversion(root: Path, expected_scope: Scope) -> dict:
             episode["terminated"] is True and episode["truncated"] is False,
             "Incomplete/truncated episodes cannot train a paused model",
         )
-        counts.append(integer(episode["frame_count"], "source frame count", 2, 300))
+        counts.append(integer(episode["frame_count"], "source frame count", 2, profile.max_frames))
     require(
         (root / TIMING_FILE).stat().st_size <= sum(counts) * (MAX_FRAME_BYTES + 512),
         "Oversized timing sidecar",

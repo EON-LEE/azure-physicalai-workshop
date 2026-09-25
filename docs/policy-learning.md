@@ -257,6 +257,11 @@ The simulation budget is a closed profile-ID/limit pair: the unchanged default
 No other profile fields or wall-clock budgets change. The separate real-time
 profile and both historical 30-second results retain their original meaning;
 v2 does not promote or relabel an earlier failed/incomplete attempt.
+The v2 redesign was frozen before any v2 capture in criteria revision 3
+(`63b55c92a4d543c7b48d7c6ac0ed75f9526e5a8ec91852dac9f53b0c6804190a`).
+Its new saved-environment revisions and model-independent conditions plan must
+be bound explicitly before a real v2 run; the earlier v1 conditions hash is not
+an alias for them.
 Main-thread heartbeat gaps remain at most 2,000 ms; physical slew, tracking,
 0.2 m/s speed and 4 cm goal limits are not relaxed.
 
@@ -351,6 +356,26 @@ Capture storage does not by itself execute a model or establish physical quality
 Subsequent model/IPC/evaluation producers must explicitly consume these contracts;
 real-time 80/100 ms gates remain blocked, and no actual paused training or quality
 result is implied by contract or storage tests.
+
+Conversion counts, episode grants and task-trace limits are derived from the
+selected validated profile, not from a global replacement of 30 with 60.
+Conversion retains 300/600 full records and their original timing sidecar.
+The per-physics evaluator accepts at most 1,801 states for v1 and 3,601 for
+explicit v2, including the initial state; a call without an explicit profile
+retains its v1 ceiling. Task traces remain checksum-bound JSONL sidecars with
+the existing 8 KiB row ceiling and a total limit derived from that state's
+profile bound. Readers reject extra/missing/oversized records rather than
+truncate them. No default `read_json` limit is increased. A separate private
+runtime proof reader may use its reviewed v2-only 8 MiB envelope; that is not
+permission to widen historical v1 or arbitrary JSON artifacts.
+
+The separated CPU check supports
+`--profile-version 2 --full-episode`: the actual pinned LeRobot API writes all
+600 fixture frames and checks every Parquet timestamp against the exact
+float32 representation of the recorded simulation-step cadence. This is
+conversion compatibility, not physical training or task success. Evaluation
+duration remains derived from integer applied ticks divided by 60 Hz; float
+world-time drift is neither added to the cap nor hidden by a larger tolerance.
 
 `learning.paused.inference.PausedGuardedPolicyAdapter` provides
 `reset(context)`, `step(observation, context)` and immediate `stop()`. The caller
