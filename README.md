@@ -104,8 +104,13 @@ opt in through the closed `learning_execution` contract. Physics remains frozen
 while observations or policy predictions are pending; each accepted action then
 holds for exactly six actual 60 Hz physics steps. Wall-clock budgets and
 simulation-time limits are recorded separately, and its versioned data, models
-and results cannot qualify a real-time controller. This path has not yet completed
-real teaching-data collection, training or paired physical acceptance.
+and results cannot qualify a real-time controller. Actual Azure runs have
+exercised this path's camera, frozen-state, actuation and manifest-last storage.
+The latest recorded reference attempt applied 1,110 physics ticks and lifted
+the part approximately 29 mm, then failed the unchanged 50 mm grasp criterion.
+Its 185 captured frames are retained as truncated integration/test evidence,
+not successful demonstrations or training data. This path has not yet completed
+a successful full-task demonstration, policy training or paired physical acceptance.
 
 See [policy learning](docs/policy-learning.md),
 [the learning API](docs/learning-api.md), and
