@@ -69,6 +69,18 @@ waypoint progression advance only after six actual completed physics ticks
 and their measured conditions, not because camera or model work took wall time.
 Its automated episode authority is separate from short human jog grants.
 
+Reported simulation duration is derived from the **verified completed physics
+tick count at 60 Hz**, both per interval and for the episode. At 1,800 verified
+ticks it is exactly 30 seconds, not the deprecated World clock's accumulated
+float32 delta. The original World delta remains in private metrics as
+`raw_world_elapsed_seconds`, with `world_clock_drift_seconds` retaining its
+difference from tick-derived time. Tick-by-tick clock/epoch/actuation checks
+remain unchanged; a large clock jump or an unapproved extra tick is still an
+error. This fixes reporting of ordinary accumulation drift without extending
+the task, operation or heartbeat deadlines. At the last allowed tick the
+measured goal may succeed; otherwise the strict cap ends the episode and any
+valid completed capture remains truncated, with no 1,801st step.
+
 ### Reference-expert target generation
 
 The paused expert is called once per six actual ticks with an actual RMPflow

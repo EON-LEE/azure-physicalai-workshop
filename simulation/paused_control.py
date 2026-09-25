@@ -16,7 +16,8 @@ PENDING_WALL_NS = 2_000_000_000
 INTERVAL_WALL_NS = 5_000_000_000
 MAX_EPISODE_WALL_NS = 600_000_000_000
 HOLD_STEPS = 6
-PHYSICS_DT = 1 / 60
+PHYSICS_HZ = 60
+PHYSICS_DT = 1 / PHYSICS_HZ
 
 
 @dataclass(frozen=True)
@@ -258,7 +259,8 @@ class PausedEpisode:
                 "policy_wall_ms": (self.policy_ready_ns - self.observation_ready_ns) / 1e6,
                 "hold_wall_ms": (now - self.policy_ready_ns) / 1e6,
                 "interval_wall_ms": (now - self.interval_started_ns) / 1e6,
-                "simulated_seconds": state.world_time - self.frozen.world_time,
+                "simulated_seconds": (state.physics_step - self.frozen.physics_step) / PHYSICS_HZ,
+                "raw_world_elapsed_seconds": state.world_time - self.frozen.world_time,
                 "applied_controls": tuple(self.controls),
             }
         )
@@ -272,14 +274,21 @@ class PausedEpisode:
             self.stop_reason = reason
 
     def metrics(self) -> dict:
+        steps = self.current.physics_step - self.initial.physics_step
+        elapsed = steps / PHYSICS_HZ
+        world_elapsed = self.current.world_time - self.initial.world_time
         return {
             "execution_timing": "paused_simulation",
             "real_time_admission": False,
             "public_label": "NON_REALTIME_SIMULATION",
             "phase": self.phase,
             "wall_elapsed_ms": (self.clock_ns() - self.started_ns) / 1e6,
-            "simulation_steps": self.current.physics_step - self.initial.physics_step,
-            "simulation_elapsed_seconds": self.current.world_time - self.initial.world_time,
+            "simulation_steps": steps,
+            "simulation_elapsed_seconds": elapsed,
+            "simulation_time_basis": "verified_physics_steps",
+            "physics_hz": PHYSICS_HZ,
+            "raw_world_elapsed_seconds": world_elapsed,
+            "world_clock_drift_seconds": world_elapsed - elapsed,
             "intervals": deepcopy(self.intervals),
             "failure": self.failure,
             "failure_phase": self.failure_phase,

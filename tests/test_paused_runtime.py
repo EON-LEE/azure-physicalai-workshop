@@ -243,7 +243,9 @@ def test_invalid_completed_hold_cannot_be_dropped_to_publish_only_earlier_valid_
     assert recorder.invalid and not recorder.sealed
 
 
-@pytest.mark.parametrize("fault", [None, "proposal", "outside_driver"])
+@pytest.mark.parametrize(
+    "fault", [None, "proposal", "outside_driver", "boundary-success", "boundary-cap"]
+)
 def test_main_runtime_dispatches_real_paused_reference_and_finishes_capture_off_thread(
     paused_core,
     monkeypatch,
@@ -251,6 +253,7 @@ def test_main_runtime_dispatches_real_paused_reference_and_finishes_capture_off_
     fault,
 ):
     import time
+    from struct import pack, unpack
 
     from test_demonstration_wiring import active_capture
 
@@ -260,6 +263,10 @@ def test_main_runtime_dispatches_real_paused_reference_and_finishes_capture_off_
     core, _, request = paused_core
     core.tenant_id = str(ACTOR.tenant_id)
     state_value = replace(state(), epoch=core.epoch, physics_step=60, world_time=1.0)
+    boundary = fault in {"boundary-success", "boundary-cap"}
+    terminal_steps = 1800 if boundary else 12
+    expected_failure = fault not in {None, "boundary-success"}
+    world_dt = unpack("f", pack("f", 1 / 60))[0] if boundary else 1 / 60
 
     class World:
         def play(self):
@@ -333,14 +340,14 @@ def test_main_runtime_dispatches_real_paused_reference_and_finishes_capture_off_
             self.state = replace(
                 self.state,
                 physics_step=self.state.physics_step + 1,
-                world_time=self.state.world_time + 1 / 60,
+                world_time=self.state.world_time + world_dt,
             )
             return AppliedControl(
                 self.state.physics_step, time.monotonic_ns(), targets, (0.0,) * 9, (0.0,) * 9
             )
 
         def paused_goal_reached(self):
-            return self.steps >= 12 and fault is None
+            return self.steps >= terminal_steps and not expected_failure
 
         def advance(self):
             result = self.paused_driver.advance() if self.paused_driver else False
@@ -397,14 +404,14 @@ def test_main_runtime_dispatches_real_paused_reference_and_finishes_capture_off_
         core.dispatch_simulation_episode(ACTOR.owner_key, request)
         runtime.tick()
         assert runtime.capture_worker.prepared.wait(2)
-        for _ in range(25):
+        for _ in range(terminal_steps // 6 * 8 + 5):
             runtime.tick()
             if core.active_command is None:
                 break
-        assert hardware.steps == 12
+        assert hardware.steps == terminal_steps
         result = core.command(ACTOR.owner_key, request.command_id)
-        assert result.status == ("failed" if fault else "succeeded")
-        if fault:
+        assert result.status == ("failed" if expected_failure else "succeeded")
+        if expected_failure:
             evidence = hardware.paused_driver.episode.metrics()
             assert result.error.message == evidence["failure"]
             assert evidence["failure_phase"] == ("predicting" if fault == "proposal" else "idle")
@@ -413,12 +420,25 @@ def test_main_runtime_dispatches_real_paused_reference_and_finishes_capture_off_
         runtime.tick()
         assert core.capture(ACTOR.owner_key, request.command_id).status == "ready"
         assert uploaded[-1].endswith("manifest.json")
+        if boundary:
+            assert result.simulation_runtime.simulation_steps == 1800
+            assert result.simulation_runtime.simulation_elapsed_seconds == 30.0
+            evidence = hardware.paused_driver.episode.metrics()
+            assert evidence["raw_world_elapsed_seconds"] == pytest.approx(30.000001564621925)
+            assert len(evidence["intervals"]) == 300
+            assert (
+                result.model_dump(mode="json")["simulation_runtime"]["simulation_elapsed_seconds"]
+                == 30.0
+            )
+            assert core.capture(ACTOR.owner_key, request.command_id).receipt.frame_count == 300
+            if expected_failure:
+                assert "simulation-step budget" in result.error.message
         for _ in range(5):
             runtime.tick()
-        assert hardware.steps == 12
+        assert hardware.steps == terminal_steps
     finally:
         runtime.close()
-    if fault:
+    if expected_failure:
         evidence = hardware.paused_driver.episode.metrics()
         assert evidence["failure"] == result.error.message
         assert evidence["phase"] == "stopped"

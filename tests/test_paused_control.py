@@ -1,6 +1,7 @@
 """CPU-only freeze and timing tests. These are not GPU or real-time admission evidence."""
 
 from dataclasses import replace
+from struct import pack, unpack
 from uuid import uuid4
 
 import pytest
@@ -48,11 +49,11 @@ def ready(runtime, current, clock, *, observe_ms=300, predict_ms=500):
     return freeze
 
 
-def tick(runtime, current, clock, *, wall_ms=100):
+def tick(runtime, current, clock, *, wall_ms=100, world_dt=1 / 60):
     runtime.before_tick(current)
     clock[0] += wall_ms * 1_000_000
     current = replace(
-        current, physics_step=current.physics_step + 1, world_time=current.world_time + 1 / 60
+        current, physics_step=current.physics_step + 1, world_time=current.world_time + world_dt
     )
     done = runtime.after_tick(
         current,
@@ -253,3 +254,58 @@ def test_delayed_driver_start_cannot_renew_or_hide_original_admission_wall_time(
     )
     assert runtime.metrics()["wall_elapsed_ms"] == 500
     assert runtime.started_ns == 1_000_000_000
+
+
+def test_1800_verified_float32_ticks_report_exact_thirty_seconds_without_hiding_world_drift():
+    from simulation.paused_contracts import PausedRuntimeMetrics
+
+    runtime, initial, clock, _ = episode()
+    current = initial
+    actual_world_dt = unpack("f", pack("f", 1 / 60))[0]
+    for _ in range(300):
+        ready(runtime, current, clock, observe_ms=1, predict_ms=1)
+        for _ in range(6):
+            current, _ = tick(runtime, current, clock, wall_ms=1, world_dt=actual_world_dt)
+    evidence = runtime.metrics()
+    value = PausedRuntimeMetrics(
+        control_profile_sha256="a" * 64,
+        controller="reference_controller",
+        simulation_steps=evidence["simulation_steps"],
+        simulation_elapsed_seconds=evidence["simulation_elapsed_seconds"],
+        applied_action_count=evidence["simulation_steps"],
+    )
+    assert value.simulation_steps == 1800 and value.simulation_elapsed_seconds == 30.0
+    assert evidence["simulation_elapsed_seconds"] == 30.0
+    assert evidence["raw_world_elapsed_seconds"] == pytest.approx(30.000001564621925, abs=1e-12)
+    assert evidence["world_clock_drift_seconds"] == pytest.approx(0.000001564621925, abs=1e-12)
+    assert all(interval["simulated_seconds"] == 0.1 for interval in evidence["intervals"])
+    assert evidence["intervals"][-1]["raw_world_elapsed_seconds"] > 0.1
+    with pytest.raises(RuntimeError, match="budget"):
+        runtime.begin_observation(current)
+    with pytest.raises(RuntimeError):
+        runtime.before_tick(current)
+    assert runtime.metrics()["simulation_steps"] == 1800
+    assert "budget" in runtime.metrics()["failure"]
+
+
+def test_large_world_clock_drift_remains_a_physical_tick_failure_not_a_reporting_correction():
+    runtime, initial, clock, _ = episode()
+    ready(runtime, initial, clock)
+    with pytest.raises(RuntimeError, match="exactly one"):
+        tick(runtime, initial, clock, world_dt=1 / 60 + 0.001)
+    assert runtime.metrics()["simulation_steps"] == 0
+    runtime.cancel()
+    assert "exactly one" in runtime.metrics()["failure"]
+
+
+def test_an_excess_1801st_tick_is_not_reported_as_thirty_seconds():
+    from simulation.paused_contracts import PausedRuntimeMetrics
+
+    with pytest.raises(ValueError):
+        PausedRuntimeMetrics(
+            control_profile_sha256="a" * 64,
+            controller="reference_controller",
+            simulation_steps=1801,
+            simulation_elapsed_seconds=1801 / 60,
+            applied_action_count=1801,
+        )
