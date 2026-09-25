@@ -43,12 +43,20 @@ class VerifiedArtifacts:
 
         return Scope(str(actor.tenant_id), actor.owner_key)
 
-    def _model(self, actor, root, expected_sha, policy_type, *, inference=True):
+    def _model(
+        self, actor, root, expected_sha, policy_type, *, inference=True, execution_timing=None
+    ):
         if policy_type not in self.allowed_policy_types:
             raise Problem(
                 503, "learning_policy_unapproved", "Model license and hardware are unapproved."
             )
         module_name, _ = implementation(policy_type, model_use=True)
+        if execution_timing is not None:
+            if execution_timing != "paused_simulation" or policy_type != "smolvla":
+                raise Problem(
+                    409, "model_timing_mismatch", "Model mode and family are not supported."
+                )
+            module_name = "learning.paused"
         try:
             module = importlib.import_module(f"{module_name}.artifacts")
         except ModuleNotFoundError as exc:
@@ -68,13 +76,30 @@ class VerifiedArtifacts:
             raise Problem(409, "model_family_mismatch", "Model versions cannot be relabeled.")
         return result
 
-    def register_parent(self, actor, root: Path, expected_sha: str, registered_by: UUID):
+    @staticmethod
+    def _model_timing(model):
+        if model.get("execution_timing") is None:
+            return {}
+        profile = model["control_profile"]
+        return {
+            "execution_timing": model["execution_timing"],
+            "real_time_admission": model["real_time_admission"],
+            "control_profile_id": profile["profile_id"],
+            "control_profile_sha256": fingerprint(profile),
+            "criteria_sha256": model["criteria_sha256"],
+            "frozen_plan_sha256": model["frozen_plan_sha256"],
+        }
+
+    def register_parent(
+        self, actor, root: Path, expected_sha: str, registered_by: UUID, *, execution_timing=None
+    ):
         model = self._model(
             actor,
             root,
             expected_sha,
             self._read_json(root / "model.json")["policy_type"],
             inference=False,
+            execution_timing=execution_timing,
         )
         if model["role"] != "pretrained" or model["training"] is not None:
             raise Problem(
@@ -90,6 +115,7 @@ class VerifiedArtifacts:
                 or original.model_sha256 != expected_sha
                 or original.policy_type != model["policy_type"]
                 or original.processor_sha256 != model["processor_sha256"]
+                or original.timing_fields() != self._model_timing(model)
             ):
                 raise Problem(
                     409,
@@ -118,6 +144,7 @@ class VerifiedArtifacts:
             source_commit=model["upstream"]["source_commit"],
             model_revision=model["upstream"]["model_revision"],
             registered_by=registered_by,
+            **self._model_timing(model),
         )
         self.registry.put(
             actor, f"training-parents/{record.id}.json", record.model_dump(mode="json")
@@ -192,6 +219,12 @@ class VerifiedArtifacts:
         receipt = DemonstrationResult.model_validate(raw_receipt)
         if receipt.status != "uploaded":
             raise Problem(409, "capture_not_ready", "A verified uploaded manifest is required.")
+        if project.execution_timing is not None and receipt.episode_id != session.command_id:
+            raise Problem(
+                409,
+                "capture_provenance_mismatch",
+                "Paused capture is not from this original command.",
+            )
         expected_prefix = (
             f"{self.capture_account_url}/{self.capture_container}/"
             f"{actor.owner_key}/{receipt.episode_id}/"
@@ -211,12 +244,8 @@ class VerifiedArtifacts:
                 root,
                 max_bytes=4 * 1024**3,
             )
-            from learning.contract import validate_dataset
-
             try:
-                validated = validate_dataset(
-                    root, expected_scope=self._scope(actor), require_live=True
-                )
+                validated = self._raw_dataset(actor, project, root)
             except ValueError as exc:
                 raise Problem(
                     422, "capture_invalid", "Raw teaching data failed strict validation."
@@ -260,8 +289,28 @@ class VerifiedArtifacts:
                 revision=episode["revision"],
                 split=episode["split"],
                 task_id=project.task_id,
-                control_profile_id=project.control_profile_id,
+                **({"control_profile_id": project.control_profile_id} | project.timing_fields()),
             )
+
+    def _raw_dataset(self, actor, project, root, *, expected_sha=None):
+        if project.execution_timing == "paused_simulation":
+            from learning.paused.capture import validate_dataset
+
+            return validate_dataset(
+                root,
+                expected_scope=self._scope(actor),
+                expected_manifest_sha256=expected_sha,
+                require_live=True,
+                require_demonstrations=True,
+            )
+        from learning.contract import validate_dataset
+
+        return validate_dataset(
+            root,
+            expected_scope=self._scope(actor),
+            expected_manifest_sha256=expected_sha,
+            require_live=True,
+        )
 
     @staticmethod
     def _check_case_metadata(project, case, source_kind, episode, manifest):
@@ -287,11 +336,29 @@ class VerifiedArtifacts:
                 "capture_provenance_mismatch",
                 "Actual capture does not match its approved case, split, source, task and profile.",
             )
+        if project.execution_timing is not None and (
+            manifest.get("schema") != "physicalai.demonstrations/v3"
+            or manifest.get("execution_timing") != project.execution_timing
+            or manifest.get("real_time_admission") is not False
+            or manifest.get("purpose") != "demonstration"
+            or manifest.get("timestamp_basis") != "simulation_time"
+            or manifest.get("criteria_sha256") != project.criteria_sha256
+            or manifest.get("frozen_plan_sha256") != project.frozen_plan_sha256
+            or fingerprint(profile) != project.control_profile_sha256
+        ):
+            raise Problem(
+                409,
+                "capture_provenance_mismatch",
+                "Paused capture mode, profile or frozen criteria differs from its project.",
+            )
 
     def seal_dataset(self, actor, project, dataset_id, captures):
-        from learning.capture import assemble_dataset
         from learning.common import file_digest
-        from learning.contract import validate_dataset
+
+        if project.execution_timing == "paused_simulation":
+            from learning.paused.capture import assemble_dataset
+        else:
+            from learning.capture import assemble_dataset
 
         if project.owner_key != actor.owner_key:
             raise Problem(
@@ -314,11 +381,8 @@ class VerifiedArtifacts:
                         "Capture was replaced before dataset sealing.",
                     )
                 try:
-                    actual = validate_dataset(
-                        root,
-                        expected_scope=self._scope(actor),
-                        expected_manifest_sha256=capture.manifest_sha256,
-                        require_live=True,
+                    actual = self._raw_dataset(
+                        actor, project, root, expected_sha=capture.manifest_sha256
                     )
                 except ValueError as exc:
                     raise Problem(
@@ -364,8 +428,11 @@ class VerifiedArtifacts:
             return dataset_id, digest
 
     def _output(self, actor, specification, output_name, destination):
-        approval = self.registry.approved_plan(actor, specification)
-        config = approval["config"]
+        config = self.registry.job_configuration(actor, specification)
+        if config is None:
+            config = self.registry.approved_plan(actor, specification)["config"]
+            if not str(config.get("schema", "")).endswith("/v1"):
+                raise unavailable("Original immutable job output configuration")
         scoped = f"tenants/{actor.tenant_id}/owners/{actor.owner_key}/"
         prefix = config.get("output_prefix", "")
         if not prefix.startswith(scoped) or config.get("owner_id") != actor.owner_key:
@@ -404,7 +471,13 @@ class VerifiedArtifacts:
                     "candidate_digest_mismatch",
                     "Final model manifest digest is missing or changed.",
                 )
-            model = self._model(actor, root, expected, specification.project.policy_type)
+            model = self._model(
+                actor,
+                root,
+                expected,
+                specification.project.policy_type,
+                execution_timing=specification.project.execution_timing,
+            )
             training = model["training"]
             parent = specification.training_parent or specification.baseline
             if (
@@ -423,6 +496,7 @@ class VerifiedArtifacts:
                 }
                 or digest(canonical(model["control_profile"])) != config["control_profile_sha256"]
                 or digest(canonical(model["task"])) != config["task_sha256"]
+                or self._model_timing(model) != specification.project.timing_fields()
             ):
                 raise Problem(
                     503,
@@ -462,7 +536,10 @@ class VerifiedArtifacts:
                 azure_job_id=azure_job_id,
                 source_commit=model["upstream"]["source_commit"],
                 model_revision=model["upstream"]["model_revision"],
-                control_profile_id=specification.project.control_profile_id,
+                **(
+                    {"control_profile_id": specification.project.control_profile_id}
+                    | specification.project.timing_fields()
+                ),
             )
             key = f"jobs/{specification.run.backend_job_name}/candidate.json"
             existing = self.registry.get(actor, key)
@@ -507,8 +584,18 @@ class VerifiedArtifacts:
         with TemporaryDirectory(prefix="physicalai-verify-model-") as folder:
             root = Path(folder) / "candidate"
             self.registry.download(actor, candidate.artifact_id, root)
-            model = self._model(actor, root, candidate.manifest_sha256, candidate.policy_type)
-            if model["training"]["azure_pipeline_job_id"] != run.azure_job_id:
+            model = self._model(
+                actor,
+                root,
+                candidate.manifest_sha256,
+                candidate.policy_type,
+                execution_timing=project.execution_timing,
+            )
+            if (
+                model["training"]["azure_pipeline_job_id"] != run.azure_job_id
+                or self._model_timing(model) != project.timing_fields()
+                or not candidate.matches_timing(project)
+            ):
                 raise Problem(
                     503, "candidate_job_mismatch", "Candidate references a different training run."
                 )

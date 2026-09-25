@@ -228,6 +228,36 @@ its original command/epoch even if a different scene is now active.
 
 ## Empty-store bootstrap
 
+### Explicit paused artifacts (not runtime admission)
+
+The separate paused adapter selects `learning.paused.capture.validate_dataset`
+only for an explicitly mode-bound project. It requires raw
+`physicalai.demonstrations/v3`, `require_live=True`,
+`require_demonstrations=True`, the original command/episode, the approved case
+revision/seed/split, exact profile hash and matching frozen criteria/scene-plan
+hashes. Integration/test-purpose G0 and evaluation captures cannot become
+training data. Scripted source stays `reference_controller`; it never becomes
+a human demonstration. V3 sealing uses the native paused assembler and retains
+both original wall and simulation clocks. Old real-time data still uses the
+original validator and is never relabeled.
+
+Paused checkpoints use the separate committed
+`learning.paused.artifacts.validate_model` for
+`physicalai.smolvla-checkpoint/v2`. The default model path still rejects them.
+Their validated mode/profile/criteria/scene-plan metadata remains on capture,
+dataset, job, train-only parent and candidate records. Mixed or missing pins
+fail rather than inheriting real-time qualification. Candidate output paths
+come from the original immutable per-job config, not a mutable later project
+approval.
+
+Registering an explicitly reviewed existing paused **train-only** artifact
+requires `--execution-timing paused_simulation` in addition to the existing
+bootstrap/operator/model approval checks below. It does not download a model,
+grant GPU rights, create a released policy or enable a public operation.
+Current API/worker paused execution remains supported-but-unadmitted while
+end-to-end capture, optimizer, runtime and separate physical-report integration
+are completed. Type/fixture/codec checks do not satisfy those live gates.
+
 No fake P0 or hand-authored ready candidate is required. Once the license is
 resolved and actual approved weights are already present on the trusted worker,
 an explicitly authorized operator can register **train-only** provenance:

@@ -129,6 +129,17 @@ duration/steps, phase, model/action/reference counts, and false real-time admiss
 Missing telemetry is rejected, not replaced with zeroes. These bridge methods
 alone do not enable a public motion endpoint or runtime admission.
 
+The same complete mode/profile/criteria/scene-plan binding is retained on
+paused capture receipts, sealed datasets, teaching/job records, train-only
+parents and candidates. Legacy records omit unused new fields, retaining old
+serialization. A paused receipt must bind its original episode command as well
+as its approved case. The worker selects the separate real v3 raw validator,
+requires live demonstration-purpose evidence, and rejects integration or
+evaluation captures for training. Paused v2 checkpoint validation is explicit;
+the legacy model path still refuses it. Verified metadata does not convert a
+train-only parent/candidate into a release or make the supported-but-disabled
+paused execution capability active.
+
 ### Varied teaching cases and split isolation
 
 New projects **must explicitly freeze** `teaching_cases`:

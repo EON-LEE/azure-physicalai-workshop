@@ -2,7 +2,8 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
 import { TeachingStudio } from '../src/learning/TeachingStudio';
-import { projectSchema } from '../src/learning/contracts';
+import { datasetSchema, projectSchema, trainingSchema } from '../src/learning/contracts';
+import { LearningJobPanel } from '../src/learning/LearningJobPanel';
 import { learningApi, learningFixture } from './fixtures/learning';
 import { seventyEnvironments } from './fixtures/environment-pages';
 
@@ -53,6 +54,38 @@ describe('explicit simulation-only learning mode', () => {
     { control_profile_id: 'franka-position-hold-10hz-v1' },
   ])('rejects mixed timing or missing immutable pins: %j', (override) => {
     expect(() => projectSchema.parse({ ...projectRecord(), ...override })).toThrow();
+  });
+
+  it('keeps scripted source counts and exact paused provenance on verified capture records', () => {
+    const fixture = learningFixture().dataset.item;
+    const timing = {
+      execution_timing: 'paused_simulation', real_time_admission: false,
+      control_profile_id: 'franka-position-hold-10hz-paused-v1',
+      control_profile_sha256: 'a'.repeat(64), criteria_sha256: 'b'.repeat(64), frozen_plan_sha256: 'c'.repeat(64),
+    };
+    const parsed = datasetSchema.parse({
+      ...fixture, ...timing, captures: fixture.captures.map((capture) => ({ ...capture, ...timing })),
+    });
+    expect(parsed.reference_controller_count).toBe(1);
+    expect(parsed.human_teleop_count).toBe(0);
+    expect(parsed.captures[0]?.source).toBe('reference_controller');
+    expect(parsed.captures[0]?.real_time_admission).toBe(false);
+    expect(() => datasetSchema.parse({ ...parsed, criteria_sha256: undefined })).toThrow();
+  });
+
+  it('labels a recorded paused training job without turning it into real-time qualification', async () => {
+    const fixture = learningFixture().training;
+    const item = trainingSchema.parse({
+      ...fixture.item, execution_timing: 'paused_simulation', real_time_admission: false,
+      control_profile_id: 'franka-position-hold-10hz-paused-v1',
+      control_profile_sha256: 'a'.repeat(64), criteria_sha256: 'b'.repeat(64), frozen_plan_sha256: 'c'.repeat(64),
+    });
+    const api = learningApi();
+    api.job.mockResolvedValue({ ...fixture, item });
+    render(<LearningJobPanel api={api} initial={{ ...fixture, item }} />);
+    expect(await screen.findByText('NON_REALTIME_SIMULATION · 실시간 제어 승인 아님')).toBeInTheDocument();
+    expect(screen.getByText('optimizer step 미수신')).toBeInTheDocument();
+    expect(api.train).not.toHaveBeenCalled();
   });
 
   it('lets the operator review separate simulation and total wall budgets without enabling unready work', async () => {

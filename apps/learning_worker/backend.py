@@ -65,6 +65,10 @@ class PolicyLearningWorker:
             raise Problem(403, "worker_scope_mismatch", "Worker request scope is inconsistent.")
         if specification.run.policy_type != specification.project.policy_type:
             raise Problem(409, "worker_policy_mismatch", "The job's exact model family changed.")
+        if not specification.run.matches_timing(specification.project):
+            raise Problem(
+                409, "worker_timing_mismatch", "Job mode and frozen project timing differ."
+            )
         for record in (
             specification.dataset,
             specification.candidate,
@@ -119,6 +123,21 @@ class PolicyLearningWorker:
                 "Approved compute time exceeds the explicit USD ceiling.",
             )
         config = copy.deepcopy(approval["config"])
+        if config.get("execution_timing") != specification.project.execution_timing or (
+            specification.project.execution_timing is not None
+            and (
+                config.get("real_time_admission") is not False
+                or config.get("criteria_sha256") != specification.project.criteria_sha256
+                or config.get("frozen_plan_sha256") != specification.project.frozen_plan_sha256
+                or config.get("control_profile_sha256")
+                != specification.project.control_profile_sha256
+            )
+        ):
+            raise Problem(
+                409,
+                "worker_timing_mismatch",
+                "Approved native mode/profile/criteria differ from project.",
+            )
         timeout = config.get("parameters", {}).get("timeout_seconds")
         maximum_duration = (
             specification.project.budget.training_seconds

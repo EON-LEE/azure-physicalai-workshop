@@ -505,6 +505,7 @@ class LearningService:
         self._cost(project, body.maximum_cost_usd)
         record = TrainingRun(
             **metadata(actor, body.request_id, digest),
+            **project.timing_fields(),
             project_id=project_id,
             policy_type=project.policy_type,
             status="submitting",
@@ -736,6 +737,7 @@ class LearningService:
             or candidate.azure_job_id != run.azure_job_id
             or candidate.optimizer_steps > run.optimizer_steps
             or candidate.control_profile_id != project.control_profile_id
+            or not candidate.matches_timing(project)
         ):
             raise Problem(
                 503, "candidate_evidence_mismatch", "Training output provenance is incomplete."
@@ -879,6 +881,7 @@ class LearningService:
         self._cost(project, body.maximum_cost_usd)
         run = EvaluationRun(
             **metadata(actor, body.request_id, digest),
+            **project.timing_fields(),
             project_id=project_id,
             policy_type=project.policy_type,
             status="submitting",
@@ -1007,6 +1010,7 @@ class LearningService:
         expires = utcnow() + timedelta(seconds=duration)
         session = TeachingSession(
             **metadata(actor, body.request_id, digest),
+            **project.timing_fields(),
             project_id=project_id,
             teaching_case=case,
             source=body.source,
@@ -1351,6 +1355,7 @@ class LearningService:
         ).seal_dataset(actor, project, body.request_id, tuple(captures))
         record = DatasetVersion(
             **metadata(actor, body.request_id, digest),
+            **project.timing_fields(),
             project_id=project_id,
             artifact_id=artifact_id,
             manifest_sha256=digest_manifest,

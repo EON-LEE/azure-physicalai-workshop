@@ -6,18 +6,35 @@ const date = z.iso.datetime({ offset: true });
 const count = z.number().int().nonnegative();
 const base = { id, actor_id: id, created_at: date, updated_at: date };
 const profile = z.literal('franka-position-hold-10hz-v1');
+const timingProfile = z.enum(['franka-position-hold-10hz-v1', 'franka-position-hold-10hz-paused-v1']);
+const timingMetadata = {
+  execution_timing: z.literal('paused_simulation').optional(), real_time_admission: z.literal(false).optional(),
+  control_profile_id: timingProfile.optional(), control_profile_sha256: sha.optional(),
+  criteria_sha256: sha.optional(), frozen_plan_sha256: sha.optional(),
+};
+type TimingMetadata = z.infer<z.ZodObject<typeof timingMetadata>>;
+function consistentTiming(value: TimingMetadata, context: z.RefinementCtx) {
+  const paused = value.execution_timing === 'paused_simulation';
+  if ((paused && (value.real_time_admission !== false || value.control_profile_id !== 'franka-position-hold-10hz-paused-v1' ||
+    !value.control_profile_sha256 || !value.criteria_sha256 || !value.frozen_plan_sha256)) ||
+    (!paused && (value.control_profile_id === 'franka-position-hold-10hz-paused-v1' ||
+      [value.real_time_admission, value.control_profile_sha256, value.criteria_sha256, value.frozen_plan_sha256].some((item) => item !== undefined)))) {
+    context.addIssue({ code: 'custom', message: 'Artifact timing/profile provenance is incomplete or mixed.' });
+  }
+}
 const policyType = z.enum(['gr00t_n1_5', 'gr00t_n1_7', 'smolvla']);
 export const teachingCaseSchema = z.object({
   case_id: z.string().min(1), environment_id: z.string().min(1), revision: sha,
   seed: count, split: z.enum(['train', 'validation']),
 });
 const captureSchema = z.object({
+  ...timingMetadata,
   episode_id: id, manifest_sha256: sha, artifact_id: id, frame_count: count,
   source: z.enum(['human_teleop', 'reference_controller', 'learned']), seed: count,
-  task_id: z.string(), control_profile_id: profile, source_model_sha256: sha.nullable(),
+  task_id: z.string(), control_profile_id: timingProfile, source_model_sha256: sha.nullable(),
   case_id: z.string().nullable().default(null), environment_id: z.string().nullable().default(null),
   revision: sha.nullable().default(null), split: z.enum(['train', 'validation']).nullable().default(null),
-});
+}).superRefine(consistentTiming);
 export const budgetSchema = z.object({
   teaching_seconds: z.number().int().min(5).max(300),
   training_seconds: z.number().int().positive().max(86400),
@@ -69,13 +86,15 @@ export const projectSchema = z.object({
   }
 });
 export const datasetSchema = z.object({
+  ...timingMetadata,
   ...base, kind: z.literal('dataset'), project_id: id, status: z.literal('ready'),
   artifact_id: id, manifest_sha256: sha, episode_ids: z.array(id).min(1), seeds: z.array(count),
   human_teleop_count: count, reference_controller_count: count, learned_policy_count: count,
   evaluation_plan_sha256: sha,
   captures: z.array(captureSchema).max(1000).default([]),
-});
+}).superRefine(consistentTiming);
 export const teachingSchema = z.object({
+  ...timingMetadata,
   ...base, kind: z.literal('teaching'), project_id: id,
   teaching_case: teachingCaseSchema.nullable().default(null),
   source: z.enum(['human_teleop', 'reference_controller']),
@@ -84,9 +103,10 @@ export const teachingSchema = z.object({
   input_expires_at: date.nullable(), physical_status: z.string().nullable(),
   capture: captureSchema.nullable(),
   error_code: z.string().nullable(), message: z.string().nullable(),
-});
+}).superRefine(consistentTiming);
 const jobStatus = z.enum(['submitting', 'submission_unknown', 'submitted', 'running', 'cancelling', 'succeeded', 'failed', 'cancelled', 'timed_out', 'blocked']);
 const jobBase = {
+  ...timingMetadata,
   ...base, project_id: id, status: jobStatus, backend_job_name: z.string(),
   policy_type: policyType,
   azure_job_id: z.string().nullable(), deadline: date, approved_cost_usd: z.string(),
@@ -106,7 +126,7 @@ export const trainingSchema = z.object({
   ...jobBase, kind: z.literal('training'), dataset_id: id, parent_release_id: id.nullable(),
   pretrained_artifact_id: id.nullable(),
   optimizer_steps: count, candidate_id: id.nullable(),
-});
+}).superRefine(consistentTiming);
 export const trialSchema = z.object({
   seed: count, attempt: z.number().int().positive(), policy: z.enum(['before', 'after']),
   environment_id: z.string(), revision: sha,
@@ -137,14 +157,15 @@ export const evaluationSchema = z.object({
   ...jobBase, kind: z.literal('evaluation'), candidate_id: id, baseline_release_id: id.nullable(),
   comparison_kind: z.enum(['paired_policy', 'reference_bootstrap']),
   evaluation_plan_sha256: sha, report: z.discriminatedUnion('comparison_kind', [reportSchema, bootstrapReportSchema]).nullable(),
-});
+}).superRefine(consistentTiming);
 export const candidateSchema = z.object({
+  ...timingMetadata,
   ...base, kind: z.literal('candidate'), project_id: id, dataset_id: id, training_run_id: id,
   parent_release_id: id.nullable(), pretrained_artifact_id: id.nullable(), policy_type: z.enum(['gr00t_n1_5', 'gr00t_n1_7', 'smolvla', 'act_auxiliary']),
   model_sha256: sha, parent_model_sha256: sha, processor_sha256: sha, manifest_sha256: sha,
   artifact_id: id, optimizer_steps: count, azure_job_id: z.string(),
-  source_commit: z.string(), model_revision: z.string(), control_profile_id: profile,
-});
+  source_commit: z.string(), model_revision: z.string(), control_profile_id: timingProfile,
+}).superRefine(consistentTiming);
 export const releaseSchema = z.object({
   ...base, kind: z.literal('release'), project_id: id, candidate_id: id, evaluation_run_id: id,
   policy_type: z.enum(['gr00t_n1_5', 'gr00t_n1_7', 'smolvla', 'act_auxiliary']), model_sha256: sha, processor_sha256: sha,

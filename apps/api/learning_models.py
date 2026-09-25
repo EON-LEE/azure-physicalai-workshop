@@ -171,9 +171,10 @@ class PausedEvaluationPlan(Frozen):
         return fingerprint(self.model_dump(mode="json"))
 
 
-class ProjectTiming(Frozen):
+class TimingMetadata(Frozen):
     execution_timing: Literal["paused_simulation"] | None = None
     real_time_admission: Literal[False] | None = None
+    control_profile_id: ControlProfileId | None = None
     control_profile_sha256: Revision | None = None
     criteria_sha256: Revision | None = None
     frozen_plan_sha256: Revision | None = None
@@ -195,18 +196,14 @@ class ProjectTiming(Frozen):
         )
         profile = self.control_profile_id
         if self.execution_timing is None:
-            if any(value is not None for value in fields) or profile != PROFILE_ID:
-                raise ValueError("Legacy projects cannot implicitly adopt paused timing pins.")
-            if not isinstance(self.evaluation_plan, EvaluationPlan):
-                raise ValueError("Legacy projects retain the original real-time evaluation plan.")
+            if any(value is not None for value in fields) or profile not in (None, PROFILE_ID):
+                raise ValueError("Legacy records cannot implicitly adopt paused timing pins.")
         elif (
             any(value is None for value in fields)
             or self.real_time_admission is not False
             or profile != PAUSED_PROFILE_ID
-            or self.policy_type != "smolvla"
-            or not isinstance(self.evaluation_plan, PausedEvaluationPlan)
         ):
-            raise ValueError("Paused projects require exact mode, profile, hashes and evaluation.")
+            raise ValueError("Paused records require exact mode, profile and provenance hashes.")
         return self
 
     @model_serializer(mode="wrap")
@@ -221,7 +218,40 @@ class ProjectTiming(Frozen):
                 "frozen_plan_sha256",
             ):
                 value.pop(field, None)
+            if self.control_profile_id is None:
+                value.pop("control_profile_id", None)
         return value
+
+    def timing_fields(self) -> dict:
+        if self.execution_timing is None:
+            return {}
+        return {
+            name: getattr(self, name)
+            for name in (
+                "execution_timing",
+                "real_time_admission",
+                "control_profile_id",
+                "control_profile_sha256",
+                "criteria_sha256",
+                "frozen_plan_sha256",
+            )
+        }
+
+    def matches_timing(self, other: TimingMetadata) -> bool:
+        return self.timing_fields() == other.timing_fields()
+
+
+class ProjectTiming(TimingMetadata):
+    @model_validator(mode="after")
+    def exact_project_plan(self):
+        if self.execution_timing is None:
+            if not isinstance(self.evaluation_plan, EvaluationPlan):
+                raise ValueError("Legacy projects retain the original real-time evaluation plan.")
+        elif self.policy_type != "smolvla" or not isinstance(
+            self.evaluation_plan, PausedEvaluationPlan
+        ):
+            raise ValueError("Paused projects require SmolVLA and a separate simulation plan.")
+        return self
 
 
 def validate_teaching_partition(
@@ -453,7 +483,7 @@ class TeachingControl(Approval):
     epoch: UUID
 
 
-class CaptureReceipt(Frozen):
+class CaptureReceipt(TimingMetadata):
     episode_id: UUID
     manifest_sha256: Revision
     artifact_id: UUID
@@ -461,7 +491,7 @@ class CaptureReceipt(Frozen):
     source: SourceKind
     seed: int = Field(strict=True, ge=0)
     task_id: Identifier
-    control_profile_id: Literal["franka-position-hold-10hz-v1"]
+    control_profile_id: ControlProfileId
     source_model_sha256: Revision | None = None
     case_id: Identifier | None = None
     environment_id: Identifier | None = None
@@ -479,6 +509,7 @@ class CaptureReceipt(Frozen):
             != (case.environment_id, case.revision, case.seed, case.split)
             or self.task_id != project.task_id
             or self.control_profile_id != project.control_profile_id
+            or not self.matches_timing(project)
         ):
             raise Problem(
                 409, "capture_case_mismatch", "Capture scene, split, task or profile differs."
@@ -492,7 +523,7 @@ class CaptureReceipt(Frozen):
         return self
 
 
-class TeachingSession(OwnedRecord):
+class TeachingSession(OwnedRecord, TimingMetadata):
     kind: Literal["teaching"] = "teaching"
     project_id: UUID
     teaching_case: TeachingCase | None = None
@@ -530,7 +561,7 @@ class CreateDataset(Approval):
         return self
 
 
-class DatasetVersion(OwnedRecord):
+class DatasetVersion(OwnedRecord, TimingMetadata):
     kind: Literal["dataset"] = "dataset"
     project_id: UUID
     status: Literal["ready"] = "ready"
@@ -566,6 +597,7 @@ class DatasetVersion(OwnedRecord):
             or sum(item.source == "reference_controller" for item in self.captures)
             != self.reference_controller_count
             or sum(item.source == "learned" for item in self.captures) != self.learned_policy_count
+            or any(not item.matches_timing(self) for item in self.captures)
         ):
             raise ValueError(
                 "Dataset episode order, source and split provenance must match receipts."
@@ -599,7 +631,7 @@ class TrainingMetrics(Frozen):
     measured_at: AwareDatetime | None = None
 
 
-class PolicyCandidate(OwnedRecord):
+class PolicyCandidate(OwnedRecord, TimingMetadata):
     kind: Literal["candidate"] = "candidate"
     project_id: UUID
     dataset_id: UUID
@@ -616,7 +648,7 @@ class PolicyCandidate(OwnedRecord):
     azure_job_id: str = Field(min_length=1, max_length=2048)
     source_commit: str = Field(pattern=r"^[a-f0-9]{40}$")
     model_revision: str = Field(pattern=r"^[a-f0-9]{40}$")
-    control_profile_id: Literal["franka-position-hold-10hz-v1"]
+    control_profile_id: ControlProfileId
 
     @model_validator(mode="after")
     def actual_new_weights(self):
@@ -698,7 +730,7 @@ class BootstrapReport(Frozen):
     control_profile_sha256: Revision | None = None
 
 
-class TrainingParent(OwnedRecord):
+class TrainingParent(OwnedRecord, TimingMetadata):
     kind: Literal["training_parent"] = "training_parent"
     role: Literal["pretrained_train_only"] = "pretrained_train_only"
     policy_type: LearnedPolicyType
@@ -718,7 +750,7 @@ class JobCancellation(Frozen):
     error_code: str | None = None
 
 
-class LearningJob(OwnedRecord):
+class LearningJob(OwnedRecord, TimingMetadata):
     kind: Literal["training", "evaluation"]
     project_id: UUID
     policy_type: LearnedPolicyType = "gr00t_n1_5"

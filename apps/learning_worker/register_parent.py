@@ -20,6 +20,7 @@ def main():
     parser.add_argument("--owner-object-id", type=UUID, required=True)
     parser.add_argument("--model-root", type=Path, required=True)
     parser.add_argument("--manifest-sha256", required=True)
+    parser.add_argument("--execution-timing", choices=["paused_simulation"])
     parser.add_argument("--approve-train-only-registration", action="store_true", required=True)
     args = parser.parse_args()
     settings = WorkerSettings()
@@ -48,7 +49,11 @@ def main():
                 allowed_policy_types=settings.allowed_policy_types,
             )
             record = validator.register_parent(
-                actor, args.model_root.resolve(strict=True), args.manifest_sha256, actor.object_id
+                actor,
+                args.model_root.resolve(strict=True),
+                args.manifest_sha256,
+                actor.object_id,
+                execution_timing=args.execution_timing,
             )
             print(record.model_dump_json(exclude={"owner_key"}))
         finally:

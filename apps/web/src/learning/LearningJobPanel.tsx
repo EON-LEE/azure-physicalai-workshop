@@ -42,6 +42,14 @@ export function LearningJobPanel({ api, initial, onUpdate }: {
   return <section className="panel learning-job" aria-labelledby={`job-${job.id}`}>
     <div className="panel-heading"><h3 id={`job-${job.id}`}>{job.kind === 'training' ? `실제 ${job.policy_type} 학습 작업` : job.comparison_kind === 'reference_bootstrap' ? '최초 정책 품질·안전 평가' : 'P0/P1 paired 평가 작업'}</h3><Badge tone={job.status === 'failed' || job.status === 'blocked' ? 'red' : 'blue'}>{labels[job.status]}</Badge></div>
     <div className="learning-panel-body">
+      {job.execution_timing === 'paused_simulation' && <div className="inline-note warning" role="status">
+        <strong>NON_REALTIME_SIMULATION · 실시간 제어 승인 아님</strong>
+        <p>실제 벽시계 작업 기한과 모델·데이터의 시뮬레이션 시간은 다릅니다. 이 기록은 실시간 100ms/80ms 게이트 통과를 의미하지 않습니다.</p>
+        <dl className="learning-metadata">
+          <FieldValue label="새 control profile SHA"><code>{job.control_profile_sha256}</code></FieldValue>
+          <FieldValue label="고정된 기준 / scene conditions"><code>{job.criteria_sha256}</code><code>{job.frozen_plan_sha256}</code></FieldValue>
+        </dl>
+      </div>}
       <p>제출 접수는 학습 완료가 아닙니다. 실제 optimizer·새 checkpoint·물리 평가 근거를 따로 확인합니다.</p>
       <dl className="learning-metadata">
         <FieldValue label="Azure ML job ID"><code>{job.azure_job_id ?? '아직 실제 Azure 작업 ID를 확인하지 못했습니다'}</code></FieldValue>
