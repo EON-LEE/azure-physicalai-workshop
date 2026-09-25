@@ -7,8 +7,14 @@ from math import dist
 
 from learning.common import finite
 from simulation.extensions import SceneSpec
-from simulation.motion import InspectionRoute, move_toward
+from simulation.motion import InspectionRoute, PickPlaceRoute, move_toward
 from simulation.paused_control import FrozenPhysicsState
+from simulation.runtime_contracts import TaskDefinition
+
+PICK_PLACE_TASK_ID = "manufacturing-part-placement-v1"
+PICK_PLACE_INSTRUCTION = (
+    "Pick up the synthetic part from the source platform and place it in the quarantine tray."
+)
 
 
 class PausedReferenceTeacher:
@@ -21,17 +27,37 @@ class PausedReferenceTeacher:
         target_station_id: str,
         wall_deadline_ns: int,
         clock_ns: Callable[[], int],
+        task: TaskDefinition | None = None,
     ) -> None:
         self.spec = spec
         self.initial = initial
         self.wall_deadline_ns, self.clock_ns = wall_deadline_ns, clock_ns
-        self.route = InspectionRoute(
-            tcp,
-            initial.object_position,
-            spec.station(spec.inspection_id).position,
-            spec.station(target_station_id).position,
-            speed=min(0.1, spec.requested_speed),
-            dt=0.1,
+        if task is not None and task.task_id == PICK_PLACE_TASK_ID:
+            if (
+                task.instruction != PICK_PLACE_INSTRUCTION
+                or task.goal_id != target_station_id
+                or target_station_id != spec.rejected_id
+            ):
+                raise ValueError("The direct reference route requires the exact approved task.")
+            self.route = PickPlaceRoute(
+                tcp,
+                initial.object_position,
+                spec.station(target_station_id).position,
+                tuple(station.position for station in spec.stations),
+                speed=min(0.1, spec.requested_speed),
+                dt=0.1,
+            )
+        else:
+            self.route = InspectionRoute(
+                tcp,
+                initial.object_position,
+                spec.station(spec.inspection_id).position,
+                spec.station(target_station_id).position,
+                speed=min(0.1, spec.requested_speed),
+                dt=0.1,
+            )
+        self.lift_index = next(
+            index for index, point in enumerate(self.route.points) if point.name == "lift-part"
         )
         self.previous = initial
         self.cached = None
@@ -64,7 +90,7 @@ class PausedReferenceTeacher:
                 "Reference progression requires exactly six completed physics ticks."
             )
         self.previous = state
-        if self.route.index >= 5 and not self.grasp_verified:
+        if self.route.index > self.lift_index and not self.grasp_verified:
             if not (
                 state.object_position[2] >= self.initial.object_position[2] + 0.05
                 and dist(tcp, state.object_position) <= 0.09

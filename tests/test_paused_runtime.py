@@ -192,6 +192,27 @@ def test_teacher_proposal_failure_survives_runtime_stop_and_capture_cleanup(runn
     assert evidence["simulation_steps"] == 0
 
 
+def test_reference_trace_phase_describes_the_issued_target_not_the_next_waypoint(running):
+    runtime, _, _, hardware, _, _ = running
+    runtime.teacher.route.index = 3
+    runtime.teacher.route.target = runtime.teacher.route.current.position
+    runtime.teacher.route.settled = 0.6
+    hardware._measured_tcp = lambda: runtime.teacher.route.points[3].position
+    phases = []
+
+    def target(point, closed, *, phase, control_tick):
+        phases.append(phase)
+        return JOINTS
+
+    hardware.paused_reference_targets = target
+    for _ in range(12):
+        runtime.advance()
+        if len(phases) == 2:
+            break
+    assert runtime.teacher.route.current.name == "lift-part"
+    assert phases == ["grasp", "grasp"]
+
+
 def test_invalid_completed_hold_cannot_be_dropped_to_publish_only_earlier_valid_frames(running):
     runtime, _, _, hardware, recorder, clock = running
     for _ in range(12):

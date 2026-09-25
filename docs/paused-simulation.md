@@ -86,7 +86,16 @@ envelopes with fixed 90% planning limits (0.045 rad per arm joint and 0.0036 m
 per finger). It evaluates at most eight FK candidates, after one origin FK read,
 to bound predicted TCP displacement to `min(0.1, requested_speed) * 0.1` metres.
 The independent pressure-producing gripper target is **not** rescaled when the
-arm path is slowed. Legitimate stationary arm dwell/grasp holds remain valid.
+arm path is slowed. Like the legacy `GripperRamp`, the paused reference integrates
+from its previous **issued** finger targets, not a fresh offset from measured
+fingers at every interval. The closed/open destination is first bounded by both
+measured tracking and previous-target slew envelopes, then approached by at most
+0.0025 m in two-finger vector distance per interval. Small measured contact
+jitter can move that feasible destination without dropping accumulated pressure.
+Saturation is a legitimate pressure hold, not proof of contact or grasp; targets
+cannot jump to zero while the measured fingers remain about 0.025 m open.
+Start/reset discards old targets and cancellation still fences actual application.
+Legitimate stationary arm dwell/grasp holds remain valid.
 Malformed/out-of-range proposals, infeasible paths and blocked requested arm
 motion fail explicitly instead of being reported as a successful hold.
 
@@ -119,6 +128,49 @@ ticks and two complete v3 frames, with the episode marked truncated. At step 86,
 so its exact offending joint is unknown. CPU regressions preserve both observed
 frames and label their additional lag/proposal scenarios as synthetic; they do
 not establish full-task GPU success or learned-policy quality.
+
+### Exact manufacturing pick/place route and grasp evidence
+
+Only `manufacturing-part-placement-v1` with the exact approved instruction
+`Pick up the synthetic part from the source platform and place it in the quarantine tray.`
+and the loaded quarantine goal selects `PickPlaceRoute`. Other paused tasks and
+the legacy live reference retain `InspectionRoute`. A conflicting instruction
+using that task identifier is rejected rather than silently selecting a route.
+The task-specific route approaches directly above the source, descends, grasps,
+lifts, transfers to the frozen destination, lowers, releases and retreats. It
+does not visit the unrequested inspection station or change any saved pose.
+
+Transit tool height is the maximum of the frozen source/destination centre plus
+the unchanged 0.05 m grasp lift and 0.025 m planning clearance, and the highest
+platform top plus the 0.025 m carried-part half-height and 0.025 m clearance.
+Platform tops follow the unchanged workcell cuboids: station height minus
+0.045 m centre offset plus half their 0.04 m height. This gives 0.275 m in the
+current cell, rather than the inspection route's 0.38 m. A low initial tool
+first moves vertically to clearance before lateral approach. Transfers stay
+at clearance; descent/ascent occur only in the source/drop corridors. These
+tool/payload bounds are **not** whole-arm collision or pad-contact certification.
+The lift still needs actual measured part height, TCP proximity and finger gap
+before transport. Neither speed limits nor the 30 simulation-second deadline
+are increased; a nominal CPU route duration is not actual actuator admission.
+
+The actual source `687fabd` attempt reached 279 intervals/1,674 physics ticks
+before failing grasp verification. The part finished at its source height
+(about 0.20 m), while the wrist reached about 0.372 m and the fingers closed
+nearly to zero. At lift start the issued finger targets were only about
+0.00177 m inward of each measured finger; the old measured-relative ramp did
+not accumulate pressure. That identifies a command-generation defect, **not**
+an actual force measurement or proof that more pressure will fix grasp.
+
+Private `reference_target_evidence.gripper_asset` reads loaded drive gains and
+effort caps and bounded composed collision extents in finger-link local
+coordinates. No gain, force limit, mass, friction, pose, or physics-view setup
+is changed for diagnostics. Per-interval records add measured part positions
+and finger world poses from the documented active **Fabric hierarchy**, not a
+stale USD-world-transform fallback. Unsupported/nonfinite getters are explicitly
+`unavailable`; no default gains or invented contacts are reported. Static USD
+extents are labelled asset geometry, not current world poses. The recorded
+phase describes the waypoint whose target was issued, even when that call
+advances the route to its next waypoint.
 
 ## Reference capture vertical slice
 

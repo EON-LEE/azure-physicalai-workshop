@@ -37,6 +37,7 @@ class PausedReferenceRuntime:
             target_station_id=request.target_station_id,
             wall_deadline_ns=core.monotonic_deadlines[key],
             clock_ns=core.clock_ns,
+            task=request.task,
         )
         self.observation = None
         self.pending_frame: PausedFrameSample | None = None
@@ -71,6 +72,7 @@ class PausedReferenceRuntime:
             observation.validate(self.profile, now_ns=self.core.clock_ns())
             self.observation = observation
             self.episode.observation_ready(self.episode.freeze_id, current)
+            phase = self.teacher.route.current.name if not self.teacher.route.done else None
             planned = self.teacher.target(
                 current,
                 tcp=self.hardware._measured_tcp(),
@@ -83,7 +85,7 @@ class PausedReferenceRuntime:
                 return True
             targets = self.hardware.paused_reference_targets(
                 *planned,
-                phase=self.teacher.route.current.name,
+                phase=phase,
                 control_tick=self.complete_intervals,
             )
             self.reference_calls += 1

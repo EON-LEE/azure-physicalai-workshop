@@ -20,6 +20,9 @@ REFERENCE_LIMIT_FRACTION = 0.9
 CONTROL_DT = 0.1
 MAX_FK_CANDIDATES = 8
 MAX_REFERENCE_TRACE_INTERVALS = 300
+PLANNING_STEP_LIMITS = tuple(
+    value * CONTROL_DT * REFERENCE_LIMIT_FRACTION for value in DEFAULT_JOINT_VELOCITY_LIMITS
+)
 
 
 @dataclass(frozen=True)
@@ -30,6 +33,60 @@ class ReferenceTargetPlan:
     fk_candidate_evaluations: int
     predicted_tcp_step_m: float
     limiting_joint_indices: tuple[int, ...]
+
+
+def _path_fraction_bounds(start, requested, measured, previous, limits):
+    lower, upper = 0.0, 1.0
+    limiting_joints: set[int] = set()
+    for reference in (measured, previous):
+        if reference is None:
+            continue
+        for index, (origin, goal, center, limit) in enumerate(
+            zip(start, requested, reference, limits, strict=True)
+        ):
+            delta = goal - origin
+            if delta == 0:
+                if abs(origin - center) > limit + 1e-12:
+                    raise ValueError("No feasible reference tracking/slew path intersection.")
+                continue
+            ends = ((center - limit - origin) / delta, (center + limit - origin) / delta)
+            if max(ends) < upper:
+                limiting_joints = {index}
+            elif max(ends) == upper and upper < 1:
+                limiting_joints.add(index)
+            lower, upper = max(lower, min(ends)), min(upper, max(ends))
+    if lower > upper:
+        raise ValueError("No feasible reference tracking/slew path intersection.")
+    return lower, upper, tuple(sorted(limiting_joints))
+
+
+def reference_gripper_targets(
+    measured: tuple[float, ...], previous: tuple[float, ...] | None, *, closed: bool
+) -> tuple[float, ...]:
+    measured = bounded_joints(measured, "reference measured joints")
+    previous = (
+        bounded_joints(previous, "reference previous issued targets")
+        if previous is not None
+        else measured
+    )
+    if type(closed) is not bool:
+        raise ValueError("A reference gripper command must explicitly open or close.")
+    start = previous[7:]
+    requested = (0.0, 0.0) if closed else (0.04, 0.04)
+    _, fraction, _ = _path_fraction_bounds(
+        measured[7:], requested, measured[7:], start, PLANNING_STEP_LIMITS[7:]
+    )
+    distance = dist(measured[7:], requested)
+    feasible = (
+        move_toward(measured[7:], requested, distance * fraction)
+        if distance and fraction > 0
+        else measured[7:]
+    )
+    # Like GripperRamp, integrate from the issued target; keep a feasible
+    # pressure hold when contact prevents closure, including small measured jitter.
+    targets = move_toward(start, feasible, 0.025 * CONTROL_DT)
+    _path_fraction_bounds(targets, targets, measured[7:], start, PLANNING_STEP_LIMITS[7:])
+    return targets
 
 
 def plan_reference_targets(
@@ -53,30 +110,9 @@ def plan_reference_targets(
 
     # The gripper already has a pressure target; arm retiming must not release it.
     start = measured[:7] + requested[7:]
-    lower, upper = 0.0, 1.0
-    limiting_joints: set[int] = set()
-    limits = tuple(
-        value * CONTROL_DT * REFERENCE_LIMIT_FRACTION for value in DEFAULT_JOINT_VELOCITY_LIMITS
+    lower, upper, limiting_joints = _path_fraction_bounds(
+        start, requested, measured, previous, PLANNING_STEP_LIMITS
     )
-    for reference in (measured, previous):
-        if reference is None:
-            continue
-        for index, (origin, goal, center, limit) in enumerate(
-            zip(start, requested, reference, limits, strict=True)
-        ):
-            delta = goal - origin
-            if delta == 0:
-                if abs(origin - center) > limit:
-                    raise ValueError("No feasible reference tracking/slew path intersection.")
-                continue
-            ends = ((center - limit - origin) / delta, (center + limit - origin) / delta)
-            if max(ends) < upper:
-                limiting_joints = {index}
-            elif max(ends) == upper and upper < 1:
-                limiting_joints.add(index)
-            lower, upper = max(lower, min(ends)), min(upper, max(ends))
-    if lower > upper:
-        raise ValueError("No feasible reference tracking/slew path intersection.")
     distance = dist(start, requested)
     if distance and upper <= 1e-12:
         raise ValueError("Requested reference motion has no feasible forward progress.")
@@ -92,7 +128,7 @@ def plan_reference_targets(
             targets = validate_position_target(measured, targets, previous)
             check_measured_motion(origin_tcp, predicted, targets, dt=CONTROL_DT, speed_limit=speed)
             return ReferenceTargetPlan(
-                targets, fraction, upper, candidate, displacement, tuple(sorted(limiting_joints))
+                targets, fraction, upper, candidate, displacement, limiting_joints
             )
         reduced = max(lower, fraction / 2)
         if reduced >= fraction:

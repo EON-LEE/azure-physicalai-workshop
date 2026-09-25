@@ -80,6 +80,7 @@ from simulation.reference_targets import (
     MAX_REFERENCE_TRACE_INTERVALS,
     REFERENCE_LIMIT_FRACTION,
     plan_reference_targets,
+    reference_gripper_targets,
     reference_tracking_violations,
 )
 from simulation.runtime_contracts import PolicyCommand, TeachingStart
@@ -137,6 +138,7 @@ class IsaacWorkcell:
         self.reference_target_diagnostic: dict | None = None
         self._reference_target_trace: list[dict] = []
         self._paused_camera_diagnostic: dict = {}
+        self._gripper_asset_evidence: dict = {}
 
     def load(self, spec: SceneSpec) -> None:
         self._validate_asset_bundle()
@@ -145,6 +147,7 @@ class IsaacWorkcell:
         self.reference_target_diagnostic = None
         self._reference_target_trace = []
         self._paused_camera_diagnostic = {}
+        self._gripper_asset_evidence = {}
         self.parked_state = None
         self.paused_publications = PausedPublicationCache()
         if self.world is not None and can_reset_in_place(self.spec, spec):
@@ -614,7 +617,99 @@ class IsaacWorkcell:
         self.grasp_verified = False
         self.peak_tcp_speed = 0.0
         self.paused_measured_success = False
+        self._gripper_asset_evidence = self._read_gripper_asset_evidence()
         self.world.play()
+
+    def _read_gripper_asset_evidence(self) -> dict:
+        evidence = {"contact_forces_measured": False, "links": {}}
+        try:
+            controller = self.robot.get_articulation_controller()
+            kp, kd = controller.get_gains()
+            drives = {
+                "stiffness": vector(tuple(float(value) for value in kp), 9, "actual stiffness"),
+                "damping": vector(tuple(float(value) for value in kd), 9, "actual damping"),
+                "max_effort": vector(
+                    tuple(float(value) for value in controller.get_max_efforts()),
+                    9,
+                    "actual maximum efforts",
+                ),
+            }
+            require(
+                all(value >= 0 for value in (*drives["stiffness"], *drives["damping"]))
+                and all(value > 0 for value in drives["max_effort"]),
+                "Actual drive properties are invalid",
+            )
+            evidence["drives"] = {
+                "status": "available",
+                "source": "loaded_articulation_controller",
+                **drives,
+            }
+        except (AttributeError, RuntimeError, ValueError, TypeError) as exc:
+            evidence["drives"] = {"status": "unavailable", "error": str(exc)[:512]}
+        for name in ("panda_leftfinger", "panda_rightfinger"):
+            try:
+                from pxr import Usd, UsdPhysics
+
+                root = self.world.stage.GetPrimAtPath(f"{self.robot.prim_path}/{name}")
+                if not root:
+                    raise RuntimeError("The loaded finger asset prim is unavailable.")
+                cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_])
+                bounds = []
+                for index, prim in enumerate(Usd.PrimRange(root)):
+                    if index >= 64 or len(bounds) >= 8:
+                        raise RuntimeError(
+                            "The finger collision hierarchy exceeds the diagnostic cap."
+                        )
+                    if prim.HasAPI(UsdPhysics.CollisionAPI):
+                        box = cache.ComputeRelativeBound(prim, root).ComputeAlignedRange()
+                        lower = vector(tuple(float(v) for v in box.GetMin()), 3, "collision lower")
+                        upper = vector(tuple(float(v) for v in box.GetMax()), 3, "collision upper")
+                        require(
+                            all(a <= b for a, b in zip(lower, upper, strict=True)),
+                            "Invalid collision extent",
+                        )
+                        bounds.append(
+                            {"prim_path": str(prim.GetPath()), "lower_m": lower, "upper_m": upper}
+                        )
+                require(bounds, "No composed finger collision extents are available")
+                geometry = {
+                    "status": "available",
+                    "backend": "usd_asset_geometry",
+                    "frame": "finger_link_local",
+                    "collision_extents": bounds,
+                }
+            except (ImportError, AttributeError, RuntimeError, ValueError, TypeError) as exc:
+                geometry = {"status": "unavailable", "error": str(exc)[:512]}
+            evidence["links"][name] = {"collision_extents": geometry}
+        return evidence
+
+    def _read_finger_world_poses(self) -> dict:
+        poses = {}
+        for name in ("panda_leftfinger", "panda_rightfinger"):
+            try:
+                from isaacsim.core.experimental.utils.stage import get_current_stage
+                from isaacsim.core.experimental.utils.xform import get_world_pose
+
+                prim = get_current_stage(backend="fabric").GetPrimAtPath(
+                    f"{self.robot.prim_path}/{name}"
+                )
+                if not prim:
+                    raise RuntimeError("The active Fabric finger prim is unavailable.")
+                position, orientation = get_world_pose(prim, device="cpu")
+                poses[name] = {
+                    "status": "available",
+                    "backend": "fabric_hierarchy",
+                    "physics_step": int(self.world.current_time_step_index),
+                    "position_m": vector(
+                        tuple(float(v) for v in position.numpy()), 3, "finger world position"
+                    ),
+                    "orientation_wxyz": vector(
+                        tuple(float(v) for v in orientation.numpy()), 4, "finger world orientation"
+                    ),
+                }
+            except (ImportError, AttributeError, RuntimeError, ValueError, TypeError) as exc:
+                poses[name] = {"status": "unavailable", "error": str(exc)[:512]}
+        return poses
 
     def paused_reference_targets(
         self, point: tuple[float, float, float], closed: bool, *, phase: str, control_tick: int
@@ -645,6 +740,7 @@ class IsaacWorkcell:
             "last_issued_targets": None,
             "actual_hold_steps": 0,
             "failure": None,
+            "part_position": self.position(),
         }
         try:
             require(
@@ -731,8 +827,10 @@ class IsaacWorkcell:
                 integer(index, "reference joint index", 0, 6)
                 targets[index] = value
             diagnostic["raw_rmp_joint_indices"] = selected
-            targets[7:] = move_toward(
-                joints[7:], (0.0, 0.0) if closed else (0.04, 0.04), 0.025 / 10
+            targets[7:] = reference_gripper_targets(joints, self.issued_targets, closed=closed)
+            diagnostic["gripper_command"] = "close" if closed else "open"
+            diagnostic["gripper_target_origin"] = (
+                "previous_issued" if self.issued_targets is not None else "initial_measured"
             )
             diagnostic["requested_targets"] = tuple(targets)
             diagnostic["limit_violations"] = reference_tracking_violations(
@@ -771,6 +869,7 @@ class IsaacWorkcell:
             "latest": deepcopy(self.reference_target_diagnostic),
             "intervals": deepcopy(self._reference_target_trace),
             "max_retained_intervals": MAX_REFERENCE_TRACE_INTERVALS,
+            "gripper_asset": deepcopy(self._gripper_asset_evidence),
         }
 
     def apply_paused_tick(self, targets: tuple[float, ...]) -> AppliedControl:
@@ -812,6 +911,8 @@ class IsaacWorkcell:
             diagnostic["grasp_verified"] = self.grasp_verified
             diagnostic["measured_goal_error_m"] = self.task_watchdog.goal_error_m
             if diagnostic["actual_hold_steps"] == 6:
+                diagnostic["last_part_position"] = self.position()
+                diagnostic["last_finger_world_poses"] = self._read_finger_world_poses()
                 self._reference_target_trace.append(deepcopy(diagnostic))
         return AppliedControl(
             int(self.world.current_time_step_index), stamp, targets, (0.0,) * 9, efforts

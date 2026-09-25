@@ -88,8 +88,7 @@ class InspectionRoute:
         speed: float,
         dt: float = 1 / 60,
     ) -> None:
-        if not 0 < speed <= 0.25 or not 0 < dt <= 0.1:
-            raise ValueError("Reference route limits are invalid.")
+        self._initialize(start, speed, dt)
         lift = max(0.38, part[2] + 0.14, inspection[2] + 0.14, destination[2] + 0.14)
         self.points = (
             Waypoint("lift-clear", (start[0], start[1], max(lift, start[2])), False),
@@ -105,6 +104,10 @@ class InspectionRoute:
             Waypoint("release", destination, False, 0.6),
             Waypoint("retreat", (destination[0], destination[1], lift), False, 0.2),
         )
+
+    def _initialize(self, start: Point, speed: float, dt: float) -> None:
+        if not 0 < speed <= 0.25 or not 0 < dt <= 0.1:
+            raise ValueError("Reference route limits are invalid.")
         self.index = 0
         self.target = start
         self.speed = speed
@@ -147,3 +150,47 @@ class InspectionRoute:
         else:
             self.settled = 0.0
         return self.target, waypoint.closed
+
+
+class PickPlaceRoute(InspectionRoute):
+    """Task-specific tool/payload clearance; not whole-arm collision certification."""
+
+    def __init__(
+        self,
+        start: Point,
+        part: Point,
+        destination: Point,
+        stations: tuple[Point, ...],
+        speed: float,
+        dt: float = 0.1,
+    ) -> None:
+        self._initialize(start, speed, dt)
+        if not stations or any(
+            len(point) != 3 or not all(isfinite(value) for value in point)
+            for point in (start, part, destination, *stations)
+        ):
+            raise ValueError("Finite frozen workcell positions are required for the task route.")
+        # Match the unchanged 5 cm part and platform cuboids built by IsaacWorkcell.load.
+        platform_top = max(point[2] - 0.045 + 0.04 / 2 for point in stations)
+        half_part, clearance, required_lift = 0.025, 0.025, 0.05
+        lift = max(
+            platform_top + half_part + clearance,
+            part[2] + required_lift + clearance,
+            destination[2] + required_lift + clearance,
+        )
+        if not 0.08 <= lift <= 0.6:
+            raise ValueError("The task clearance leaves the existing measured workspace.")
+        initial_lift = (
+            (Waypoint("lift-clear", (start[0], start[1], lift), False),) if start[2] < lift else ()
+        )
+        self.points = (
+            *initial_lift,
+            Waypoint("approach-part", (part[0], part[1], lift), False),
+            Waypoint("lower-to-part", part, False),
+            Waypoint("grasp", part, True, 0.65),
+            Waypoint("lift-part", (part[0], part[1], lift), True),
+            Waypoint("to-destination", (destination[0], destination[1], lift), True),
+            Waypoint("lower-to-destination", destination, True),
+            Waypoint("release", destination, False, 0.6),
+            Waypoint("retreat", (destination[0], destination[1], lift), False, 0.2),
+        )
