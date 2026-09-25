@@ -15,6 +15,7 @@ from contracts.validate_environment import (
     validate_environment,
     validate_paused_learning_environment,
 )
+from simulation.paused_profiles import profile_step_limit
 
 
 @dataclass(frozen=True)
@@ -33,12 +34,15 @@ class PausedSceneAuthority:
     max_wall_seconds: int
 
     def __post_init__(self) -> None:
+        versions = {
+            "physicalai.paused-simulation/v1": "franka-position-hold-10hz-paused-v1",
+            "physicalai.paused-simulation/v2": "franka-position-hold-10hz-paused-v2",
+        }
         if (
-            self.schema != "physicalai.paused-simulation/v1"
+            versions.get(self.schema) != self.profile_id
             or self.execution_timing != "paused_simulation"
-            or self.profile_id != "franka-position-hold-10hz-paused-v1"
             or type(self.max_simulation_seconds) is not int
-            or not 1 <= self.max_simulation_seconds <= 30
+            or not 1 <= self.max_simulation_seconds <= profile_step_limit(self.profile_id) // 60
             or type(self.max_wall_seconds) is not int
             or not 1 <= self.max_wall_seconds <= 600
         ):

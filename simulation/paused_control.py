@@ -9,6 +9,7 @@ from uuid import UUID, uuid4
 
 from learning.common import finite, integer, vector
 from learning.contract import AppliedControl, bounded_joints
+from learning.paused import PausedControlProfile
 from simulation.control import validate_position_target
 from simulation.motion import arm_gravity_efforts
 
@@ -70,12 +71,16 @@ class PausedEpisode:
         authorized: Callable[[], bool],
         clock_ns: Callable[[], int],
         started_ns: int | None = None,
+        profile: PausedControlProfile | None = None,
     ) -> None:
         initial.validate()
         now_ns = integer(clock_ns(), "current wall clock", 1)
         started_ns = now_ns if started_ns is None else integer(started_ns, "episode wall start", 1)
         integer(wall_deadline_ns, "episode wall deadline", 1)
-        integer(max_simulation_steps, "episode simulation step budget", HOLD_STEPS, 1800)
+        if profile is not None:
+            profile.validate()
+        maximum_steps = profile.max_simulation_steps if profile is not None else 1800
+        integer(max_simulation_steps, "episode simulation step budget", HOLD_STEPS, maximum_steps)
         if (
             not started_ns <= now_ns < wall_deadline_ns
             or not 0 < wall_deadline_ns - started_ns <= MAX_EPISODE_WALL_NS

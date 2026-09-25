@@ -13,9 +13,15 @@ from pydantic import AwareDatetime, Field
 from apps.api.errors import Problem
 from apps.api.models import EnvironmentRecord, Model, utcnow
 from learning.common import canonical, digest, file_digest, read_json, require
-from learning.paused import PausedControlProfile, protocol_schemas
+from learning.paused import (
+    CONTROL_PROFILE_ID,
+    CONTROL_PROFILE_V2_ID,
+    PausedControlProfile,
+    protocol_schemas,
+)
 from simulation.extensions import SceneRegistry
 from simulation.paused_contracts import ResolvedSimulationAuthorization, SimulationEpisodeCommand
+from simulation.paused_profiles import paused_profile
 from simulation.runtime_configuration import _read_pinned
 
 
@@ -31,6 +37,7 @@ def paused_servo_sha256() -> str:
         "paused_runtime.py",
         "paused_learned.py",
         "paused_deployment.py",
+        "paused_profiles.py",
         "paused_capture.py",
         "paused_observation.py",
         "paused_contracts.py",
@@ -81,6 +88,14 @@ def paused_servo_sha256() -> str:
                 },
                 "protocol_schemas": protocol_schemas(),
                 "frozen_profile_limits": limits,
+                "supported_profile_limits": {
+                    profile_id: {
+                        key: value
+                        for key, value in asdict(paused_profile("0" * 64, profile_id)).items()
+                        if key != "servo_profile_sha256"
+                    }
+                    for profile_id in (CONTROL_PROFILE_ID, CONTROL_PROFILE_V2_ID)
+                },
             }
         )
     )
@@ -145,6 +160,7 @@ class OperatorPausedAuthority:
             permit.environment_id == environment.environment_id
             and permit.revision == environment.revision
             and permit.control_profile_sha256 == profile.sha256
+            and permit.profile_id == profile.profile_id == scene_authority.profile_id
             and permit.wall_expires_at <= grant.expires_at
             and permit.criteria_sha256 == criteria_sha256
             and permit.frozen_plan_sha256 == conditions_sha256,
@@ -207,6 +223,8 @@ class OperatorPausedAuthority:
             or request.revision != permit.revision
             or request.task != permit.task
             or profile.sha256 != permit.control_profile_sha256
+            or request.profile_id != permit.profile_id
+            or profile.profile_id != permit.profile_id
             or request.policy_type != permit.policy_type
             or request.model_sha256 != permit.model_sha256
             or request.wall_expires_at > permit.wall_expires_at

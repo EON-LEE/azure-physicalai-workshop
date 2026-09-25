@@ -6,16 +6,25 @@ from collections.abc import Callable
 from typing import Literal, Protocol
 from uuid import UUID
 
-from pydantic import AwareDatetime, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    AwareDatetime,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 from apps.api.models import Execution, Identifier, Model, Revision
 from learning.paused import (
+    CONTROL_PROFILE_ID,
     FrozenPolicyObservation,
     InitialFrozenPublication,
     PausedControlContext,
     PausedControlProfile,
 )
 from learning.paused.inference import PausedGuardedPolicyAdapter
+from simulation.paused_profiles import PausedProfileId, profile_step_limit
 from simulation.runtime_contracts import PolicyType, TaskDefinition
 
 
@@ -23,7 +32,7 @@ class SimulationEpisodeCommand(Model):
     schema_version: Literal["physicalai.simulation-episode-command/v1"] = Field(alias="schema")
     execution_timing: Literal["paused_simulation"]
     real_time_admission: Literal[False]
-    profile_id: Literal["franka-position-hold-10hz-paused-v1"]
+    profile_id: PausedProfileId
     command_id: UUID
     environment_id: Identifier
     revision: Revision
@@ -34,7 +43,7 @@ class SimulationEpisodeCommand(Model):
     target_station_id: Identifier
     task: TaskDefinition
     wall_expires_at: AwareDatetime
-    max_simulation_steps: int = Field(ge=6, le=1800, multiple_of=6, strict=True)
+    max_simulation_steps: int = Field(ge=6, le=3600, multiple_of=6, strict=True)
     controller: Literal["reference_controller", "learned"]
     authorization_kind: Literal["reference_collection", "policy_release", "evaluation_grant"]
     authorization_id: UUID
@@ -50,6 +59,8 @@ class SimulationEpisodeCommand(Model):
 
     @model_validator(mode="after")
     def authorized_controller(self):
+        if self.max_simulation_steps > profile_step_limit(self.profile_id):
+            raise ValueError("The command exceeds its explicitly selected paused profile budget.")
         if self.task.goal_id != self.target_station_id:
             raise ValueError("The approved task goal must match the commanded station.")
         if self.controller == "reference_controller":
@@ -72,15 +83,13 @@ class PausedRuntimeMetrics(Model):
     execution_timing: Literal["paused_simulation"] = "paused_simulation"
     real_time_admission: Literal[False] = False
     display_label: Literal["NON_REALTIME_SIMULATION"] = "NON_REALTIME_SIMULATION"
-    profile_id: Literal["franka-position-hold-10hz-paused-v1"] = (
-        "franka-position-hold-10hz-paused-v1"
-    )
+    profile_id: PausedProfileId = CONTROL_PROFILE_ID
     control_profile_sha256: Revision
     controller: Literal["reference_controller", "learned"]
     phase: Literal["queued", "observing", "predicting", "applying", "idle", "stopped"] = "queued"
     wall_elapsed_ms: float = Field(default=0, ge=0)
-    simulation_steps: int = Field(default=0, ge=0, le=1800)
-    simulation_elapsed_seconds: float = Field(default=0, ge=0, le=30.000001)
+    simulation_steps: int = Field(default=0, ge=0, le=3600)
+    simulation_elapsed_seconds: float = Field(default=0, ge=0, le=60.000001)
     policy_predict_calls: int = Field(default=0, ge=0)
     applied_action_count: int = Field(default=0, ge=0)
     applied_model_sha256: Revision | None = None
@@ -88,6 +97,9 @@ class PausedRuntimeMetrics(Model):
 
     @model_validator(mode="after")
     def genuine_model_evidence(self):
+        maximum = profile_step_limit(self.profile_id)
+        if self.simulation_steps > maximum or self.simulation_elapsed_seconds > maximum / 60 + 1e-6:
+            raise ValueError("Metrics exceed their explicitly selected paused profile budget.")
         if self.controller == "learned":
             if self.reference_route_calls != 0:
                 raise ValueError("A learned paused episode cannot run the reference route.")
@@ -122,14 +134,28 @@ class ResolvedSimulationAuthorization(Model):
     controller: Literal["reference_controller", "learned"]
     task: TaskDefinition
     control_profile_sha256: Revision
+    profile_id: PausedProfileId = CONTROL_PROFILE_ID
     wall_expires_at: AwareDatetime
     max_episode_wall_seconds: int = Field(ge=1, le=600, strict=True)
-    max_simulation_steps: int = Field(ge=6, le=1800, multiple_of=6, strict=True)
+    max_simulation_steps: int = Field(ge=6, le=3600, multiple_of=6, strict=True)
     purpose: Literal["integration", "demonstration", "evaluation"]
     criteria_sha256: Revision
     frozen_plan_sha256: Revision
     policy_type: PolicyType | None = None
     model_sha256: Revision | None = None
+
+    @model_validator(mode="after")
+    def versioned_budget(self):
+        if self.max_simulation_steps > profile_step_limit(self.profile_id):
+            raise ValueError("Resolved authority exceeds its explicit paused profile budget.")
+        return self
+
+    @model_serializer(mode="wrap")
+    def preserve_v1_wire(self, handler):
+        value = handler(self)
+        if self.profile_id == CONTROL_PROFILE_ID:
+            value.pop("profile_id", None)
+        return value
 
 
 class PausedEpisodeAuthorizer(Protocol):

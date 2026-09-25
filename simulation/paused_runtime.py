@@ -27,6 +27,7 @@ class PausedEpisodeRuntime:
             max_simulation_steps=request.max_simulation_steps,
             authorized=lambda: core.actuation_allowed(self.binding),
             clock_ns=core.clock_ns,
+            profile=self.profile,
         )
         self.observation = None
         self.pending_frame: PausedFrameSample | None = None
@@ -171,6 +172,7 @@ class PausedEpisodeRuntime:
     def _metric_values(self) -> dict:
         evidence = self.episode.metrics()
         return dict(
+            profile_id=self.profile.profile_id,
             control_profile_sha256=self.profile.sha256,
             controller=self.request.controller,
             phase="stopped" if self.done else evidence["phase"],

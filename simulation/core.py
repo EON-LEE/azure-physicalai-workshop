@@ -425,7 +425,13 @@ class SimulationCore:
             self.paused_profile.validate()
             if self.spec is None:
                 raise Problem(503, "simulator_not_ready", "The reviewed scene is not ready.")
-            self.spec.require_paused_authority()
+            scene_authority = self.spec.require_paused_authority()
+            if scene_authority.profile_id != request.profile_id:
+                raise Problem(
+                    409,
+                    "paused_profile_mismatch",
+                    "Scene and command paused profile versions differ.",
+                )
             if not self.spec.record_demonstration:
                 raise Problem(
                     409, "capture_not_approved", "The paused episode requires approved capture."
@@ -451,6 +457,7 @@ class SimulationCore:
                 or resolved.controller != request.controller
                 or resolved.task != request.task
                 or resolved.control_profile_sha256 != self.paused_profile.sha256
+                or resolved.profile_id != request.profile_id
                 or resolved.policy_type != request.policy_type
                 or resolved.model_sha256 != request.model_sha256
                 or request.wall_expires_at > resolved.wall_expires_at
@@ -473,6 +480,7 @@ class SimulationCore:
             self.commands[key] = SimulationEpisodeExecution(
                 **result.model_dump(exclude={"policy_runtime", "simulation_runtime"}),
                 simulation_runtime=PausedRuntimeMetrics(
+                    profile_id=self.paused_profile.profile_id,
                     control_profile_sha256=self.paused_profile.sha256,
                     controller=request.controller,
                 ),
@@ -499,6 +507,7 @@ class SimulationCore:
             previous = self.commands[key].simulation_runtime
             if (
                 checked.controller != request.controller
+                or checked.profile_id != request.profile_id
                 or checked.control_profile_sha256 != previous.control_profile_sha256
                 or checked.applied_model_sha256 not in (None, request.model_sha256)
                 or checked.simulation_steps < previous.simulation_steps
