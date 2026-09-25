@@ -50,7 +50,7 @@ class CancellationClaim(Frozen):
 
 
 class BlobRegistry:
-    def __init__(self, account_url: str, container: str, credential):
+    def __init__(self, account_url: str, container: str, credential, *, budget=None):
         self.client = BlobServiceClient(
             account_url,
             credential=credential,
@@ -59,6 +59,7 @@ class BlobRegistry:
             retry_total=0,
         )
         self.container = self.client.get_container_client(container)
+        self.budget = budget
 
     @staticmethod
     def key(actor: Principal, suffix: str) -> str:
@@ -297,12 +298,17 @@ class BlobRegistry:
             output = destination.joinpath(*path.parts)
             output.parent.mkdir(parents=True, exist_ok=True)
             digest = hashlib.sha256()
+            budget = getattr(self, "budget", None)
+            if budget:
+                budget.consume(0, files=1)
             try:
                 downloader = self.container.download_blob(
                     self.key(actor, f"artifacts/{artifact_id}/files/{name}")
                 )
                 with output.open("xb") as stream:
                     for chunk in downloader.chunks():
+                        if budget:
+                            budget.consume(len(chunk))
                         total += len(chunk)
                         if total > max_bytes:
                             raise Problem(
@@ -333,8 +339,13 @@ class BlobRegistry:
                 continue
             name = path.relative_to(root).as_posix()
             digest = hashlib.sha256()
+            budget = getattr(self, "budget", None)
+            if budget:
+                budget.consume(path.stat().st_size, files=1)
             with path.open("rb") as stream:
                 while chunk := stream.read(1024 * 1024):
+                    if budget:
+                        budget.check()
                     digest.update(chunk)
             files[name] = digest.hexdigest()
             try:

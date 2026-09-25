@@ -294,10 +294,54 @@ Blob report. The authenticated job report download retrieves only that verified
 artifact and checks its exact SHA; it accepts no caller URL or arbitrary path.
 Summaries are not substitutes for the source proof or real-time qualification.
 
-Capture/dataset ingestion still needs the separately tracked bounded asynchronous
-artifact-operation integration before large real batches can be claimed to work
-end-to-end through the HTTP UI. This report cache does not make that remaining
-large-artifact workflow synchronous, provision a timer, or enable paid admission.
+The separate capture/dataset resident operation path below does not provision a
+timer or enable paid admission. Actual large-batch acceptance remains a separate
+deployment test with real data and explicitly sized CPU, memory and disk.
+
+### Resident asynchronous capture and dataset operations
+
+`ARTIFACT_OPS_ENABLED=false` and `ARTIFACT_ACTOR_IDS=[]` are independent,
+default-deny worker settings. The matching Bicep parameters are
+`artifactOpsEnabled` and `artifactActorIds`; enabling this feature makes the
+existing worker's minimum replica count one. It creates no new service, role,
+GPU/AML job or public endpoint. An operator must approve this resident CPU cost,
+verify deployment/readiness, and quiesce active artifact operations before a
+worker revision roll. One fixed artifact subprocess runs per resident worker.
+
+The private API exposes an owner-authorized budget read, immutable operation
+POST, and status GET under `/v1/learning/artifact-policy` and
+`/v1/learning/artifact-operations/{id}`. The POST only writes bounded request,
+state and dedicated pending-queue metadata. The resident runner, not the HTTP
+handler or browser, performs the transfer and native validation. Legacy inline
+capture/dataset worker routes explicitly require this operation path instead
+of silently falling back to long synchronous HTTP processing.
+
+Before claiming work, the API freezes the owner, project, original capture or
+capture tuple, request fingerprint, target ID, deadline and budgets. Default
+maximums are 4 GiB capture / 20 GiB dataset aggregate transfer, 100000 files,
+and 1800 wall seconds **including queue wait**; deployment may only lower them.
+These are ceilings, not promises that the current replica has that capacity.
+Input inventory is measured before transfer, total transfer includes required
+publication, and free temporary disk must cover both input and sealed copies
+plus reserve. Low disk fails explicitly before bulk processing; ongoing
+transfer checks the remaining reserve and original byte/time bounds.
+
+State is `queued -> running -> ready|failed|timed_out|uncertain`. Starting heavy
+work requires a conditional ETag claim, and status reads perform only bounded
+metadata/manifest checks. A complete result is written only after native
+hash/live/source validators and manifest-last publication succeed. A crash
+after claim is **uncertain**, not an automatic rerun; an already committed,
+matching verified result can be reconciled from metadata. Partial files are
+never reconstructed into a ready manifest. Queue pointer cleanup does not
+delete request, state, source or artifact evidence.
+
+The fixed subprocess receives only typed owner/operation/claim IDs and uses
+the existing managed identity. No caller module, script, model URL or raw Python
+is executed. A deadline watchdog and guarded process-group termination stop
+only this child before reporting timeout/uncertainty. The separate short
+learning-job cancellation tick is not placed behind this long operation.
+An actual large-data transfer and restart test on the approved Azure replica
+is still required before claiming the real UI batch workflow complete.
 
 No fake P0 or hand-authored ready candidate is required. Once the license is
 resolved and actual approved weights are already present on the trusted worker,

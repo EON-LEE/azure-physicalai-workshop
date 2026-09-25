@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import {
-  capabilitiesSchema, coachSchema, datasetSchema, evaluationSchema, grantSchema, jobSchema,
+  artifactOperationSchema, capabilitiesSchema, coachSchema, datasetSchema, evaluationSchema, grantSchema, jobSchema,
   projectSchema, recordSchema, releaseSchema, resource, resourceList, teachingSchema,
   type CreateProjectBody, type JogBody, type LearningApi, type LearningRecord, type TrainingBody,
 } from './contracts';
@@ -36,7 +36,13 @@ export class LearningClient implements LearningApi {
     return this.request(`/api/teaching-sessions/${key(id)}/${action}`, resource(teachingSchema), { method: 'POST', body, etag, signal });
   }
   seal(id: string, body: Parameters<LearningApi['seal']>[1], etag: string, signal?: AbortSignal) {
-    return this.request(`/api/learning/projects/${key(id)}/datasets`, resource(datasetSchema), { method: 'POST', body, etag, signal });
+    return this.request(`/api/learning/projects/${key(id)}/datasets`, resource(z.union([datasetSchema, artifactOperationSchema])), { method: 'POST', body, etag, signal });
+  }
+  artifactOperation(id: string, signal?: AbortSignal) {
+    return this.request(`/api/learning/artifact-operations/${key(id)}`, resource(artifactOperationSchema), { signal });
+  }
+  dataset(id: string, signal?: AbortSignal) {
+    return this.request(`/api/learning/datasets/${key(id)}`, resource(datasetSchema), { signal });
   }
   train(id: string, body: TrainingBody, etag: string, signal?: AbortSignal) {
     return this.request(`/api/learning/projects/${key(id)}/train`, resource(jobSchema), { method: 'POST', body, etag, signal });

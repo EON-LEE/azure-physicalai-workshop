@@ -144,7 +144,14 @@ def install_learning_routes(app, actor):
         response: Response,
         if_match: Match = None,
     ):
-        return learning_response(backend.dataset(user, project_id, body, if_match), response)
+        stored = backend.dataset(user, project_id, body, if_match)
+        if stored.value.kind == "artifact_operation":
+            response.status_code = 202
+        return learning_response(stored, response)
+
+    @app.get("/api/learning/artifact-operations/{operation_id}")
+    def artifact_operation(operation_id: UUID, user: Actor, backend: Service, response: Response):
+        return learning_response(backend.get_artifact_operation(user, operation_id), response)
 
     @app.get("/api/learning/datasets/{dataset_id}")
     def get_dataset(dataset_id: UUID, user: Actor, backend: Service, response: Response):

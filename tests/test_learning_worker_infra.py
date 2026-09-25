@@ -76,8 +76,16 @@ def test_compiled_worker_ingress_identity_and_scale_are_bounded(compiled):
     assert properties["configuration"]["activeRevisionsMode"] == "Single"
     scale = properties["template"]["scale"]
     assert scale["maxReplicas"] == 1
-    assert scale["minReplicas"].replace(" ", "") == "[if(parameters('enabled'),1,0)]"
+    assert (
+        scale["minReplicas"].replace(" ", "")
+        == "[if(or(parameters('enabled'),parameters('artifactOpsEnabled')),1,0)]"
+    )
     assert compiled["parameters"]["enabled"]["defaultValue"] is False
+    assert compiled["parameters"]["artifactOpsEnabled"]["defaultValue"] is False
+    assert compiled["parameters"]["artifactActorIds"]["defaultValue"] == []
+    assert compiled["parameters"]["artifactMaxSeconds"]["maxValue"] == 1800
+    assert compiled["parameters"]["artifactCaptureBytes"]["maxValue"] == 4 * 1024**3
+    assert compiled["parameters"]["artifactDatasetBytes"]["maxValue"] == 20 * 1024**3
 
 
 def test_compiled_image_and_managed_registry_are_digest_pinned_without_credentials(compiled):

@@ -13,6 +13,7 @@ from azure.cosmos.exceptions import CosmosHttpResponseError, CosmosResourceNotFo
 from azure.storage.blob import BlobServiceClient, ContentSettings
 from pydantic import BaseModel, ValidationError
 
+from apps.api.artifact_models import ArtifactOperationRecord
 from apps.api.errors import Problem, unavailable
 from apps.api.learning_models import (
     CoachRecord,
@@ -44,6 +45,7 @@ log = logging.getLogger(__name__)
 T = TypeVar("T")
 M = TypeVar("M", bound=BaseModel)
 LEARNING_MODELS = {
+    "artifact_operation": ArtifactOperationRecord,
     "project": LearningProject,
     "teaching": TeachingSession,
     "dataset": DatasetVersion,
@@ -57,6 +59,16 @@ LEARNING_MODELS = {
     "coach": CoachRecord,
 }
 LEARNING_MUTABLE = {
+    "artifact_operation": {
+        "updated_at",
+        "status",
+        "phase",
+        "result",
+        "error_code",
+        "message",
+        "claim_id",
+        "heartbeat_at",
+    },
     "teaching": {
         "updated_at",
         "status",
@@ -64,6 +76,8 @@ LEARNING_MUTABLE = {
         "last_input_fingerprint",
         "input_expires_at",
         "capture",
+        "artifact_operation_id",
+        "verification_status",
         "error_code",
         "message",
         "physical_status",
@@ -314,7 +328,7 @@ class CosmosStore:
     def put_learning(
         self,
         owner: str,
-        record: LearningRecord,
+        record: LearningRecord | ArtifactOperationRecord,
         etag: str | None,
     ) -> Stored:
         model = LEARNING_MODELS[record.kind]

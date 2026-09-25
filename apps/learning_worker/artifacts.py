@@ -31,11 +31,13 @@ class VerifiedArtifacts:
         capture_container: str,
         *,
         allowed_policy_types=(),
+        budget=None,
     ):
         self.registry, self.credential = registry, credential
         self.capture_account_url = capture_account_url.rstrip("/")
         self.capture_container = capture_container
         self.allowed_policy_types = tuple(allowed_policy_types)
+        self.budget = budget
 
     @staticmethod
     def _scope(actor):
@@ -178,10 +180,18 @@ class VerifiedArtifacts:
         root.mkdir(parents=True, exist_ok=False)
         total = 0
         try:
-            with BlobServiceClient(account_url, credential=self.credential) as client:
+            with BlobServiceClient(
+                account_url,
+                credential=self.credential,
+                connection_timeout=5,
+                read_timeout=10,
+                retry_total=0,
+            ) as client:
                 bucket = client.get_container_client(container)
                 count = 0
                 for item in bucket.list_blobs(name_starts_with=prefix):
+                    if self.budget:
+                        self.budget.consume(0, files=1)
                     count += 1
                     total += item.size
                     if count > 100000 or total > max_bytes:
@@ -194,7 +204,10 @@ class VerifiedArtifacts:
                     destination = root.joinpath(*self._relative(relative))
                     destination.parent.mkdir(parents=True, exist_ok=True)
                     with destination.open("xb") as output:
-                        bucket.download_blob(item.name).readinto(output)
+                        for chunk in bucket.download_blob(item.name).chunks():
+                            if self.budget:
+                                self.budget.consume(len(chunk))
+                            output.write(chunk)
         except AzureError as exc:
             raise unavailable("Private owner-scoped artifact download") from exc
 

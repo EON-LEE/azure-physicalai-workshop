@@ -538,6 +538,10 @@ class TeachingSession(OwnedRecord, TimingMetadata):
     last_input_fingerprint: Revision | None = None
     input_expires_at: AwareDatetime | None = None
     capture: CaptureReceipt | None = None
+    artifact_operation_id: UUID | None = None
+    verification_status: (
+        Literal["queued", "running", "ready", "failed", "timed_out", "uncertain"] | None
+    ) = None
     error_code: str | None = None
     message: str | None = None
     physical_status: (

@@ -47,7 +47,8 @@ successful placeholder, fixture checkpoint or ACT fallback.
 | `POST /api/teaching-sessions/{id}/jog` | Same intent plus `grant_id`; server stamps expiry on first admission. Stop-only `deadman:false` requires zero delta/hold and no grant |
 | `POST /api/teaching-sessions/{id}/finish` | `request_id`, `lease_id`, `epoch`; does not assert capture readiness |
 | `POST /api/teaching-sessions/{id}/cancel` | Same binding; does not assert cancellation until confirmed |
-| `POST /api/learning/projects/{id}/datasets` | `request_id`, unique `teaching_session_ids`; only verified uploaded eligible captures |
+| `POST /api/learning/projects/{id}/datasets` | `request_id`, unique `teaching_session_ids`; 202 `ArtifactOperation` while sealing, or 201 `DatasetVersion` when verified |
+| `GET /api/learning/artifact-operations/{id}` | Owner-scoped bounded operation status; no inline transfer, repeat sealing or model job |
 | `GET /api/learning/datasets/{id}` | Frozen `DatasetVersion` |
 | `POST /api/learning/projects/{id}/train` | `request_id`, `dataset_id`, `parent_release_id`, optional bootstrap `pretrained_artifact_id`, exact `policy_type`, `optimizer_steps`, `paid_approved: true`, `maximum_cost_usd` |
 | `POST /api/learning/projects/{id}/evaluate` | `request_id`, `candidate_id`, `baseline_release_id`, `evaluation_plan_sha256`, `motion_approved: true`, `paid_approved: true`, `maximum_cost_usd` |
@@ -270,6 +271,22 @@ before/after trial and retry, including failures; no post-hoc favorable subset.
 
 ## State and evidence
 
+- Artifact verification is asynchronous in the production gateway.
+  `artifact_operation` is a distinct resource kind, not a ready dataset:
+  `queued`, `running`, `ready`, `failed`, `timed_out`, or `uncertain`, with the
+  original work SHA, target ID, phase, deadline and frozen budgets. Private
+  work documents are excluded from public responses. A dataset operation
+  persists the canonical dataset only after a matching verified manifest
+  result; an unchanged POST retry then returns the original 201 dataset.
+  Capture reconciliation remains `uploading` with `artifact_operation_id` and
+  `verification_status` until validation completes; a raw upload is not readiness.
+  Owner-partition checks and original ETags/fingerprints remain mandatory.
+  A configured resident worker processes a dedicated owner-allowlisted queue,
+  one bounded child at a time, independent of UI polling. Default admission is
+  off. Queued time counts toward its 1800-second maximum; transfer/file/disk
+  ceilings can be lowered by the operator, never expanded by client input.
+  Lost in-progress work is uncertain unless an actual complete manifest can
+  be reconciled; it is not replayed or turned into a synthetic ready result.
 - Teaching: `starting -> recording -> finishing/finalizing -> uploading -> ready`.
   Cancellation goes through `cancelling -> cancelled`; errors become `invalid`
   or `blocked`. A physical terminal command is **not** a ready dataset.

@@ -43,6 +43,8 @@ export function browserLearning(trace: LearningTrace, enabled: boolean): Learnin
       return session;
     },
     seal: unsupported,
+    artifactOperation: unsupported,
+    dataset: async () => data.dataset,
     async train() { mark('train'); return data.training; },
     async evaluate() { mark('evaluate'); return data.evaluation; },
     async job(id) { return id === data.evaluation.item.id ? data.evaluation : data.training; },

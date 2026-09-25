@@ -56,6 +56,28 @@ param reconciliationActorIds array = []
 @maxLength(20)
 param reconciliationTargets array = []
 
+@description('Explicit resident CPU artifact processing. Default off; enabling requires the approved min-one budget.')
+param artifactOpsEnabled bool = false
+
+@maxLength(20)
+param artifactActorIds array = []
+
+@minValue(1)
+@maxValue(1800)
+param artifactMaxSeconds int = 1800
+
+@minValue(1)
+@maxValue(4294967296)
+param artifactCaptureBytes int = 4294967296
+
+@minValue(1)
+@maxValue(21474836480)
+param artifactDatasetBytes int = 21474836480
+
+@minValue(1)
+@maxValue(100000)
+param artifactMaxFiles int = 100000
+
 resource workerIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' existing = {
   name: last(split(workerIdentityResourceId, '/'))
   scope: resourceGroup(split(workerIdentityResourceId, '/')[2], split(workerIdentityResourceId, '/')[4])
@@ -104,6 +126,12 @@ resource worker 'Microsoft.App/containerApps@2025-07-01' = {
           { name: 'LEARNING_WORKER_RECONCILIATION_ENABLED', value: string(reconciliationEnabled) }
           { name: 'LEARNING_WORKER_RECONCILIATION_ACTOR_IDS', value: string(reconciliationActorIds) }
           { name: 'LEARNING_WORKER_RECONCILIATION_TARGETS', value: string(reconciliationTargets) }
+          { name: 'LEARNING_WORKER_ARTIFACT_OPS_ENABLED', value: string(artifactOpsEnabled) }
+          { name: 'LEARNING_WORKER_ARTIFACT_ACTOR_IDS', value: string(artifactActorIds) }
+          { name: 'LEARNING_WORKER_ARTIFACT_MAX_SECONDS', value: string(artifactMaxSeconds) }
+          { name: 'LEARNING_WORKER_ARTIFACT_CAPTURE_BYTES', value: string(artifactCaptureBytes) }
+          { name: 'LEARNING_WORKER_ARTIFACT_DATASET_BYTES', value: string(artifactDatasetBytes) }
+          { name: 'LEARNING_WORKER_ARTIFACT_MAX_FILES', value: string(artifactMaxFiles) }
         ]
         probes: [
           {
@@ -129,7 +157,7 @@ resource worker 'Microsoft.App/containerApps@2025-07-01' = {
         ]
       }]
       scale: {
-        minReplicas: enabled ? 1 : 0
+        minReplicas: (enabled || artifactOpsEnabled) ? 1 : 0
         maxReplicas: 1
         rules: [{
           name: 'bounded-private-http'

@@ -5,6 +5,7 @@ from uuid import UUID
 
 from pydantic import AwareDatetime, Field
 
+from apps.api.artifact_models import ArtifactOperationRecord
 from apps.api.learning_models import (
     BackendJobStatus,
     BootstrapReport,
@@ -28,7 +29,9 @@ from apps.api.simulation_reports import SimulationReport
 
 class LearningStore(Protocol):
     def get_learning(self, owner: str, kind: str, resource_id: UUID) -> Stored | None: ...
-    def put_learning(self, owner: str, record: LearningRecord, etag: str | None) -> Stored: ...
+    def put_learning(
+        self, owner: str, record: LearningRecord | ArtifactOperationRecord, etag: str | None
+    ) -> Stored: ...
     def list_learning(
         self, owner: str, kind: str, project_id: UUID | None = None
     ) -> list[Stored]: ...

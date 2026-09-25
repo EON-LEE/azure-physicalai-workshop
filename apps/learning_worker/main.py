@@ -11,7 +11,6 @@ from apps.api.auth import EntraTokens
 from apps.api.errors import Problem, unavailable
 from apps.api.learning_models import (
     BootstrapReport,
-    CaptureReceipt,
     LearningProject,
     PairedReport,
     PolicyCandidate,
@@ -39,6 +38,12 @@ class WorkerSettings(BaseSettings):
     reconciliation_enabled: bool = False
     reconciliation_actor_ids: frozenset[UUID] = Field(default=frozenset(), max_length=20)
     reconciliation_targets: tuple[ReconciliationTarget, ...] = Field(default=(), max_length=20)
+    artifact_ops_enabled: bool = False
+    artifact_actor_ids: frozenset[UUID] = Field(default=frozenset(), max_length=20)
+    artifact_max_seconds: int = Field(default=1800, ge=1, le=1800)
+    artifact_capture_bytes: int = Field(default=4 * 1024**3, ge=1, le=4 * 1024**3)
+    artifact_dataset_bytes: int = Field(default=20 * 1024**3, ge=1, le=20 * 1024**3)
+    artifact_max_files: int = Field(default=100000, ge=1, le=100000)
 
     @model_validator(mode="after")
     def exact_monitor_allowlist(self):
@@ -50,6 +55,8 @@ class WorkerSettings(BaseSettings):
             or any(item.actor_id not in self.reconciliation_actor_ids for item in targets)
         ):
             raise ValueError("Enabled reconciliation requires exact allowlisted owner/job targets.")
+        if self.artifact_ops_enabled and not self.artifact_actor_ids:
+            raise ValueError("Resident artifact processing requires an explicit owner allowlist.")
         return self
 
 
@@ -94,9 +101,24 @@ def create_worker(settings: WorkerSettings | None = None, operations=None, ident
                 reconciliation_actor_ids=configuration.reconciliation_actor_ids,
                 reconciliation_targets=configuration.reconciliation_targets,
             )
-            resources = [registry, credential]
+            from apps.learning_worker.artifact_operations import ArtifactOperations
+            from apps.learning_worker.artifact_runner import ArtifactRunner
+
+            app.state.artifact_operations = ArtifactOperations(
+                registry,
+                enabled=configuration.artifact_ops_enabled,
+                actor_ids=configuration.artifact_actor_ids,
+                maximum_seconds=configuration.artifact_max_seconds,
+                capture_bytes=configuration.artifact_capture_bytes,
+                dataset_bytes=configuration.artifact_dataset_bytes,
+                maximum_files=configuration.artifact_max_files,
+            )
+            runner = ArtifactRunner(app.state.artifact_operations, configuration.tenant_id)
+            runner.start()
+            resources = [runner, registry, credential]
         else:
             app.state.worker = operations
+            app.state.artifact_operations = getattr(operations, "artifact_operations", None)
         try:
             yield
         finally:
@@ -159,6 +181,45 @@ def create_worker(settings: WorkerSettings | None = None, operations=None, ident
             "owner_key": body.actor.owner_key,
             "sha256": specification.run.specification_sha256,
         }
+
+    @app.post(
+        "/v1/learning/artifact-operations/{operation_id}",
+        dependencies=[Depends(controller)],
+        status_code=202,
+    )
+    def begin_artifact(
+        operation_id: UUID,
+        request: Request,
+        body: Annotated[WorkerEnvelope, Depends(post_actor)],
+    ):
+        from apps.api.artifact_models import ArtifactWork
+
+        work = ArtifactWork.model_validate(body.payload)
+        if work.id != operation_id:
+            raise Problem(409, "artifact_operation_conflict", "URL and operation identity differ.")
+        operations = request.app.state.artifact_operations
+        if operations is None:
+            raise unavailable("Resident artifact operation processor")
+        return operations.begin(body.actor, work)
+
+    @app.get("/v1/learning/artifact-policy", dependencies=[Depends(controller)])
+    def artifact_policy(request: Request, actor: Annotated[Principal, Depends(read_actor)]):
+        operations = request.app.state.artifact_operations
+        if operations is None:
+            raise unavailable("Resident artifact operation processor")
+        return operations.policy(actor)
+
+    @app.get("/v1/learning/artifact-operations/{operation_id}", dependencies=[Depends(controller)])
+    def artifact_status(
+        operation_id: UUID, request: Request, actor: Annotated[Principal, Depends(read_actor)]
+    ):
+        operations = request.app.state.artifact_operations
+        if operations is None:
+            raise unavailable("Resident artifact operation processor")
+        state = operations.recover(actor, operation_id)
+        if state is None:
+            raise Problem(404, "artifact_operation_missing", "No owned artifact operation exists.")
+        return state
 
     @app.post("/v1/learning/jobs/{job_name}", dependencies=[Depends(controller)])
     def submit(
@@ -231,8 +292,10 @@ def create_worker(settings: WorkerSettings | None = None, operations=None, ident
             or session.project_id != project.id
         ):
             raise Problem(403, "worker_scope_mismatch", "Capture owner or project differs.")
-        return request.app.state.worker.artifacts.verify_capture(
-            body.actor, project, session, payload["receipt"]
+        raise Problem(
+            503,
+            "artifact_operation_required",
+            "Use the durable artifact operation endpoint; capture verification is not inline HTTP.",
         )
 
     @app.post("/v1/learning/artifacts/dataset", dependencies=[Depends(controller)])
@@ -240,15 +303,11 @@ def create_worker(settings: WorkerSettings | None = None, operations=None, ident
         project = LearningProject.model_validate(body.payload["project"])
         if project.owner_key != body.actor.owner_key:
             raise Problem(403, "worker_scope_mismatch", "Dataset owner differs.")
-        receipts = tuple(CaptureReceipt.model_validate(item) for item in body.payload["captures"])
-        artifact_id, digest = request.app.state.worker.artifacts.seal_dataset(
-            body.actor, project, UUID(body.payload["dataset_id"]), receipts
+        raise Problem(
+            503,
+            "artifact_operation_required",
+            "Use the durable artifact operation endpoint; dataset sealing is not inline HTTP.",
         )
-        return {
-            "artifact_id": str(artifact_id),
-            "manifest_sha256": digest,
-            "owner_key": body.actor.owner_key,
-        }
 
     @app.post("/v1/learning/artifacts/candidate", dependencies=[Depends(controller)])
     def candidate(request: Request, body: Annotated[WorkerEnvelope, Depends(post_actor)]):

@@ -94,6 +94,16 @@ export const datasetSchema = z.object({
   evaluation_plan_sha256: sha,
   captures: z.array(captureSchema).max(1000).default([]),
 }).superRefine(consistentTiming);
+export const artifactOperationSchema = z.object({
+  ...base, kind: z.literal('artifact_operation'), project_id: id, target_id: id,
+  operation: z.enum(['capture', 'dataset']), work_sha256: sha,
+  deadline: date, max_bytes: count, max_files: count,
+  status: z.enum(['queued', 'running', 'ready', 'failed', 'timed_out', 'uncertain']),
+  phase: z.enum(['queued', 'processing', 'manifest_committed', 'stopped']),
+  result: z.object({ artifact_id: id, manifest_sha256: sha, capture: captureSchema.nullable() }).nullable(),
+  error_code: z.string().nullable(), message: z.string().nullable(),
+}).refine((value) => (value.status === 'ready') === (value.result !== null));
+export type ArtifactOperation = z.infer<typeof artifactOperationSchema>;
 export const teachingSchema = z.object({
   ...timingMetadata,
   ...base, kind: z.literal('teaching'), project_id: id,
@@ -103,6 +113,8 @@ export const teachingSchema = z.object({
   lease_id: id, epoch: id, command_id: id, expires_at: date, last_sequence: count,
   input_expires_at: date.nullable(), physical_status: z.string().nullable(),
   capture: captureSchema.nullable(),
+  artifact_operation_id: id.nullable().optional(),
+  verification_status: z.enum(['queued', 'running', 'ready', 'failed', 'timed_out', 'uncertain']).nullable().optional(),
   error_code: z.string().nullable(), message: z.string().nullable(),
 }).superRefine(consistentTiming);
 const jobStatus = z.enum(['submitting', 'submission_unknown', 'submitted', 'running', 'cancelling', 'succeeded', 'failed', 'cancelled', 'timed_out', 'blocked']);
@@ -246,7 +258,9 @@ export interface LearningApi {
   arm(id: string, body: JogBody, etag: string, signal?: AbortSignal): Promise<Resource<Grant>>;
   jog(id: string, body: JogBody, etag: string, signal?: AbortSignal): Promise<Resource<Teaching>>;
   teachingControl(id: string, action: 'finish' | 'cancel', body: { request_id: string; lease_id: string; epoch: string }, etag: string, signal?: AbortSignal): Promise<Resource<Teaching>>;
-  seal(projectId: string, body: { request_id: string; teaching_session_ids: string[] }, etag: string, signal?: AbortSignal): Promise<Resource<Dataset>>;
+  seal(projectId: string, body: { request_id: string; teaching_session_ids: string[] }, etag: string, signal?: AbortSignal): Promise<Resource<Dataset | ArtifactOperation>>;
+  artifactOperation(id: string, signal?: AbortSignal): Promise<Resource<ArtifactOperation>>;
+  dataset(id: string, signal?: AbortSignal): Promise<Resource<Dataset>>;
   train(projectId: string, body: TrainingBody, etag: string, signal?: AbortSignal): Promise<Resource<Job>>;
   evaluate(projectId: string, body: { request_id: string; candidate_id: string; baseline_release_id: string | null; comparison_kind?: 'paired_policy' | 'reference_bootstrap'; evaluation_plan_sha256: string; motion_approved: true; paid_approved: true; maximum_cost_usd: string }, etag: string, signal?: AbortSignal): Promise<Resource<Evaluation>>;
   job(id: string, signal?: AbortSignal): Promise<Resource<Job>>;

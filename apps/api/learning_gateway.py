@@ -8,6 +8,7 @@ import httpx
 from azure.core.exceptions import AzureError
 from pydantic import ValidationError
 
+from apps.api.artifact_models import ArtifactPolicy, ArtifactStatus, ArtifactWork
 from apps.api.errors import Problem, unavailable
 from apps.api.learning_models import CaptureReceipt, PolicyRelease, TrainingParent
 from apps.api.learning_ports import BackendJob, JobSpecification
@@ -157,6 +158,26 @@ class ManagedLearningGateway:
                 503, "report_digest_mismatch", "Verified report bytes changed in transit."
             )
         return result
+
+    def begin_artifact(self, actor, work: ArtifactWork):
+        return self._parse(
+            ArtifactStatus,
+            self._request(
+                actor,
+                "POST",
+                f"/v1/learning/artifact-operations/{work.id}",
+                work.model_dump(mode="json"),
+            ),
+        )
+
+    def artifact_policy(self, actor):
+        return self._parse(
+            ArtifactPolicy, self._request(actor, "GET", "/v1/learning/artifact-policy")
+        )
+
+    def artifact_status(self, actor, operation_id):
+        value = self._request(actor, "GET", f"/v1/learning/artifact-operations/{operation_id}")
+        return None if value is None else self._parse(ArtifactStatus, value)
 
     def resolve(self, actor, release_id: UUID):
         result = self._request(actor, "GET", f"/v1/learning/releases/{release_id}")

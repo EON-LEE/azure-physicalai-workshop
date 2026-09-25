@@ -233,6 +233,14 @@ The controls below belong to the separately protected operator area.
   exact verified full JSON through the authenticated job route; temporary
   download object URLs are revoked. The public viewer only shows explicitly
   curated summaries, without a private download selector or a real-time claim.
+- **Large artifact operations:** Dataset sealing can return HTTP 202 with a
+  distinct queued operation. The UI clears the new dataset selection, displays
+  its original deadline/phase, and polls only status. It selects a dataset only
+  after the server persists a matching verified artifact/manifest. Capture
+  upload and verification remain separate; failure, timeout and uncertainty
+  never become readiness or trigger another paid/model operation. The resident
+  worker feature defaults off and still requires actual large-batch deployment
+  acceptance, not a longer browser HTTP timeout.
 
 Visible camera views poll at most once per second. Runtime status polls every
 three seconds, nonterminal run details every two seconds, and visible history

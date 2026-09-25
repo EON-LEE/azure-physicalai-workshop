@@ -6,11 +6,12 @@ import { Badge, EmptyState, ErrorNotice, FieldValue, Loading } from '../ui/commo
 import { formatDate } from '../ui/format';
 import { LiveCamera } from '../views/LiveCamera';
 import { LearningJobPanel } from './LearningJobPanel';
+import { ArtifactOperationPanel } from './ArtifactOperationPanel';
 import { PolicyComparison } from './PolicyComparison';
 import { TeachingControls } from './TeachingControls';
 import {
   sourceLabel, type CoachResponse, type CreateProjectBody, type Evaluation, type Job,
-  type LearningApi, type LearningRecord, type Project, type Resource, type Teaching, type TeachingCase, type SimulationLearningCapability,
+  type ArtifactOperation, type Dataset, type LearningApi, type LearningRecord, type Project, type Resource, type Teaching, type TeachingCase, type SimulationLearningCapability,
 } from './contracts';
 import './learning.css';
 import { defaultTeachingCase, sameTeachingCase, savedTeachingCases, splitLabel } from './teachingCases';
@@ -242,6 +243,7 @@ function ProjectWorkspace({ api, project, consoleApi, environments, coachConfigu
   const [job, setJob] = useState<Resource<Job> | null>(null);
   const [evaluation, setEvaluation] = useState<Resource<Evaluation> | null>(null);
   const [datasetId, setDatasetId] = useState('');
+  const [artifactOperation, setArtifactOperation] = useState<Resource<ArtifactOperation> | null>(null);
   const [candidateId, setCandidateId] = useState('');
   const [motionApproved, setMotionApproved] = useState(false);
   const [teachingCaseId, setTeachingCaseId] = useState(() => defaultTeachingCase(project.item.teaching_cases, project.item.environment_id, project.item.revision));
@@ -264,6 +266,11 @@ function ProjectWorkspace({ api, project, consoleApi, environments, coachConfigu
   const updateJob = useCallback((value: Resource<Job>) => {
     if (value.item.kind === 'evaluation') setEvaluation({ item: value.item, etag: value.etag });
   }, []);
+  const acceptDataset = useCallback((value: Resource<Dataset>) => {
+    records.setData((items) => [...(items ?? []).filter((entry) => entry.item.id !== value.item.id), value]);
+    setDatasetId(value.item.id);
+    setArtifactOperation(null);
+  }, [records.setData]);
   const environment = environments.find((item) =>
     teaching?.item.teaching_case?.environment_id === item.environment_id &&
     teaching.item.teaching_case.revision === item.revision);
@@ -304,8 +311,8 @@ function ProjectWorkspace({ api, project, consoleApi, environments, coachConfigu
           }
         }} />)}</div>
       </section>
-      {job && <LearningJobPanel key={job.item.id} api={api} initial={job} onUpdate={updateJob} />}
-      {evaluation && <PolicyComparison key={evaluation.item.id} api={api} evaluation={evaluation} />}
+      {job && <LearningJobPanel key={`job-${job.item.id}`} api={api} initial={job} onUpdate={updateJob} />}
+      {evaluation && <PolicyComparison key={`evaluation-${evaluation.item.id}`} api={api} evaluation={evaluation} />}
     </>;
   }
   return <>
@@ -335,9 +342,12 @@ function ProjectWorkspace({ api, project, consoleApi, environments, coachConfigu
             return <div key={item.id}><label className="checkbox-label"><input type="checkbox" disabled={item.status !== 'ready'} checked={selectedSessions.includes(item.id)} onChange={(event) => setSelectedSessions((ids) => event.target.checked ? [...ids, item.id] : ids.filter((id) => id !== item.id))} />{sourceLabel(item.source)} · {item.status}</label>
               <code>{item.id}</code><p className="small-text">{item.teaching_case ? `${item.teaching_case.case_id} · ${splitLabel(item.teaching_case.split)} · seed ${item.teaching_case.seed}` : '기존 기록 · case/split 승인 미확인'}</p><button type="button" className="text-button" onClick={() => setTeaching({ item, etag: entry.etag })}>세션 상태 보기</button></div>;
           })}</div>
-          <button type="button" className="button secondary" disabled={!selectedSessions.length || busy} onClick={() => void operate(`seal:${selectedSessions.join(',')}`, async (id) => {
+          <button type="button" className="button secondary" disabled={!selectedSessions.length || busy || Boolean(artifactOperation)} onClick={() => void operate(`seal:${selectedSessions.join(',')}`, async (id) => {
             const sealed = await api.seal(project.item.id, { request_id: id, teaching_session_ids: selectedSessions }, project.etag);
-            setDatasetId(sealed.item.id);
+            if (sealed.item.kind === 'artifact_operation') {
+              setDatasetId('');
+              setArtifactOperation({ item: sealed.item, etag: sealed.etag });
+            } else acceptDataset({ item: sealed.item, etag: sealed.etag });
           })}><Upload size={15} aria-hidden="true" />검증된 시연으로 데이터 버전 확정</button>
         </div>
       </section>
@@ -358,9 +368,10 @@ function ProjectWorkspace({ api, project, consoleApi, environments, coachConfigu
     </div>
     <ErrorNotice error={records.error} title="학습 기록 갱신 실패" retry={records.refresh} />
     <ErrorNotice error={error} title="학습 작업 결과 확인 필요 · 자동 재시도 없음" />
-    {teaching && <TeachingSessionPanel key={teaching.item.id} api={api} session={teaching} onChange={updateTeaching} consoleApi={consoleApi} environment={environment} />}
-    {job && <LearningJobPanel key={job.item.id} api={api} initial={job} onUpdate={updateJob} />}
-    {evaluation && <PolicyComparison key={evaluation.item.id} api={api} evaluation={evaluation} onReleased={() => records.refresh()} />}
+    {artifactOperation && <ArtifactOperationPanel api={api} initial={artifactOperation} onDataset={acceptDataset} />}
+    {teaching && <TeachingSessionPanel key={`teaching-${teaching.item.id}`} api={api} session={teaching} onChange={updateTeaching} consoleApi={consoleApi} environment={environment} />}
+    {job && <LearningJobPanel key={`job-${job.item.id}`} api={api} initial={job} onUpdate={updateJob} />}
+    {evaluation && <PolicyComparison key={`evaluation-${evaluation.item.id}`} api={api} evaluation={evaluation} onReleased={() => records.refresh()} />}
     <section className="panel learning-records"><div className="panel-heading"><h2>작업·후보·게시 기록</h2></div><div className="learning-panel-body">{data.filter((entry) => ['training', 'evaluation', 'release'].includes(entry.item.kind)).map((entry) => <RecordRow key={`${entry.item.kind}:${entry.item.id}`} entry={entry} select={(value) => {
       if (value.item.kind === 'training' || value.item.kind === 'evaluation') {
         setJob({ item: value.item, etag: value.etag });
@@ -404,6 +415,7 @@ function TeachingSessionPanel({ api, session, onChange, consoleApi, environment 
     <div className="learning-panel-body"><p>{sourceLabel(current.item.source)} · 물리 상태: {current.item.physical_status ?? '확인 전'} · 캡처 상태: {current.item.status}</p><code>{current.item.id}</code>
       {current.item.teaching_case && <dl className="learning-metadata"><FieldValue label="승인된 시연 배치">{current.item.teaching_case.case_id} · {splitLabel(current.item.teaching_case.split)} · seed {current.item.teaching_case.seed}</FieldValue><FieldValue label="실제 캡처 환경 / revision"><code>{current.item.teaching_case.environment_id}</code><code>{current.item.teaching_case.revision}</code></FieldValue></dl>}
       <p className="small-text muted">권한 만료: {formatDate(current.item.expires_at)} · 업로드는 물리 실행과 별도로 완료됩니다.</p>
+      {current.item.artifact_operation_id && <p role="status">원본 업로드 이후 검증 작업: {current.item.verification_status} · <code>{current.item.artifact_operation_id}</code> · 검증된 manifest 전에는 준비 완료가 아닙니다.</p>}
       {consoleApi && environment && <div className="teaching-cameras">{(['overview', 'inspection'] as const).map((camera) => <LiveCamera key={`${current.item.id}:${camera}`} api={consoleApi} environment={environment} camera={camera} enabled={current.item.status === 'recording'} unavailableReason="활성 시연의 실제 카메라만 연결합니다." />)}</div>}
       <TeachingControls api={api} session={current} onChange={onChange} />
       <div className="button-row"><button type="button" className="button secondary" disabled={busy || current.item.status !== 'recording'} onClick={() => void control('finish')}>시연 마감 및 캡처 검증 요청</button>

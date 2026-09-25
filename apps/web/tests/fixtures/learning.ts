@@ -20,6 +20,8 @@ export function learningApi(): Mocked<LearningApi> {
     jog: vi.fn<LearningApi['jog']>().mockImplementation(async (_id, body) => ({ ...fixture.teaching, item: { ...fixture.teaching.item, last_sequence: body.sequence } })),
     teachingControl: vi.fn<LearningApi['teachingControl']>().mockImplementation(unexpected),
     seal: vi.fn<LearningApi['seal']>().mockImplementation(unexpected),
+    artifactOperation: vi.fn<LearningApi['artifactOperation']>().mockImplementation(unexpected),
+    dataset: vi.fn<LearningApi['dataset']>().mockResolvedValue(fixture.dataset),
     train: vi.fn<LearningApi['train']>().mockImplementation(unexpected),
     evaluate: vi.fn<LearningApi['evaluate']>().mockImplementation(unexpected),
     job: vi.fn<LearningApi['job']>().mockResolvedValue(fixture.training),

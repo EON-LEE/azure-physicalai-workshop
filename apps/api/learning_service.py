@@ -5,6 +5,7 @@ from datetime import timedelta
 from typing import TypeVar
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
+from apps.api.artifact_models import ArtifactOperationRecord, ArtifactStatus, ArtifactWork
 from apps.api.errors import Problem, unavailable
 from apps.api.learning_models import (
     JOB_TERMINAL,
@@ -37,7 +38,6 @@ from apps.api.learning_models import (
     TrainingParent,
     TrainingRun,
     fingerprint,
-    replace_record,
     transition,
 )
 from apps.api.learning_ports import (
@@ -66,7 +66,7 @@ from apps.api.simulation_reports import SimulationReport, validate_report_bindin
 from contracts.validate_environment import validate_environment
 
 log = logging.getLogger(__name__)
-R = TypeVar("R", bound=LearningRecord)
+R = TypeVar("R", bound=LearningRecord | ArtifactOperationRecord)
 
 
 def require_etag(stored: Stored, expected: str | None) -> None:
@@ -308,8 +308,164 @@ class LearningService:
             return winner, False
 
     def _save(self, actor: Principal, stored: Stored[R], **changes) -> Stored[R]:
-        updated = replace_record(stored.value, updated_at=utcnow(), **changes)
+        updated = type(stored.value).model_validate(
+            {
+                **stored.value.model_dump(),
+                "updated_at": utcnow(),
+                **changes,
+            }
+        )
         return self.store.put_learning(actor.owner_key, updated, stored.etag)
+
+    def _begin_artifact(
+        self,
+        actor,
+        project,
+        operation_id,
+        target_id,
+        digest,
+        *,
+        session=None,
+        receipt=None,
+        captures=(),
+    ):
+        existing = self._existing(actor, "artifact_operation", operation_id, digest)
+        if existing:
+            return self.get_artifact_operation(actor, operation_id)
+        client = self._dependency(self.artifacts, "Resident artifact processor")
+        policy = client.artifact_policy(actor)
+        now = utcnow()
+        operation = "capture" if session is not None else "dataset"
+        work = ArtifactWork(
+            id=operation_id,
+            actor=actor,
+            operation=operation,
+            project=project,
+            target_id=target_id,
+            created_at=now,
+            deadline=now + timedelta(seconds=policy.maximum_seconds),
+            max_bytes=policy.capture_bytes if operation == "capture" else policy.dataset_bytes,
+            max_files=policy.maximum_files,
+            session=session,
+            receipt=receipt,
+            captures=captures,
+        )
+        state = ArtifactStatus(
+            id=work.id,
+            owner_key=actor.owner_key,
+            project_id=project.id,
+            target_id=target_id,
+            operation=operation,
+            work_sha256=work.sha256,
+            created_at=now,
+            updated_at=now,
+            deadline=work.deadline,
+            max_bytes=work.max_bytes,
+            max_files=work.max_files,
+            status="queued",
+        )
+        record = ArtifactOperationRecord.model_validate(
+            {
+                **metadata(actor, operation_id, digest),
+                **state.model_dump(),
+                "work_document": work.model_dump(mode="json"),
+            }
+        )
+        stored, first = self._claim(actor, record)
+        if not first:
+            return self.get_artifact_operation(actor, operation_id)
+        try:
+            response = client.begin_artifact(actor, work)
+        except Problem as exc:
+            return self._save(
+                actor,
+                stored,
+                status="uncertain",
+                error_code=exc.code,
+                message="Artifact admission is unconfirmed; reconcile only the original operation.",
+            )
+        return self._apply_artifact(actor, stored, response)
+
+    def _apply_artifact(self, actor, stored, response: ArtifactStatus):
+        original = stored.value
+        if any(
+            getattr(response, field) != getattr(original, field)
+            for field in (
+                "id",
+                "owner_key",
+                "project_id",
+                "target_id",
+                "operation",
+                "work_sha256",
+                "created_at",
+                "deadline",
+                "max_bytes",
+                "max_files",
+            )
+        ):
+            raise Problem(
+                503, "artifact_receipt_mismatch", "Artifact operation scope or budget changed."
+            )
+        if original.status in ("ready", "failed", "timed_out"):
+            return stored
+        if response.status == "ready" and original.operation == "dataset":
+            work = ArtifactWork.model_validate(original.work_document)
+            self._claim(
+                actor,
+                self._dataset_record(
+                    actor,
+                    work.project,
+                    work.target_id,
+                    original.fingerprint,
+                    work.captures,
+                    response.result.artifact_id,
+                    response.result.manifest_sha256,
+                ),
+            )
+        updates = {
+            field: getattr(response, field)
+            for field in (
+                "status",
+                "phase",
+                "result",
+                "claim_id",
+                "heartbeat_at",
+                "error_code",
+                "message",
+            )
+        }
+        if all(getattr(original, field) == value for field, value in updates.items()):
+            return stored
+        try:
+            return self._save(actor, stored, **updates)
+        except Problem as exc:
+            if exc.code != "revision_conflict":
+                raise
+            return self.get(actor, "artifact_operation", original.id)
+
+    def get_artifact_operation(self, actor, operation_id):
+        stored = self.get(actor, "artifact_operation", operation_id)
+        if stored.value.status in ("ready", "failed", "timed_out"):
+            return stored
+        state = self._dependency(self.artifacts, "Resident artifact processor").artifact_status(
+            actor, operation_id
+        )
+        if state is None:
+            if (
+                stored.value.status == "queued"
+                and (utcnow() - stored.value.created_at).total_seconds() <= 20
+            ):
+                return stored
+            if stored.value.status == "uncertain":
+                return stored
+            return self._save(
+                actor,
+                stored,
+                status="uncertain",
+                error_code="artifact_worker_receipt_missing",
+                message="No owned worker receipt exists; heavy work was not replayed.",
+            )
+        return self._apply_artifact(actor, stored, state)
 
     def _baseline(
         self, actor: Principal, release_id: UUID, *, execution_timing=None
@@ -1095,18 +1251,24 @@ class LearningService:
         runtime = self._dependency(self.runtime, "Teaching runtime")
         if stored.value.physical_status in TERMINAL:
             capture = runtime.capture(actor.owner_key, stored.value.command_id)
-            status, receipt = self._capture_status(
+            status, receipt, operation = self._capture_status(
                 actor, stored.value, capture, stored.value.status, stored.value.physical_status
             )
-            if (status, receipt, capture.message) == (
-                stored.value.status,
-                stored.value.capture,
-                stored.value.message,
-            ):
+            changes = {
+                "status": status,
+                "capture": receipt,
+                "message": operation.message if operation else capture.message,
+                "artifact_operation_id": operation.id
+                if operation
+                else stored.value.artifact_operation_id,
+                "verification_status": operation.status
+                if operation
+                else stored.value.verification_status,
+                "error_code": operation.error_code if operation else stored.value.error_code,
+            }
+            if all(getattr(stored.value, key) == value for key, value in changes.items()):
                 return stored
-            return self._save(
-                actor, stored, status=status, capture=receipt, message=capture.message
-            )
+            return self._save(actor, stored, **changes)
         state = runtime.teaching(actor.owner_key, session_id)
         return self._apply_teaching(actor, stored, state)
 
@@ -1121,15 +1283,45 @@ class LearningService:
         if state.command_id != session.command_id or state.epoch != session.epoch:
             raise Problem(503, "capture_scope_mismatch", "Capture belongs to a different command.")
         receipt = session.capture
+        operation = None
         if state.status == "ready":
             if physical_status != "succeeded":
-                return "invalid", receipt
+                return "invalid", receipt, operation
             if not state.receipt or state.receipt.status != "uploaded":
                 raise Problem(503, "capture_not_verified", "Capture is not an uploaded manifest.")
             project = self.get(actor, "project", session.project_id).value
-            receipt = self._dependency(self.artifacts, "Capture verifier").verify_capture(
-                actor, project, session, state.receipt.model_dump(mode="json")
-            )
+            artifacts = self._dependency(self.artifacts, "Capture verifier")
+            if callable(getattr(artifacts, "begin_artifact", None)):
+                operation_id = uuid5(
+                    NAMESPACE_URL,
+                    f"artifact-capture:{actor.owner_key}:{session.id}:{state.receipt.manifest_sha256}",
+                )
+                operation = self._begin_artifact(
+                    actor,
+                    project,
+                    operation_id,
+                    session.id,
+                    fingerprint(
+                        {"session": str(session.id), "manifest": state.receipt.manifest_sha256}
+                    ),
+                    session=session,
+                    receipt=state.receipt,
+                ).value
+                if operation.status != "ready":
+                    return (
+                        "invalid" if operation.status in ("failed", "timed_out") else "uploading",
+                        receipt,
+                        operation,
+                    )
+                if operation.result is None or operation.result.capture is None:
+                    raise Problem(
+                        503, "artifact_receipt_mismatch", "Verified capture result is missing."
+                    )
+                receipt = operation.result.capture
+            else:
+                receipt = artifacts.verify_capture(
+                    actor, project, session, state.receipt.model_dump(mode="json")
+                )
             actual_case = receipt.authorized_case(project)
             if (
                 receipt.source != session.source
@@ -1145,7 +1337,7 @@ class LearningService:
             status = "ready"
         elif state.status in ("finalizing", "uploading", "invalid"):
             status = state.status
-        return status, receipt
+        return status, receipt, operation
 
     def _apply_teaching(self, actor, stored, state: TeachingRuntimeState):
         session = stored.value
@@ -1178,8 +1370,9 @@ class LearningService:
             "cancelling": "cancelling",
         }[state.status]
         capture = session.capture
+        operation = None
         if state.capture:
-            status, capture = self._capture_status(
+            status, capture, operation = self._capture_status(
                 actor, session, state.capture, status, state.execution.status
             )
         if session.status == "cancelling":
@@ -1188,7 +1381,14 @@ class LearningService:
             "status": status,
             "physical_status": state.execution.status,
             "capture": capture,
-            "message": state.capture.message if state.capture else None,
+            "message": operation.message
+            if operation
+            else state.capture.message
+            if state.capture
+            else None,
+            "artifact_operation_id": operation.id if operation else session.artifact_operation_id,
+            "verification_status": operation.status if operation else session.verification_status,
+            "error_code": operation.error_code if operation else session.error_code,
         }
         if all(getattr(session, key) == value for key, value in changes.items()):
             return stored
@@ -1345,6 +1545,14 @@ class LearningService:
         existing = self._existing(actor, "dataset", body.request_id, digest)
         if existing:
             return existing
+        pending = self._existing(actor, "artifact_operation", body.request_id, digest)
+        if pending:
+            operation = self.get_artifact_operation(actor, body.request_id)
+            return (
+                self.get(actor, "dataset", body.request_id)
+                if operation.value.status == "ready"
+                else operation
+            )
         context = self.get(actor, "project", project_id)
         require_etag(context, etag)
         captures = []
@@ -1382,17 +1590,37 @@ class LearningService:
             raise Problem(
                 422, "held_out_overlap", "Duplicate or held-out evidence cannot enter training."
             )
-        artifact_id, digest_manifest = self._dependency(
-            self.artifacts, "Dataset verifier"
-        ).seal_dataset(actor, project, body.request_id, tuple(captures))
-        record = DatasetVersion(
-            **metadata(actor, body.request_id, digest),
+        artifacts = self._dependency(self.artifacts, "Dataset verifier")
+        if callable(getattr(artifacts, "begin_artifact", None)):
+            return self._begin_artifact(
+                actor, project, body.request_id, body.request_id, digest, captures=tuple(captures)
+            )
+        artifact_id, digest_manifest = artifacts.seal_dataset(
+            actor, project, body.request_id, tuple(captures)
+        )
+        return self._claim(
+            actor,
+            self._dataset_record(
+                actor,
+                project,
+                body.request_id,
+                digest,
+                tuple(captures),
+                artifact_id,
+                digest_manifest,
+            ),
+        )[0]
+
+    @staticmethod
+    def _dataset_record(actor, project, dataset_id, digest, captures, artifact_id, digest_manifest):
+        return DatasetVersion(
+            **metadata(actor, dataset_id, digest),
             **project.timing_fields(),
-            project_id=project_id,
+            project_id=project.id,
             artifact_id=artifact_id,
             manifest_sha256=digest_manifest,
-            episode_ids=episodes,
-            seeds=seeds,
+            episode_ids=tuple(item.episode_id for item in captures),
+            seeds=tuple(item.seed for item in captures),
             human_teleop_count=sum(item.source == "human_teleop" for item in captures),
             reference_controller_count=sum(
                 item.source == "reference_controller" for item in captures
@@ -1401,7 +1629,6 @@ class LearningService:
             evaluation_plan_sha256=project.evaluation_plan.sha256,
             captures=tuple(captures),
         )
-        return self._claim(actor, record)[0]
 
 
 def validate_paired_report(project, baseline, candidate, report: PairedReport) -> None:

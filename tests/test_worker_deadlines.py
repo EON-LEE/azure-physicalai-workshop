@@ -147,6 +147,20 @@ class ConditionalBlobs:
             data, etag = self.items[name]
             return SimpleNamespace(readall=lambda: data, properties=SimpleNamespace(etag=etag))
 
+    def list_blobs(self, *, name_starts_with):
+        with self.lock:
+            return [
+                SimpleNamespace(name=name, size=len(value[0]), etag=value[1])
+                for name, value in self.items.items()
+                if name.startswith(name_starts_with)
+            ]
+
+    def delete_blob(self, name):
+        with self.lock:
+            if name not in self.items:
+                raise ResourceNotFoundError(status_code=404)
+            del self.items[name]
+
 
 class NativeJobs:
     def __init__(self, spec):
