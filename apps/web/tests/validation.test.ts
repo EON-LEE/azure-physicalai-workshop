@@ -86,4 +86,28 @@ describe('customer JSON validation', () => {
     expect(validateDocument(JSON.stringify(fixtureDocument), validator).document).not.toHaveProperty('learning_execution');
     expect(validateDocument(JSON.stringify({ ...fixtureDocument, learning_execution: learningExecution }), validator).issues.length).toBeGreaterThan(0);
   });
+  const learningExecutionV2 = {
+    ...learningExecution, schema: 'physicalai.paused-simulation/v2',
+    profile_id: 'franka-position-hold-10hz-paused-v2', max_simulation_seconds: 60,
+  };
+  it('accepts sixty simulation seconds only with explicit v2 schema and profile', () => {
+    const raw = JSON.stringify({ ...learningScene, learning_execution: learningExecutionV2 }, null, 4);
+    const result = validateDocument(raw, validator);
+    expect(result.issues).toEqual([]);
+    expect(result.document?.learning_execution).toEqual(learningExecutionV2);
+    expect(result.document?.execution).toEqual(fixtureDocument.execution);
+    expect(validateDocument(JSON.stringify({
+      ...learningScene, learning_execution: { ...learningExecution, max_simulation_seconds: 60 },
+    }), validator).issues.length).toBeGreaterThan(0);
+  });
+  it.each([
+    { ...learningExecutionV2, schema: 'physicalai.paused-simulation/v1' },
+    { ...learningExecutionV2, profile_id: learningExecution.profile_id },
+    { ...learningExecutionV2, max_simulation_seconds: 61 },
+    { ...learningExecutionV2, max_wall_seconds: 601 },
+    { ...learningExecutionV2, profile_id: learningExecution.profile_id, max_simulation_seconds: 30 },
+    { ...learningExecution, profile_id: learningExecutionV2.profile_id },
+  ])('rejects crossed or independently widened paused contracts: %j', (learning_execution) => {
+    expect(validateDocument(JSON.stringify({ ...learningScene, learning_execution }), validator).issues.length).toBeGreaterThan(0);
+  });
 });

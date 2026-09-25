@@ -167,8 +167,8 @@ optional root `learning_execution` object:
 }
 ```
 
-All five fields are required when this closed object is present. Simulation
-seconds must be an integer from 1 through 30 and wall seconds from 1 through
+All five fields are required when this closed object is present. V1 simulation
+seconds remain an integer from 1 through 30 and wall seconds from 1 through
 600; lower explicit customer limits remain binding. No aliases, extra fields,
 implicit defaults, timing-gate overrides or real-time qualification are accepted.
 An absent object preserves the legacy contract and **never** authorizes paused
@@ -182,6 +182,28 @@ model, successful motion or real-time capability. Existing
 does not become a 600-second limit. Existing reference/inspection commands and
 their server ceilings are unchanged. New cases use new IDs and content hashes;
 existing saved scenes and frozen evaluation plans are not silently rewritten.
+
+The separately declared v2 task budget is:
+
+```json
+{
+  "schema": "physicalai.paused-simulation/v2",
+  "execution_timing": "paused_simulation",
+  "profile_id": "franka-position-hold-10hz-paused-v2",
+  "max_simulation_seconds": 60,
+  "max_wall_seconds": 600
+}
+```
+
+V2 permits integer simulation seconds from 1 through 60 **only** with both
+v2 schema and v2 profile. Mixed versions are rejected even at a lower budget
+that would fit both. V1 remains capped at 30 seconds/1800 physics ticks; a new
+v2 profile permits 60 seconds/3600 ticks. Wall, observation/inference/hold/interval,
+heartbeat, physical safety and evaluation quality limits are not increased.
+New IDs/revisions and operator-frozen criteria precede v2 data collection;
+this version does not retroactively make a failed or incomplete v1 trial pass.
+Missing opt-in still denies paused execution, and neither version confers
+real-time admission or activates a runtime, model or paid job.
 
 ## Inspection and sorting runs
 

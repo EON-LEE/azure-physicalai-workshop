@@ -136,6 +136,7 @@ def validate_environment(document: object) -> list[Issue]:
 
 
 def validate_paused_learning_environment(document: object) -> list[Issue]:
+    """Require live opt-in with the schema/profile version and its own simulation ceiling."""
     issues = validate_environment(document)
     if issues:
         return issues

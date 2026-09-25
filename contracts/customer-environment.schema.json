@@ -81,17 +81,33 @@
       }]
     },
     "learning_execution": {
-      "description": "Explicit NON_REALTIME_SIMULATION opt-in. It does not change legacy execution wall-time limits or authorize a live runtime.",
+      "description": "Explicit NON_REALTIME_SIMULATION opt-in: v1 retains 30 SIM seconds; v2 permits 60 only with the matching v2 profile. Legacy wall-time limits and runtime admission are unchanged.",
       "type": "object",
       "additionalProperties": false,
       "required": ["schema", "execution_timing", "profile_id", "max_simulation_seconds", "max_wall_seconds"],
       "properties": {
-        "schema": {"const": "physicalai.paused-simulation/v1"},
+        "schema": {"enum": ["physicalai.paused-simulation/v1", "physicalai.paused-simulation/v2"]},
         "execution_timing": {"const": "paused_simulation"},
-        "profile_id": {"const": "franka-position-hold-10hz-paused-v1"},
-        "max_simulation_seconds": {"type": "integer", "minimum": 1, "maximum": 30},
+        "profile_id": {"enum": ["franka-position-hold-10hz-paused-v1", "franka-position-hold-10hz-paused-v2"]},
+        "max_simulation_seconds": {"type": "integer", "minimum": 1, "maximum": 60},
         "max_wall_seconds": {"type": "integer", "minimum": 1, "maximum": 600}
-      }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "schema": {"const": "physicalai.paused-simulation/v1"},
+            "profile_id": {"const": "franka-position-hold-10hz-paused-v1"},
+            "max_simulation_seconds": {"type": "integer", "maximum": 30}
+          }
+        },
+        {
+          "properties": {
+            "schema": {"const": "physicalai.paused-simulation/v2"},
+            "profile_id": {"const": "franka-position-hold-10hz-paused-v2"},
+            "max_simulation_seconds": {"type": "integer", "maximum": 60}
+          }
+        }
+      ]
     },
     "limits": {
       "type": "object",
