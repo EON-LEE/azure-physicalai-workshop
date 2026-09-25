@@ -28,7 +28,15 @@ from apps.api.models import (
 from apps.api.service import check_fresh, content_hash
 from learning.contract import ControlProfile, Scope
 from learning.inference import ControlContext
+from learning.paused import PausedControlProfile
 from simulation.extensions import SceneRegistry, SceneSpec
+from simulation.paused_contracts import (
+    PausedEpisodeAuthorizer,
+    PausedRuntimeMetrics,
+    ResolvedSimulationAuthorization,
+    SimulationEpisodeCommand,
+    SimulationEpisodeExecution,
+)
 from simulation.policy_executor import PolicyProvider
 from simulation.runtime_contracts import (
     CaptureBinding,
@@ -81,6 +89,11 @@ class StartPolicy:
     request: PolicyCommand
 
 
+@dataclass(frozen=True)
+class StartSimulationEpisode:
+    request: SimulationEpisodeCommand
+
+
 class SimulationCore:
     """Thread-safe protocol state; all physics execution stays in the Isaac main thread."""
 
@@ -90,6 +103,8 @@ class SimulationCore:
         max_commands: int = 2048,
         *,
         control_profile: ControlProfile | None = None,
+        paused_profile: PausedControlProfile | None = None,
+        paused_authorizer: PausedEpisodeAuthorizer | None = None,
         policy_provider: PolicyProvider | None = None,
         tenant_id: str | None = None,
         capture_status_reader: Callable[[str, UUID], CaptureStatus | None] | None = None,
@@ -98,6 +113,7 @@ class SimulationCore:
     ) -> None:
         self.registry = registry
         self.control_profile = control_profile
+        self.paused_profile, self.paused_authorizer = paused_profile, paused_authorizer
         self.policy_provider, self.tenant_id = policy_provider, tenant_id
         self.capture_status_reader = capture_status_reader
         self.clock_ns = clock_ns
@@ -119,7 +135,13 @@ class SimulationCore:
         self.deadlines: dict[tuple[str, UUID], datetime] = {}
         self.monotonic_deadlines: dict[tuple[str, UUID], int] = {}
         self.pending: deque[
-            LoadScene | StartMotion | StopMotion | StartTeaching | FinishTeaching | StartPolicy
+            LoadScene
+            | StartMotion
+            | StopMotion
+            | StartTeaching
+            | FinishTeaching
+            | StartPolicy
+            | StartSimulationEpisode
         ] = deque()
         self.active_command: tuple[str, UUID] | None = None
         self.motion: MotionTelemetry | None = None
@@ -129,6 +151,9 @@ class SimulationCore:
         self.teaching_sessions: dict[tuple[str, UUID], TeachingSession] = {}
         self.teaching_by_command: dict[tuple[str, UUID], tuple[str, UUID]] = {}
         self.policy_commands: dict[tuple[str, UUID], PolicyCommand] = {}
+        self.simulation_commands: dict[tuple[str, UUID], SimulationEpisodeCommand] = {}
+        self.simulation_authorizations: dict[tuple[str, UUID], ResolvedSimulationAuthorization] = {}
+        self.command_started_ns: dict[tuple[str, UUID], int] = {}
 
     def _owned(self, owner: str) -> None:
         if not self.owner or self.environment is None:
@@ -289,10 +314,10 @@ class SimulationCore:
     def _dispatch(
         self,
         owner: str,
-        command: MotionCommand | TeachingStart,
+        command: MotionCommand | TeachingStart | SimulationEpisodeCommand,
         *,
         fingerprint: str,
-        action: StartMotion | StartTeaching | StartPolicy,
+        action: StartMotion | StartTeaching | StartPolicy | StartSimulationEpisode,
         deadline: datetime,
         teaching: bool = False,
     ) -> Execution:
@@ -336,11 +361,18 @@ class SimulationCore:
                 observation, self.environment.document["execution"]["max_observation_age_ms"]
             )
             remaining = (deadline - self.clock_utc()).total_seconds()
-            maximum = (
-                300
-                if teaching
-                else min(30, self.environment.document["execution"]["max_step_seconds"])
-            )
+            if isinstance(command, SimulationEpisodeCommand):
+                authority = self.spec.require_paused_authority()
+                authority.validate_request(
+                    wall_seconds=remaining, simulation_steps=command.max_simulation_steps
+                )
+                maximum = authority.max_wall_seconds
+            else:
+                maximum = (
+                    300
+                    if teaching
+                    else min(30, self.environment.document["execution"]["max_step_seconds"])
+                )
             if remaining <= 0 or remaining > maximum:
                 raise Problem(
                     409,
@@ -357,10 +389,125 @@ class SimulationCore:
             self.commands[key] = result
             self.fingerprints[key] = fingerprint
             self.deadlines[key] = deadline
-            self.monotonic_deadlines[key] = self.clock_ns() + int(remaining * 1_000_000_000)
+            started_ns = self.clock_ns()
+            self.command_started_ns[key] = started_ns
+            self.monotonic_deadlines[key] = started_ns + int(remaining * 1_000_000_000)
             self.active_command = key
             self.pending.append(action)
             return result.model_copy(deep=True)
+
+    def dispatch_simulation_episode(
+        self, owner: str, request: SimulationEpisodeCommand
+    ) -> Execution:
+        request = SimulationEpisodeCommand.model_validate(
+            request.model_dump(mode="json", by_alias=True)
+        )
+        fingerprint = content_hash(request.model_dump(mode="json", by_alias=True))
+        key = (owner, request.command_id)
+        with self.lock:
+            if key in self.commands:
+                previous = self.fingerprints[key]
+                if previous is not None and previous != fingerprint:
+                    raise Problem(
+                        409, "command_id_reused", "A simulation command ID cannot be reused."
+                    )
+                return self.commands[key].model_copy(deep=True)
+            self._owned(owner)
+            if self.paused_profile is None or self.paused_profile.profile_id != request.profile_id:
+                raise Problem(
+                    503,
+                    "paused_profile_unavailable",
+                    "A separately installed non-real-time simulation profile is required.",
+                )
+            self.paused_profile.validate()
+            if self.spec is None:
+                raise Problem(503, "simulator_not_ready", "The reviewed scene is not ready.")
+            self.spec.require_paused_authority()
+            if not self.spec.record_demonstration:
+                raise Problem(
+                    409, "capture_not_approved", "The paused episode requires approved capture."
+                )
+            if self.paused_authorizer is None:
+                raise Problem(
+                    503,
+                    "paused_authority_unavailable",
+                    "No trusted paused episode authority resolver is installed.",
+                )
+            resolved = self.paused_authorizer.authorize(owner, request, self.paused_profile)
+            if not isinstance(resolved, ResolvedSimulationAuthorization):
+                raise Problem(
+                    503, "invalid_paused_authority", "No validated authority record returned."
+                )
+            resolved = ResolvedSimulationAuthorization.model_validate(resolved.model_dump())
+            if (
+                resolved.authorization_id != request.authorization_id
+                or resolved.authorization_kind != request.authorization_kind
+                or resolved.owner != owner
+                or resolved.environment_id != request.environment_id
+                or resolved.revision != request.revision
+                or resolved.controller != request.controller
+                or resolved.task != request.task
+                or resolved.control_profile_sha256 != self.paused_profile.sha256
+                or resolved.policy_type != request.policy_type
+                or resolved.model_sha256 != request.model_sha256
+                or request.wall_expires_at > resolved.wall_expires_at
+                or (request.wall_expires_at - self.clock_utc()).total_seconds()
+                > resolved.max_episode_wall_seconds
+                or request.max_simulation_steps > resolved.max_simulation_steps
+            ):
+                raise Problem(
+                    403, "paused_authority_mismatch", "Resolved authority does not match request."
+                )
+            result = self._dispatch(
+                owner,
+                request,
+                fingerprint=fingerprint,
+                action=StartSimulationEpisode(request),
+                deadline=request.wall_expires_at,
+            )
+            self.simulation_commands[key] = request
+            self.simulation_authorizations[key] = resolved.model_copy(deep=True)
+            self.commands[key] = SimulationEpisodeExecution(
+                **result.model_dump(exclude={"policy_runtime", "simulation_runtime"}),
+                simulation_runtime=PausedRuntimeMetrics(
+                    control_profile_sha256=self.paused_profile.sha256,
+                    controller=request.controller,
+                ),
+            )
+            return self.commands[key].model_copy(deep=True)
+
+    def simulation_episode(self, owner: str, command_id: UUID) -> Execution:
+        with self.lock:
+            if (owner, command_id) not in self.simulation_commands:
+                raise Problem(404, "simulation_episode_missing", "Simulation episode not found.")
+            return self.command(owner, command_id)
+
+    def publish_simulation_metrics(
+        self, binding: CommandBinding, metrics: PausedRuntimeMetrics
+    ) -> bool:
+        with self.lock:
+            if not self.matches(binding):
+                return False
+            key = (binding.owner, binding.command_id)
+            request = self.simulation_commands.get(key)
+            if request is None:
+                return False
+            checked = PausedRuntimeMetrics.model_validate(metrics.model_dump())
+            previous = self.commands[key].simulation_runtime
+            if (
+                checked.controller != request.controller
+                or checked.control_profile_sha256 != previous.control_profile_sha256
+                or checked.applied_model_sha256 not in (None, request.model_sha256)
+                or checked.simulation_steps < previous.simulation_steps
+                or checked.applied_action_count < previous.applied_action_count
+                or checked.policy_predict_calls < previous.policy_predict_calls
+                or checked.wall_elapsed_ms < previous.wall_elapsed_ms
+            ):
+                raise ValueError("Paused runtime evidence changed binding or moved backwards.")
+            self.commands[key] = self.commands[key].model_copy(
+                update={"simulation_runtime": checked}
+            )
+            return True
 
     def dispatch_policy(self, owner: str, request: PolicyCommand) -> Execution:
         fingerprint = content_hash(request.model_dump(mode="json"))
@@ -814,6 +961,13 @@ class SimulationCore:
                 terminal = PolicyExecution(
                     **terminal.model_dump(exclude={"policy_runtime"}),
                     policy_runtime=self.commands[key].policy_runtime,
+                )
+            elif key in self.simulation_commands:
+                terminal = SimulationEpisodeExecution(
+                    **terminal.model_dump(exclude={"policy_runtime", "simulation_runtime"}),
+                    simulation_runtime=self.commands[key].simulation_runtime.model_copy(
+                        update={"phase": "stopped"}
+                    ),
                 )
             self.commands[key] = terminal
             teaching_key = self.teaching_by_command.get(key)

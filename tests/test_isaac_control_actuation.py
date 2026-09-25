@@ -2,11 +2,13 @@
 
 import importlib
 import sys
+from dataclasses import replace
 from datetime import timedelta
 from types import ModuleType, SimpleNamespace
 
 import pytest
 from runtime_support import ACTOR, PNG
+from test_paused_dispatch import paused_core as paused_core
 from test_policy_executor import CountingPolicy
 from test_policy_runtime import request_for
 from test_position_hold_control import Recorder
@@ -15,6 +17,7 @@ from test_teaching_runtime import teaching as teaching
 
 from learning.contract import CameraSample, FrameSample, Scope
 from learning.inference import ControlContext, GuardedPolicyAdapter, PolicyObservation
+from simulation.extensions import PausedSceneAuthority
 from simulation.physics_scheduling import PHYSICS_THREAD_SETTING
 from simulation.policy_executor import PolicyExecutor
 
@@ -128,6 +131,9 @@ def hardware(teaching, monkeypatch):
         def get_joint_positions(self):
             return self.joints.copy()
 
+        def get_joint_velocities(self):
+            return Array([0.0] * 9)
+
         def get_world_pose(self):
             return Array([0, 0, 0]), Array([1, 0, 0, 0])
 
@@ -178,8 +184,11 @@ def hardware(teaching, monkeypatch):
         get_generalized_gravity_forces=lambda: [Array([1.0] * 7 + [0.0, 0.0])]
     )
     cell.spec = core.spec
+    cell.scene_epoch = core.epoch
     cell.part = SimpleNamespace(
-        get_world_pose=lambda: (Array([0.35, 0.25, 0.2]), Array([1, 0, 0, 0]))
+        get_world_pose=lambda: (Array([0.35, 0.25, 0.2]), Array([1, 0, 0, 0])),
+        get_linear_velocity=lambda: Array([0.0] * 3),
+        get_angular_velocity=lambda: Array([0.0] * 3),
     )
 
     def observation(targets, **kwargs):
@@ -533,6 +542,13 @@ def test_fixed_unarmed_warmup_is_bounded_and_never_claims_control_intervals(hard
     assert all(tuple(action.joint_velocities) == (0.0,) * 9 for action in cell.robot.actions)
 
 
+def test_fixed_unarmed_warmup_yields_heartbeat_after_each_actual_tick(hardware):
+    cell, _, _, _ = hardware
+    called = []
+    cell.prime_control_profile(on_tick=lambda: called.append(cell.world.current_time_step_index))
+    assert called == list(range(1, 61))
+
+
 def test_world_override_of_control_thread_count_fails_before_unarmed_or_armed_actuation(hardware):
     cell, core, request, _ = hardware
     cell.test_settings_values[PHYSICS_THREAD_SETTING] = 8
@@ -575,3 +591,164 @@ def test_scheduling_readback_time_remains_inside_the_original_control_budget(har
     for _ in range(6):
         cell.advance()
     assert cell.control_timings[-1]["control_cycle_ms"] == 90
+
+
+def test_opted_in_paused_scene_idle_never_advances_unsupervised_physics(hardware):
+    cell, _, _, _ = hardware
+    cell.spec = replace(
+        cell.spec,
+        learning_execution=PausedSceneAuthority(
+            "physicalai.paused-simulation/v1",
+            "paused_simulation",
+            "franka-position-hold-10hz-paused-v1",
+            30,
+            600,
+        ),
+    )
+    before = cell.world.current_time_step_index
+    for _ in range(10):
+        assert cell.advance() is False
+    assert cell.world.current_time_step_index == before
+    assert cell.robot.actions == []
+
+
+def test_legacy_reference_idle_still_advances_as_before(hardware):
+    cell, _, _, _ = hardware
+    assert cell.spec.learning_execution is None
+    before = cell.world.current_time_step_index
+    cell.advance()
+    assert cell.world.current_time_step_index == before + 1
+
+
+def test_hidden_parked_scene_mutation_is_not_accepted_as_a_frozen_preview(hardware):
+    cell, _, _, _ = hardware
+    cell.spec = replace(
+        cell.spec,
+        learning_execution=PausedSceneAuthority(
+            "physicalai.paused-simulation/v1",
+            "paused_simulation",
+            "franka-position-hold-10hz-paused-v1",
+            30,
+            600,
+        ),
+    )
+    cell.world.render = lambda: cell.robot.joints.__setitem__(0, 0.001)
+    with pytest.raises(RuntimeError, match="frozen"):
+        cell.advance()
+
+
+def test_actual_paused_reference_servo_uses_articulation_actions_and_one_explicit_tick(
+    hardware,
+    paused_core,
+):
+    cell, original_core, _, _ = hardware
+    core, _, request = paused_core
+    core.clock_ns = original_core.clock_ns
+    core.dispatch_simulation_episode(ACTOR.owner_key, request)
+    core.next_action()
+    core.begin_motion(request.command_id)
+    cell.spec, cell.scene_epoch = core.spec, core.epoch
+    cell.prepare_paused_reference(request, core)
+    targets = cell.paused_reference_targets((0.35, 0.25, 0.31), False)
+    applied = cell.apply_paused_tick(targets)
+    assert len(cell.robot.actions) == 1
+    assert tuple(cell.robot.actions[0].joint_positions) == targets
+    assert tuple(cell.robot.actions[0].joint_velocities) == (0.0,) * 9
+    assert applied.physics_step == cell.world.current_time_step_index == 1
+    assert applied.gravity_efforts == (1.0,) * 7 + (0.0, 0.0)
+    assert cell.world.fabric_flags == [True]
+    assert cell.paused_goal_reached() is False
+
+
+def test_paused_warmup_publishes_original_first_frame_after_the_last_real_tick(
+    hardware,
+    paused_core,
+    monkeypatch,
+):
+    cell, original_core, _, clock = hardware
+    core, _, request = paused_core
+    core.clock_ns = original_core.clock_ns
+    core.tenant_id = str(ACTOR.tenant_id)
+    cell.spec, cell.scene_epoch, cell.paused_scene_core = core.spec, core.epoch, core
+    cell.part.get_world_pose = lambda: (Array(cell.spec.part_position), Array([1, 0, 0, 0]))
+
+    class Sensor:
+        def __init__(self):
+            self.frame = {
+                "rendering_frame": {
+                    "referenceTimeNumerator": 0,
+                    "referenceTimeDenominator": 1_000_000_000,
+                },
+                "rendering_time": 0.0,
+                "rgb": PNG,
+            }
+
+        def get_current_frame(self):
+            return self.frame
+
+        def get_resolution(self):
+            return (320, 320)
+
+        def get_frequency(self):
+            return -1
+
+    cell.cameras = {name: Sensor() for name in ("inspection", "overview")}
+    phase_order = []
+
+    def render():
+        phase_order.append(("render", cell.world.current_time_step_index))
+        clock[1] += 1_000_000
+        for camera in cell.cameras.values():
+            camera.frame.update(
+                rendering_time=cell.world.current_time,
+                rendering_frame={
+                    "referenceTimeNumerator": round(cell.world.current_time * 1_000_000_000),
+                    "referenceTimeDenominator": 1_000_000_000,
+                },
+            )
+
+    original_step = cell.world.step
+
+    def step(**kwargs):
+        original_step(**kwargs)
+        phase_order.append(("step", cell.world.current_time_step_index))
+
+    cell.world.render, cell.world.step = render, step
+    monkeypatch.setattr(cell, "_encode_published_rgb", lambda frame: frame["rgb"])
+    # Use the production synchronization helper, not the generic fixture's observation stub.
+    from simulation.camera_observation import observation_barrier
+
+    monkeypatch.setattr(
+        sys.modules["simulation.isaac_adapter"], "observation_barrier", observation_barrier
+    )
+    cell.prime_control_profile()
+    publication = cell.paused_publications.publication
+    assert publication is not None
+    assert publication.frozen_state.physics_step == 60
+    assert len(cell.control_warmup_timings) == 60
+    assert phase_order[-2:] == [("step", 60), ("render", 60)]
+    assert publication.freeze_established_ns <= publication.joint_sample_ns
+    assert dict(publication.images)["inspection"].png == PNG
+    before = cell.world.current_time_step_index
+    core.dispatch_simulation_episode(ACTOR.owner_key, request)
+    core.next_action()
+    core.begin_motion(request.command_id)
+    from simulation.paused_control import PausedEpisode
+
+    initial = cell.frozen_physics_state(core.epoch)
+    episode = PausedEpisode(
+        initial,
+        wall_deadline_ns=core.monotonic_deadlines[core.active_command],
+        max_simulation_steps=1800,
+        authorized=lambda: True,
+        clock_ns=core.clock_ns,
+    )
+    episode.begin_observation(initial)
+    observed = cell.paused_observation(request, core, episode, 0)
+    assert observed.initial_publication is not None
+    assert observed.monotonic_ns == publication.published_ns
+    assert (
+        observed.images["inspection"].monotonic_ns
+        == dict(publication.images)["inspection"].monotonic_ns
+    )
+    assert cell.world.current_time_step_index == before

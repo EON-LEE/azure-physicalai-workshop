@@ -12,6 +12,7 @@ from apps.api.errors import Problem
 from apps.api.middleware import BodyLimit
 from apps.api.models import EnvironmentRecord, MotionCommand
 from simulation.core import SimulationCore
+from simulation.paused_contracts import SimulationEpisodeCommand
 from simulation.runtime_contracts import PolicyCommand, TeachingInput, TeachingLease, TeachingStart
 
 
@@ -91,6 +92,19 @@ def create_bridge_app(
     @app.post("/v1/policy/commands", status_code=202)
     def policy(command: PolicyCommand, principal: Owner):
         return core.dispatch_policy(principal, command)
+
+    @app.post("/v1/simulation-episodes", status_code=202)
+    def simulation_episode(command: SimulationEpisodeCommand, principal: Owner):
+        return core.dispatch_simulation_episode(principal, command)
+
+    @app.get("/v1/simulation-episodes/{command_id}")
+    def simulation_episode_status(command_id: UUID, principal: Owner):
+        return core.simulation_episode(principal, command_id)
+
+    @app.post("/v1/simulation-episodes/{command_id}/cancel")
+    def cancel_simulation_episode(command_id: UUID, principal: Owner):
+        core.simulation_episode(principal, command_id)
+        return core.cancel(principal, command_id)
 
     @app.get("/v1/commands/{command_id}")
     def command(command_id: UUID, principal: Owner):

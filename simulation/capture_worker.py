@@ -7,13 +7,14 @@ import threading
 from collections import deque
 from collections.abc import Callable
 from copy import deepcopy
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from typing import Protocol
 
 from azure.core.exceptions import AzureError
 
 from apps.api.models import DemonstrationResult
 from learning.contract import FrameSample
+from learning.paused import PausedFrameSample
 from simulation.runtime_contracts import (
     CaptureBinding,
     CaptureReceipt,
@@ -25,7 +26,7 @@ log = logging.getLogger(__name__)
 
 
 class CaptureBackend(Protocol):
-    def append(self, sample: FrameSample) -> None: ...
+    def append(self, sample: FrameSample | PausedFrameSample) -> None: ...
 
     def finalize_and_upload(self, on_uploading: Callable[[], None]) -> CaptureReceipt: ...
 
@@ -48,7 +49,7 @@ class CaptureWorker:
         self.max_pending_frames = max_pending_frames
         self.max_pending_bytes = max_pending_bytes
         self.condition = threading.Condition()
-        self.queue: deque[tuple[FrameSample, int]] = deque()
+        self.queue: deque[tuple[FrameSample | PausedFrameSample, int]] = deque()
         self.pending_frames = 0
         self.pending_bytes = 0
         self.terminal_received = False
@@ -65,9 +66,14 @@ class CaptureWorker:
         )
         self.thread.start()
 
-    def append(self, sample: FrameSample) -> None:
+    def append(self, sample: FrameSample | PausedFrameSample) -> None:
         # Include bounded non-image metadata and the six-tick actuator evidence in the budget.
-        size = sum(len(image.png) for image in sample.images.values()) + 16384
+        images = (
+            sample.observation.images if isinstance(sample, PausedFrameSample) else sample.images
+        )
+        size = sum(len(image.png) for image in images.values()) + (
+            32768 if isinstance(sample, PausedFrameSample) else 16384
+        )
         with self.condition:
             if self.state.status != "recording" or self.terminal_received:
                 raise RuntimeError(f"Capture is {self.state.status}; no more samples are accepted.")
@@ -77,10 +83,33 @@ class CaptureWorker:
             ):
                 self.invalidate("Capture backlog exceeded its bounded memory budget.")
                 raise RuntimeError(self.state.message)
+            if isinstance(sample, PausedFrameSample):
+                snapshot = replace(
+                    sample,
+                    observation=replace(
+                        sample.observation,
+                        images={
+                            name: replace(image, png=bytes(image.png))
+                            for name, image in images.items()
+                        },
+                    ),
+                    commanded_joint_targets=tuple(sample.commanded_joint_targets),
+                    applied_controls=tuple(
+                        replace(
+                            control,
+                            commanded_joint_targets=tuple(control.commanded_joint_targets),
+                            commanded_joint_velocities=tuple(control.commanded_joint_velocities),
+                            gravity_efforts=tuple(control.gravity_efforts),
+                        )
+                        for control in sample.applied_controls
+                    ),
+                )
+            else:
+                snapshot = deepcopy(sample)
             self.pending_frames += 1
             self.pending_bytes += size
             self.terminal_received = sample.terminated or sample.truncated
-            self.queue.append((deepcopy(sample), size))
+            self.queue.append((snapshot, size))
             self.condition.notify()
 
     def seal(self) -> None:

@@ -13,6 +13,7 @@ from uuid import UUID
 import uvicorn
 from azure.core.exceptions import AzureError
 
+from learning.paused.capture import PausedEpisodeBudget
 from simulation.camera_observation import control_experience_path, sensor_launch_config
 from simulation.capture_status import CaptureStatusStore
 from simulation.capture_worker import CaptureBackend, CaptureWorker
@@ -22,6 +23,7 @@ from simulation.core import (
     SimulationCore,
     StartMotion,
     StartPolicy,
+    StartSimulationEpisode,
     StartTeaching,
     StopMotion,
 )
@@ -29,6 +31,8 @@ from simulation.demonstrations import Demonstration
 from simulation.extensions import SceneRegistry
 from simulation.health import HEARTBEAT
 from simulation.http import BridgeSettings, create_bridge_app
+from simulation.paused_capture import PausedDemonstration, prepare_paused_capture
+from simulation.paused_runtime import PausedReferenceRuntime
 from simulation.physics_scheduling import physics_scheduling_readback, require_control_scheduling
 from simulation.policy_executor import PolicyExecutor
 from simulation.runtime_configuration import load_deployment
@@ -56,7 +60,9 @@ class SimulatorRuntime:
         self.capture_store = capture_store
         self.capture_worker: CaptureWorker | None = None
         self.capture_workers: dict[UUID, CaptureWorker] = {}
-        self.pending_start: StartMotion | StartTeaching | StartPolicy | None = None
+        self.pending_start: (
+            StartMotion | StartTeaching | StartPolicy | StartSimulationEpisode | None
+        ) = None
         self.policy_executor: PolicyExecutor | None = None
         self.binding: CommandBinding | None = None
         self.active_epoch = core.epoch
@@ -80,7 +86,11 @@ class SimulatorRuntime:
     def _begin_hardware(self, action, recording) -> None:
         binding = self.binding
         self.hardware.actuation_guard = partial(self.core.apply_guarded, binding)
-        if isinstance(action, StartTeaching):
+        if isinstance(action, StartSimulationEpisode):
+            driver = PausedReferenceRuntime(self.core, action.request, self.hardware, recording)
+            self.hardware.paused_driver = driver
+            self.hardware.recording = recording
+        elif isinstance(action, StartTeaching):
             self.hardware.start_teaching(action.request, self.core, recording)
             session = self.core.teaching_sessions[(binding.owner, action.request.session_id)]
             if session.finishing:
@@ -90,16 +100,25 @@ class SimulatorRuntime:
         else:
             self.hardware.start(action.target_id, recording)
 
-    def _start(self, action: StartMotion | StartTeaching | StartPolicy) -> None:
+    def _start(
+        self, action: StartMotion | StartTeaching | StartPolicy | StartSimulationEpisode
+    ) -> None:
         command = (
             action.request
-            if isinstance(action, StartTeaching)
+            if isinstance(action, (StartTeaching, StartSimulationEpisode))
             else action.request.command
             if isinstance(action, StartPolicy)
             else action.command
         )
         self.binding = self.core.binding(command.command_id)
         self.policy_executor = None
+        if (
+            isinstance(action, StartSimulationEpisode)
+            and action.request.controller != "reference_controller"
+        ):
+            raise RuntimeError(
+                "A real paused policy provider is unavailable; no scripted fallback."
+            )
         if isinstance(action, StartPolicy):
             if self.core.policy_provider is None:
                 raise RuntimeError("The approved policy provider is unavailable.")
@@ -121,8 +140,20 @@ class SimulatorRuntime:
                 raise RuntimeError("Both bounded capture workers are persisting earlier episodes.")
             capture_binding = self.core.begin_capture(command.command_id)
             if self.capture_factory is None:
-                request = Demonstration.prepare(self.core, command.command_id)
-                factory = partial(Demonstration, request)
+                if isinstance(action, StartSimulationEpisode):
+                    initial = self.hardware.frozen_physics_state(self.core.epoch)
+                    key = (self.binding.owner, command.command_id)
+                    budget = PausedEpisodeBudget(
+                        self.core.command_started_ns[key],
+                        self.core.monotonic_deadlines[key],
+                        initial.physics_step,
+                        initial.physics_step + command.max_simulation_steps,
+                    )
+                    request = prepare_paused_capture(self.core, command.command_id, budget)
+                    factory = partial(PausedDemonstration, request)
+                else:
+                    request = Demonstration.prepare(self.core, command.command_id)
+                    factory = partial(Demonstration, request)
             else:
                 factory = partial(self.capture_factory, capture_binding)
             self.capture_worker = CaptureWorker(
@@ -152,11 +183,15 @@ class SimulatorRuntime:
     def _publish_policy_metrics(self) -> None:
         if self.policy_executor is not None and self.binding is not None:
             self.core.publish_policy_metrics(self.binding, self.policy_executor.metrics())
+        driver = getattr(self.hardware, "paused_driver", None)
+        if self.binding is not None and driver is not None:
+            self.core.publish_simulation_metrics(self.binding, driver.metrics())
 
     def finish(self, status, message=None) -> None:
         if self.binding is None or not self.core.matches(self.binding):
             return
         completed_at = self.core.clock_utc()
+        paused = (self.binding.owner, self.binding.command_id) in self.core.simulation_commands
         with self.core.lock:
             if status == "succeeded":
                 result = self.core.command(self.binding.owner, self.binding.command_id)
@@ -191,7 +226,7 @@ class SimulatorRuntime:
         self.binding = None
         self.policy_executor = None
         self._publish_capture()
-        if status == "succeeded":
+        if status == "succeeded" and not paused:
             self.hardware.world.play()
 
     def tick(self) -> None:
@@ -200,17 +235,26 @@ class SimulatorRuntime:
             action = self.core.next_action()
             if isinstance(action, LoadScene):
                 self.active_epoch = action.epoch
+                self.hardware.scene_epoch = action.epoch
                 self.hardware.load(action.spec)
-                if self.core.control_profile is not None:
-                    self.hardware.prime_control_profile()
+                self.hardware.paused_scene_core = (
+                    self.core if action.spec.learning_execution is not None else None
+                )
+                if self.core.control_profile is not None or (
+                    self.core.paused_profile is not None
+                    and action.spec.learning_execution is not None
+                ):
+                    self.hardware.prime_control_profile(on_tick=self.write_heartbeat)
             elif isinstance(action, StopMotion) and self.core.should_stop(action.command_id):
                 self.binding = self.core.binding(action.command_id)
                 self.hardware.stop()
                 self.finish("cancelled", "Simulation stop confirmed.")
-            elif isinstance(action, (StartMotion, StartTeaching, StartPolicy)):
+            elif isinstance(
+                action, (StartMotion, StartTeaching, StartPolicy, StartSimulationEpisode)
+            ):
                 command = (
                     action.request
-                    if isinstance(action, StartTeaching)
+                    if isinstance(action, (StartTeaching, StartSimulationEpisode))
                     else action.request.command
                     if isinstance(action, StartPolicy)
                     else action.command
@@ -253,11 +297,14 @@ class SimulatorRuntime:
             self.finish("failed", str(exc))
             self.core.fail_scene(str(exc), epoch=self.active_epoch)
         finally:
-            if self.clock() - self.last_heartbeat >= 1:
-                temporary = self.heartbeat.with_suffix(".new")
-                temporary.write_text(str(self.clock()), encoding="ascii")
-                temporary.replace(self.heartbeat)
-                self.last_heartbeat = self.clock()
+            self.write_heartbeat()
+
+    def write_heartbeat(self) -> None:
+        if self.clock() - self.last_heartbeat >= 1:
+            temporary = self.heartbeat.with_suffix(".new")
+            temporary.write_text(str(self.clock()), encoding="ascii")
+            temporary.replace(self.heartbeat)
+            self.last_heartbeat = self.clock()
 
     def close(self) -> None:
         self.hardware.stop()

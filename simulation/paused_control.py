@@ -68,13 +68,16 @@ class PausedEpisode:
         max_simulation_steps: int,
         authorized: Callable[[], bool],
         clock_ns: Callable[[], int],
+        started_ns: int | None = None,
     ) -> None:
         initial.validate()
-        started_ns = integer(clock_ns(), "episode wall start", 1)
+        now_ns = integer(clock_ns(), "current wall clock", 1)
+        started_ns = now_ns if started_ns is None else integer(started_ns, "episode wall start", 1)
         integer(wall_deadline_ns, "episode wall deadline", 1)
         integer(max_simulation_steps, "episode simulation step budget", HOLD_STEPS, 1800)
         if (
-            not 0 < wall_deadline_ns - started_ns <= MAX_EPISODE_WALL_NS
+            not started_ns <= now_ns < wall_deadline_ns
+            or not 0 < wall_deadline_ns - started_ns <= MAX_EPISODE_WALL_NS
             or max_simulation_steps % HOLD_STEPS
         ):
             raise ValueError(
@@ -84,7 +87,8 @@ class PausedEpisode:
         self.wall_deadline_ns = wall_deadline_ns
         self.max_simulation_steps = max_simulation_steps
         self.authorized, self.clock_ns = authorized, clock_ns
-        self.started_ns = self.last_seen_ns = started_ns
+        self.started_ns = started_ns
+        self.last_seen_ns = now_ns
         self.phase = "idle"
         self.current = initial
         self.frozen: FrozenPhysicsState | None = None

@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from io import BytesIO
 from math import dist
 from pathlib import Path
+from uuid import UUID, uuid4
 
 import numpy as np
 from isaacsim.core.api import World
@@ -34,8 +35,9 @@ from pxr import Gf, Sdf, UsdGeom, UsdLux, UsdShade
 
 from apps.api.models import MotionPhase
 from learning.capture import resolve_joint_targets
-from learning.contract import AppliedControl, CameraSample, FrameSample
+from learning.contract import AppliedControl, CameraSample, FrameSample, Scope
 from learning.inference import PolicyObservation
+from learning.paused import FrozenCameraSample, FrozenPolicyObservation, InitialFrozenPublication
 from simulation.asset_references import validate_usd_bundle
 from simulation.camera_observation import camera_evidence, observation_barrier, render_identity
 from simulation.control import (
@@ -53,6 +55,8 @@ from simulation.motion import (
     move_toward,
     rotate_toward,
 )
+from simulation.paused_control import FrozenPhysicsState
+from simulation.paused_observation import PausedPublication, PausedPublicationCache
 from simulation.physics_scheduling import physics_scheduling_readback, require_control_scheduling
 from simulation.policy_executor import PolicyExecutor
 from simulation.runtime_contracts import PolicyCommand, TeachingStart
@@ -102,10 +106,18 @@ class IsaacWorkcell:
         self.camera_observation_metadata = None
         self.control_warmup_timings = []
         self.physics_scheduling = {}
+        self.scene_epoch: UUID | None = None
+        self.paused_driver = None
+        self.parked_state: FrozenPhysicsState | None = None
+        self.paused_scene_core = None
+        self.paused_publications = PausedPublicationCache()
 
     def load(self, spec: SceneSpec) -> None:
         self._validate_asset_bundle()
         self.stop()
+        self.paused_driver = None
+        self.parked_state = None
+        self.paused_publications = PausedPublicationCache()
         if self.world is not None and can_reset_in_place(self.spec, spec):
             self.spec = spec
             self.world.reset(soft=True)
@@ -207,6 +219,8 @@ class IsaacWorkcell:
         self.dynamics.initialize()
         for camera in self.cameras.values():
             camera.initialize()
+            if spec.learning_execution is not None:
+                camera.add_rgb_to_frame()
         self._prepare_episode()
 
     def _create_defect(self) -> None:
@@ -417,7 +431,7 @@ class IsaacWorkcell:
         self.physics_scheduling[phase] = observed
         require_control_scheduling(observed)
 
-    def prime_control_profile(self) -> None:
+    def prime_control_profile(self, on_tick=None) -> None:
         if self.controller is not None or not self.control_done or self.recording is not None:
             raise RuntimeError("Control renderer warm-up must occur before motion admission.")
         self._check_control_scheduling("scene_ready")
@@ -438,9 +452,13 @@ class IsaacWorkcell:
                 tick = time.monotonic_ns()
                 self._compensate_gravity()
                 self._issue_command(targets, (0.0,) * 9)
-                self._step_control_physics(render=True)
+                capture_initial = index == 59 and self.paused_scene_core is not None
+                self._step_control_physics(render=not capture_initial)
                 self.steps += 1
                 self.render_monotonic_ns = time.monotonic_ns()
+                if capture_initial:
+                    publication = self._paused_publication(self.paused_scene_core)
+                    self.paused_publications.record(publication)
                 self.control_warmup_timings.append(
                     {
                         "index": index,
@@ -448,6 +466,8 @@ class IsaacWorkcell:
                         "duration_ms": (self.render_monotonic_ns - tick) / 1_000_000,
                     }
                 )
+                if on_tick is not None:
+                    on_tick()
             self.reset_initial_position = self.position()
             if (
                 self.spec.initial_part_position is not None
@@ -493,6 +513,271 @@ class IsaacWorkcell:
         self.kinematics.set_robot_base_pose(base_position, base_orientation)
         position, _ = self.articulation_kinematics.compute_end_effector_pose()
         return tuple(float(value) for value in position)
+
+    def frozen_physics_state(self, epoch: UUID) -> FrozenPhysicsState:
+        position, orientation = self.part.get_world_pose()
+        return FrozenPhysicsState(
+            epoch=epoch,
+            physics_step=int(self.world.current_time_step_index),
+            world_time=float(self.world.current_time),
+            joint_positions=tuple(float(value) for value in self.robot.get_joint_positions()),
+            joint_velocities=tuple(float(value) for value in self.robot.get_joint_velocities()),
+            object_position=tuple(float(value) for value in position),
+            object_orientation=tuple(float(value) for value in orientation),
+            object_linear_velocity=tuple(float(value) for value in self.part.get_linear_velocity()),
+            object_angular_velocity=tuple(
+                float(value) for value in self.part.get_angular_velocity()
+            ),
+        )
+
+    def render_frozen_scene(self) -> None:
+        if self.scene_epoch is None:
+            raise RuntimeError("An actual scene epoch is required for a frozen preview.")
+        before = self.frozen_physics_state(self.scene_epoch)
+        if self.parked_state is not None and before != self.parked_state:
+            raise RuntimeError("The parked scene did not remain physically frozen.")
+        started_ns = time.monotonic_ns()
+        self.world.render()
+        if time.monotonic_ns() - started_ns > 2_000_000_000:
+            raise RuntimeError("Frozen preview exceeded the hard main-thread heartbeat budget.")
+        if self.frozen_physics_state(self.scene_epoch) != before:
+            raise RuntimeError("The preview renderer changed a frozen physical scene.")
+        self.parked_state = before
+
+    def prepare_paused_reference(self, request, core: SimulationCore) -> None:
+        if request.controller != "reference_controller" or core.paused_profile is None:
+            raise RuntimeError(
+                "A paused learned episode cannot select the scripted reference servo."
+            )
+        self.spec.require_paused_authority()
+        self._check_control_scheduling("command_start")
+        self.control_mode = "paused_simulation"
+        self.control_done = False
+        self.control_core = core
+        self.control_binding = core.binding(request.command_id)
+        self.control_profile = core.paused_profile
+        self.scene_epoch = core.epoch
+        self.target = request.target_station_id
+        self.route = None
+        self.parked_state = None
+        self.policy_executor = None
+        self.issued_targets = None
+        self.world.set_simulation_dt(physics_dt=self.dt, rendering_dt=0.0)
+        self._configure_cameras()
+        configuration = interface_config_loader.load_supported_lula_kinematics_solver_config(
+            "Franka"
+        )
+        self.kinematics = LulaKinematicsSolver(**configuration)
+        self.articulation_kinematics = ArticulationKinematicsSolver(
+            self.robot, self.kinematics, "right_gripper"
+        )
+        self.controller = RMPFlowController(
+            name="paused-reference-expert",
+            robot_articulation=self.robot,
+            physics_dt=1 / core.paused_profile.control_sim_hz,
+        )
+        self.last_effector_position = self._measured_tcp()
+        _, rotation = self.articulation_kinematics.compute_end_effector_pose()
+        self.orientation_target = tuple(float(value) for value in rot_matrix_to_quat(rotation))
+        self.task_watchdog = TaskWatchdog(self.position(), self.spec.station(self.target).position)
+        self.grasp_verified = False
+        self.peak_tcp_speed = 0.0
+        self.paused_measured_success = False
+        self.world.play()
+
+    def paused_reference_targets(self, point, closed: bool) -> tuple[float, ...]:
+        if self.control_mode != "paused_simulation" or self.controller is None:
+            raise RuntimeError(
+                "The explicitly authorized paused reference controller is unavailable."
+            )
+        joints = tuple(float(value) for value in self.robot.get_joint_positions())
+        self.orientation_target = rotate_toward(
+            self.orientation_target, (0.0, 0.0, 1.0, 0.0), 0.5 / 10
+        )
+        proposed = self.controller.forward(
+            target_end_effector_position=np.array(point),
+            target_end_effector_orientation=np.array(self.orientation_target),
+        )
+        if proposed.joint_positions is None:
+            raise RuntimeError("The reference expert produced no actual position command.")
+        targets = list(joints)
+        selected = (
+            range(len(proposed.joint_positions))
+            if proposed.joint_indices is None
+            else proposed.joint_indices
+        )
+        for index, value in zip(selected, proposed.joint_positions, strict=True):
+            if index < 7 and value is not None:
+                targets[index] = float(value)
+        targets[7:] = move_toward(joints[7:], (0.0, 0.0) if closed else (0.04, 0.04), 0.025 / 10)
+        return validate_position_target(joints, tuple(targets), self.issued_targets)
+
+    def apply_paused_tick(self, targets: tuple[float, ...]) -> AppliedControl:
+        self._check_control_scheduling("before_control_tick")
+        if not self.control_core.actuation_allowed(self.control_binding):
+            raise RuntimeError("The paused episode authority is no longer active.")
+        efforts = self._compensate_gravity()
+        self._issue_command(targets, (0.0,) * 9)
+        self._step_control_physics(render=False)
+        self.steps += 1
+        stamp = self.control_core.clock_ns()
+        current = self._measured_tcp()
+        joints = tuple(float(value) for value in self.robot.get_joint_positions())
+        speed = check_measured_motion(
+            self.last_effector_position,
+            current,
+            joints,
+            dt=self.dt,
+            speed_limit=self.spec.requested_speed,
+        )
+        self.last_effector_position = current
+        self.peak_tcp_speed = max(self.peak_tcp_speed, speed)
+        self.paused_measured_success = self.task_watchdog.observe(
+            tcp=current, part=self.position(), joints=joints
+        )
+        self.grasp_verified = self.task_watchdog.grasp_verified
+        return AppliedControl(
+            int(self.world.current_time_step_index), stamp, targets, (0.0,) * 9, efforts
+        )
+
+    def paused_goal_reached(self) -> bool:
+        return self.paused_measured_success
+
+    @staticmethod
+    def _encode_published_rgb(frame) -> bytes:
+        rgba = frame.get("rgb")
+        if (
+            rgba is None
+            or rgba.ndim != 3
+            or rgba.shape[2] not in (3, 4)
+            or rgba.dtype != np.uint8
+            or not np.any(rgba[:, :, :3])
+        ):
+            raise ValueError(
+                "A real nonempty uint8 RGB publication is required in the camera frame."
+            )
+        rgb = rgba[:, :, :3].copy()
+        output = BytesIO()
+        Image.fromarray(rgb).save(output, format="PNG", compress_level=1)
+        return output.getvalue()
+
+    def _paused_publication(self, core, *, deadline_ns: int | None = None) -> PausedPublication:
+        if (
+            core.paused_profile is None
+            or core.tenant_id is None
+            or core.environment is None
+            or core.epoch != self.scene_epoch
+            or core.owner is None
+        ):
+            raise RuntimeError("A bound paused scene owner, epoch and profile are required.")
+        freeze_ns = core.clock_ns()
+        deadline_ns = min(
+            freeze_ns + 2_000_000_000,
+            deadline_ns if deadline_ns is not None else freeze_ns + 2_000_000_000,
+        )
+        before = self.frozen_physics_state(core.epoch)
+        joint_ns = core.clock_ns()
+        previous = {
+            name: render_identity(camera.get_current_frame().get("rendering_frame"))
+            for name, camera in self.cameras.items()
+        }
+        rendered_ns = observation_barrier(
+            self.world,
+            self.cameras,
+            dt=self.dt,
+            physics_step=before.physics_step,
+            clock_ns=core.clock_ns,
+            deadline_ns=deadline_ns,
+            previous_identities=previous,
+        )
+        rendered_utc = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        images = {}
+        for name, camera in self.cameras.items():
+            metadata = dict(camera.get_current_frame())
+            identity = render_identity(metadata.get("rendering_frame"))
+            image = self._encode_published_rgb(metadata)
+            if render_identity(camera.get_current_frame().get("rendering_frame")) != identity:
+                raise RuntimeError("Camera identity changed while reading its published RGB.")
+            images[name] = FrozenCameraSample(
+                image,
+                identity[0],
+                before.physics_step,
+                rendered_ns,
+                rendered_utc,
+                identity[0],
+                identity[1],
+            )
+        if self.frozen_physics_state(core.epoch) != before:
+            raise RuntimeError("Physics changed while publishing the frozen camera pair.")
+        published_ns = core.clock_ns()
+        if published_ns >= deadline_ns:
+            raise RuntimeError(
+                "Actual frozen camera publication exceeded its original wall deadline."
+            )
+        return PausedPublication(
+            publication_id=uuid4(),
+            scope=Scope(core.tenant_id, core.owner),
+            environment_id=core.environment.environment_id,
+            revision=core.environment.revision,
+            profile_sha256=core.paused_profile.sha256,
+            state_revision=core.state_revision,
+            frozen_state=before,
+            freeze_established_ns=freeze_ns,
+            joint_sample_ns=joint_ns,
+            published_ns=published_ns,
+            captured_at_utc=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            images=tuple(images.items()),
+        )
+
+    def paused_observation(self, request, core, episode, control_tick):
+        if control_tick == 0:
+            publication = self.paused_publications.take(
+                scope=Scope(core.tenant_id, core.owner),
+                environment_id=request.environment_id,
+                revision=request.revision,
+                profile_sha256=core.paused_profile.sha256,
+                state_revision=core.state_revision,
+                state=self.frozen_physics_state(core.epoch),
+                now_ns=episode.interval_started_ns,
+            )
+        else:
+            publication = self._paused_publication(core, deadline_ns=episode.operation_deadline_ns)
+        first_image = dict(publication.images)["inspection"]
+        observed = FrozenPolicyObservation(
+            scope=publication.scope,
+            environment_id=publication.environment_id,
+            revision=publication.revision,
+            episode_id=str(request.command_id),
+            epoch=str(publication.frozen_state.epoch),
+            captured_at_utc=publication.captured_at_utc,
+            monotonic_ns=publication.published_ns,
+            physics_step=publication.frozen_state.physics_step,
+            joint_positions=publication.frozen_state.joint_positions,
+            images=dict(publication.images),
+            freeze_id=str(episode.freeze_id),
+            state_revision=publication.state_revision,
+            control_tick=control_tick,
+            control_profile_sha256=publication.profile_sha256,
+            observation_started_ns=episode.interval_started_ns,
+            joint_sample_ns=publication.joint_sample_ns,
+            simulation_time_numerator=first_image.simulation_time_numerator,
+            simulation_time_denominator=first_image.simulation_time_denominator,
+        )
+        if control_tick == 0:
+            proof = InitialFrozenPublication(
+                publication_record_id=str(publication.publication_id),
+                publication_record_sha256=publication.record_sha256,
+                capture_sha256=observed.capture_sha256,
+                freeze_established_ns=publication.freeze_established_ns,
+                published_at_utc=publication.captured_at_utc,
+                published_monotonic_ns=publication.published_ns,
+                age_at_observation_start_ns=episode.interval_started_ns - publication.published_ns,
+            )
+            observed = replace(
+                observed, initial_publication=proof, observation_completed_ns=core.clock_ns()
+            )
+        observed.validate(core.paused_profile, now_ns=core.clock_ns())
+        return observed
 
     def _issue_command(self, targets, velocities) -> None:
         self.robot.apply_action(
@@ -763,7 +1048,9 @@ class IsaacWorkcell:
             return None
         recorder = self.recording
         try:
-            if self.hold_capture is not None:
+            if self.paused_driver is not None:
+                self.paused_driver.finish_recording(truncated=truncated)
+            elif self.hold_capture is not None:
                 self.hold_capture.finish(truncated=truncated)
             else:
                 sample = self._sample_before_command(
@@ -780,6 +1067,10 @@ class IsaacWorkcell:
     def motion_phase(self) -> MotionPhase:
         if self.world is None or not self.world.is_playing():
             return "stopped"
+        if self.paused_driver is not None:
+            if self.paused_driver.done:
+                return "complete" if self.paused_driver.succeeded else "stopped"
+            return "transporting" if self.grasp_verified else "approaching"
         if self.control_mode != "reference":
             if self.control_done:
                 return "complete" if self.control_succeeded else "stopped"
@@ -812,6 +1103,15 @@ class IsaacWorkcell:
 
     def advance(self) -> bool:
         if self.world is None:
+            return False
+        if self.paused_driver is not None:
+            return self.paused_driver.advance()
+        if (
+            self.spec.learning_execution is not None
+            and self.control_done
+            and self.controller is None
+        ):
+            self.render_frozen_scene()
             return False
         if not self.world.is_playing():
             self.world.render()
@@ -985,5 +1285,7 @@ class IsaacWorkcell:
             self.world.pause()
         self.controller = None
         self.control_done = True
+        if self.paused_driver is not None:
+            self.paused_driver.stop()
         if self.policy_executor is not None:
             self.policy_executor.stop()
