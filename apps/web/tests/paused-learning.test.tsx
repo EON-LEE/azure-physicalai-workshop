@@ -1,8 +1,9 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
 import { TeachingStudio } from '../src/learning/TeachingStudio';
-import { datasetSchema, projectSchema, trainingSchema } from '../src/learning/contracts';
+import { datasetSchema, projectSchema, referenceCollectionSchema, trainingSchema } from '../src/learning/contracts';
+import { referenceFixture } from './fixtures/reference-collection';
 import { LearningJobPanel } from '../src/learning/LearningJobPanel';
 import { learningApi, learningFixture } from './fixtures/learning';
 import { seventyEnvironments } from './fixtures/environment-pages';
@@ -124,5 +125,97 @@ describe('explicit simulation-only learning mode', () => {
     expect(screen.queryByRole('button', { name: '새 직접 시연 세션 시작' })).not.toBeInTheDocument();
     expect(api.train).not.toHaveBeenCalled();
     expect(api.evaluate).not.toHaveBeenCalled();
+  });
+
+  it('accepts a sixty-second plan only under an explicitly matching v2 project/profile', () => {
+    const original = projectRecord();
+    const v2 = {
+      ...original, control_profile_id: 'franka-position-hold-10hz-paused-v2',
+      evaluation_plan: { ...original.evaluation_plan, control_profile_id: 'franka-position-hold-10hz-paused-v2', max_simulation_seconds: 60 },
+    };
+    expect(projectSchema.parse(v2).evaluation_plan).toHaveProperty('max_simulation_seconds', 60);
+    expect(() => projectSchema.parse({ ...v2, control_profile_id: original.control_profile_id })).toThrow();
+    expect(() => projectSchema.parse({ ...v2, evaluation_plan: { ...original.evaluation_plan, max_simulation_seconds: 60 } })).toThrow();
+    expect(projectSchema.parse(original).evaluation_plan).not.toHaveProperty('control_profile_id');
+  });
+
+  it('switches to v2 only by explicit selection, preserving the original default and wall budget', async () => {
+    const api = learningApi();
+    api.capabilities.mockResolvedValue({ ...await api.capabilities(), simulation_learning: simulationLearning });
+    render(<TeachingStudio api={api} environments={seventyEnvironments} />);
+    await userEvent.click(await screen.findByRole('button', { name: '새 학습 작업 정의' }));
+    await userEvent.selectOptions(screen.getByLabelText('실행 시간 모드'), 'paused_simulation');
+    const profile = screen.getByLabelText('시뮬레이션 예산 버전');
+    expect(profile).toHaveValue('franka-position-hold-10hz-paused-v1');
+    expect(screen.getByText('한 회차 최대 30 SIM초 · 600 WALL초')).toBeInTheDocument();
+    const provenanceLabels = ['검토된 control profile SHA256', '고정된 평가 기준 SHA256', '모델 독립 scene conditions SHA256'];
+    for (const label of provenanceLabels) {
+      fireEvent.change(screen.getByLabelText(label), { target: { value: 'a'.repeat(64) } });
+    }
+    await userEvent.selectOptions(profile, 'franka-position-hold-10hz-paused-v2');
+    expect(profile).toHaveFocus();
+    for (const label of provenanceLabels) expect(screen.getByLabelText(label)).toHaveValue('');
+    expect(screen.getByText('한 회차 최대 60 SIM초 · 600 WALL초')).toBeInTheDocument();
+    expect(screen.getByText(/기존 v1 실행·결과를 v2 통과로 바꾸지 않습니다/)).toBeInTheDocument();
+    expect(screen.getByLabelText('전체 평가 WALL 예산 (초)')).toHaveValue(7200);
+    expect(screen.getByRole('button', { name: '불변 작업 정의 저장' })).toBeDisabled();
+    expect(api.createProject).not.toHaveBeenCalled();
+    expect(api.train).not.toHaveBeenCalled();
+  });
+
+  it('decodes actual sixty-SIM-second reference metrics only under the same explicit v2 profile', () => {
+    const old = referenceFixture().collection.item;
+    const v2 = {
+      ...old, control_profile_id: 'franka-position-hold-10hz-paused-v2',
+      command: { ...old.command, profile_id: 'franka-position-hold-10hz-paused-v2', max_simulation_steps: 3600 },
+      execution: { ...old.execution, simulation_runtime: {
+        ...old.execution!.simulation_runtime, profile_id: 'franka-position-hold-10hz-paused-v2',
+        simulation_steps: 3600, applied_action_count: 3600, simulation_elapsed_seconds: 60,
+      } },
+    };
+    expect(referenceCollectionSchema.parse(v2).execution?.simulation_runtime.simulation_elapsed_seconds).toBe(60);
+    expect(() => referenceCollectionSchema.parse({ ...v2, control_profile_id: old.control_profile_id })).toThrow();
+    expect(() => referenceCollectionSchema.parse({ ...v2, command: old.command })).toThrow();
+  });
+
+  it('submits only the selected version cases when v1 and v2 have the same physical seeds', async () => {
+    const api = learningApi();
+    api.capabilities.mockResolvedValue({
+      ...await api.capabilities(), simulation_learning: { ...simulationLearning, reference_generation_enabled: true },
+    });
+    api.createProject.mockRejectedValue(new Error('TEST ONLY no live project created.'));
+    const environments = [1, 2].flatMap((version) => seventyEnvironments.map((item) => ({
+      ...item, environment_id: `v${version}-${item.environment_id}`, display_name: `TEST v${version} ${item.environment_id}`,
+      revision: `${version}${item.revision.slice(1)}`,
+      document: { ...item.document, environment_id: `v${version}-${item.environment_id}`, learning_execution: {
+        schema: `physicalai.paused-simulation/v${version}`, execution_timing: 'paused_simulation',
+        profile_id: `franka-position-hold-10hz-paused-v${version}`,
+        max_simulation_seconds: version * 30, max_wall_seconds: 600,
+      } },
+    })));
+    render(<TeachingStudio api={api} environments={environments} />);
+    await userEvent.click(await screen.findByRole('button', { name: '새 학습 작업 정의' }));
+    await userEvent.selectOptions(screen.getByLabelText('실행 시간 모드'), 'paused_simulation');
+    await userEvent.selectOptions(screen.getByLabelText('시뮬레이션 예산 버전'), 'franka-position-hold-10hz-paused-v2');
+    await userEvent.selectOptions(screen.getByLabelText('저장된 LIVE 환경'), 'v2-case-000');
+    fireEvent.change(screen.getByLabelText('프로젝트 이름'), { target: { value: 'TEST ONLY v2 definition' } });
+    fireEvent.change(screen.getByLabelText('운영자가 검토·등록한 P0 release ID'), { target: { value: '90000000-1111-4111-8111-111111111111' } });
+    fireEvent.change(screen.getByLabelText('검토된 control profile SHA256'), { target: { value: 'a'.repeat(64) } });
+    fireEvent.change(screen.getByLabelText('고정된 평가 기준 SHA256'), { target: { value: 'b'.repeat(64) } });
+    fireEvent.change(screen.getByLabelText('모델 독립 scene conditions SHA256'), { target: { value: 'c'.repeat(64) } });
+    fireEvent.change(screen.getByLabelText('작업별 최대 승인 금액 (USD)'), { target: { value: '10' } });
+    fireEvent.change(screen.getByLabelText('학습에서 제외할 seed 20~100개 (쉼표 구분)'), { target: { value: Array.from({ length: 20 }, (_, index) => 30001 + index).join(',') } });
+    fireEvent.change(screen.getByRole('searchbox', { name: '시연 배치 검색' }), { target: { value: 'case-000' } });
+    expect(screen.queryByRole('checkbox', { name: /v1-case-000/ })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('checkbox', { name: /v2-case-000/ }));
+    await userEvent.click(screen.getByRole('button', { name: '불변 작업 정의 저장' }));
+    await waitFor(() => expect(api.createProject).toHaveBeenCalledTimes(1));
+    const input = api.createProject.mock.calls[0]![0];
+    expect(input.control_profile_id).toBe('franka-position-hold-10hz-paused-v2');
+    expect(input.evaluation_plan).toMatchObject({ control_profile_id: input.control_profile_id, max_simulation_seconds: 60, max_wall_seconds: 600 });
+    expect(input.evaluation_plan.cases).toHaveLength(20);
+    expect(input.evaluation_plan.cases.every((item) => item.environment_id.startsWith('v2-'))).toBe(true);
+    expect(input.teaching_cases[0]?.environment_id).toBe('v2-case-000');
+    expect(api.train).not.toHaveBeenCalled();
   });
 });

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { simulationReportSchema } from './simulationReports';
+import { PAUSED_PROFILE_V1, PAUSED_PROFILE_V2, isPausedProfile, pausedProfileSchema, pausedProfileSteps } from './pausedProfiles';
 
 const id = z.uuid();
 const sha = z.string().regex(/^[a-f0-9]{64}$/);
@@ -7,7 +8,7 @@ const date = z.iso.datetime({ offset: true });
 const count = z.number().int().nonnegative();
 const base = { id, actor_id: id, created_at: date, updated_at: date };
 const profile = z.literal('franka-position-hold-10hz-v1');
-const timingProfile = z.enum(['franka-position-hold-10hz-v1', 'franka-position-hold-10hz-paused-v1']);
+const timingProfile = z.enum(['franka-position-hold-10hz-v1', PAUSED_PROFILE_V1, PAUSED_PROFILE_V2]);
 const timingMetadata = {
   execution_timing: z.literal('paused_simulation').optional(), real_time_admission: z.literal(false).optional(),
   control_profile_id: timingProfile.optional(), control_profile_sha256: sha.optional(),
@@ -16,9 +17,9 @@ const timingMetadata = {
 type TimingMetadata = z.infer<z.ZodObject<typeof timingMetadata>>;
 function consistentTiming(value: TimingMetadata, context: z.RefinementCtx) {
   const paused = value.execution_timing === 'paused_simulation';
-  if ((paused && (value.real_time_admission !== false || value.control_profile_id !== 'franka-position-hold-10hz-paused-v1' ||
+  if ((paused && (value.real_time_admission !== false || !isPausedProfile(value.control_profile_id) ||
     !value.control_profile_sha256 || !value.criteria_sha256 || !value.frozen_plan_sha256)) ||
-    (!paused && (value.control_profile_id === 'franka-position-hold-10hz-paused-v1' ||
+    (!paused && (isPausedProfile(value.control_profile_id) ||
       [value.real_time_admission, value.control_profile_sha256, value.criteria_sha256, value.frozen_plan_sha256].some((item) => item !== undefined)))) {
     context.addIssue({ code: 'custom', message: 'Artifact timing/profile provenance is incomplete or mixed.' });
   }
@@ -35,7 +36,13 @@ const captureSchema = z.object({
   task_id: z.string(), control_profile_id: timingProfile, source_model_sha256: sha.nullable(),
   case_id: z.string().nullable().default(null), environment_id: z.string().nullable().default(null),
   revision: sha.nullable().default(null), split: z.enum(['train', 'validation']).nullable().default(null),
-}).superRefine(consistentTiming);
+}).superRefine((value, context) => {
+  consistentTiming(value, context);
+  if (value.execution_timing === 'paused_simulation' && isPausedProfile(value.control_profile_id) &&
+    value.frame_count > pausedProfileSteps[value.control_profile_id] / 6) {
+    context.addIssue({ code: 'custom', message: 'Capture exceeds its declared profile frame budget.' });
+  }
+});
 export const budgetSchema = z.object({
   teaching_seconds: z.number().int().min(5).max(300),
   training_seconds: z.number().int().positive().max(86400),
@@ -54,24 +61,25 @@ export const evaluationPlanSchema = z.object({
 }).strict();
 export const pausedEvaluationPlanSchema = z.object({
   execution_timing: z.literal('paused_simulation'), real_time_admission: z.literal(false),
+  control_profile_id: pausedProfileSchema.optional(),
   id, seeds: z.array(count).length(20), held_out_episode_ids: z.array(id),
   cases: z.array(z.object({ seed: count, environment_id: z.string(), revision: sha })).length(20),
   minimum_success_rate: z.number().min(.9).max(1),
   minimum_absolute_improvement: z.number().min(.05).max(1),
   maximum_axis_error_m: z.number().positive().max(.04),
   max_cartesian_speed_m_s: z.number().positive().max(.2),
-  max_simulation_seconds: z.number().int().min(1).max(30),
+  max_simulation_seconds: z.number().int().min(1).max(60),
   max_wall_seconds: z.number().int().min(1).max(600),
   max_observation_wall_ms: z.literal(2000), max_policy_wall_ms: z.literal(2000),
   max_hold_wall_ms: z.literal(2000), max_interval_wall_ms: z.literal(5000),
   max_heartbeat_wall_ms: z.literal(2000),
-}).strict();
+}).strict().refine((value) => value.max_simulation_seconds <= pausedProfileSteps[value.control_profile_id ?? PAUSED_PROFILE_V1] / 60);
 export const projectSchema = z.object({
   ...base, kind: z.literal('project'), display_name: z.string(), task_id: z.string(),
   policy_type: policyType,
   instruction: z.string(), goal_station_id: z.string(), environment_id: z.string(), revision: sha,
   project_kind: z.enum(['adaptation', 'bootstrap']), baseline_release_id: id.nullable(),
-  pretrained_artifact_id: id.nullable(), control_profile_id: z.enum(['franka-position-hold-10hz-v1', 'franka-position-hold-10hz-paused-v1']),
+  pretrained_artifact_id: id.nullable(), control_profile_id: timingProfile,
   execution_timing: z.literal('paused_simulation').optional(),
   real_time_admission: z.literal(false).optional(),
   control_profile_sha256: sha.optional(), criteria_sha256: sha.optional(), frozen_plan_sha256: sha.optional(),
@@ -79,11 +87,15 @@ export const projectSchema = z.object({
   teaching_cases: z.array(teachingCaseSchema).max(1000).default([]),
 }).superRefine((project, context) => {
   const paused = project.execution_timing === 'paused_simulation';
-  if (paused !== (project.control_profile_id === 'franka-position-hold-10hz-paused-v1') ||
+  if (paused !== isPausedProfile(project.control_profile_id) ||
     paused !== ('execution_timing' in project.evaluation_plan) ||
     (paused && (project.real_time_admission !== false || !project.control_profile_sha256 || !project.criteria_sha256 || !project.frozen_plan_sha256 || project.policy_type !== 'smolvla')) ||
     (!paused && [project.real_time_admission, project.control_profile_sha256, project.criteria_sha256, project.frozen_plan_sha256].some((value) => value !== undefined))) {
     context.addIssue({ code: 'custom', message: 'Project timing, profile and immutable provenance must match.' });
+  }
+  if ('execution_timing' in project.evaluation_plan &&
+    (project.evaluation_plan.control_profile_id ?? PAUSED_PROFILE_V1) !== project.control_profile_id) {
+    context.addIssue({ code: 'custom', message: 'Project and plan must declare the same paused profile version.' });
   }
 });
 export const datasetSchema = z.object({
@@ -124,10 +136,10 @@ export const referenceCollectionSchema = z.object({
   command: z.object({
     schema: z.literal('physicalai.simulation-episode-command/v1'),
     execution_timing: z.literal('paused_simulation'), real_time_admission: z.literal(false),
-    profile_id: z.literal('franka-position-hold-10hz-paused-v1'),
+    profile_id: pausedProfileSchema,
     controller: z.literal('reference_controller'), authorization_kind: z.literal('reference_collection'),
-    authorization_id: id, wall_expires_at: date, max_simulation_steps: z.number().int().min(6).max(1800).multipleOf(6),
-  }),
+    authorization_id: id, wall_expires_at: date, max_simulation_steps: z.number().int().min(6).max(3600).multipleOf(6),
+  }).refine((value) => value.max_simulation_steps <= pausedProfileSteps[value.profile_id]),
   target_position_m: z.tuple([z.number(), z.number(), z.number()]), goal_tolerance_m: z.number().positive().max(.04),
   runtime_catalog_record_sha256: sha, source_revision: z.string(), simulator_image_digest: z.string(),
   status: z.enum(['starting', 'running', 'cancelling', 'succeeded', 'failed', 'cancelled', 'timed_out', 'unconfirmed']),
@@ -136,11 +148,13 @@ export const referenceCollectionSchema = z.object({
     final_position: z.tuple([z.number(), z.number(), z.number()]).nullable().optional(),
     simulation_runtime: z.object({
       execution_timing: z.literal('paused_simulation'), real_time_admission: z.literal(false),
+      profile_id: pausedProfileSchema.optional(),
       controller: z.literal('reference_controller'), control_profile_sha256: sha,
-      phase: z.enum(['queued', 'observing', 'predicting', 'applying', 'idle', 'stopped']), wall_elapsed_ms: z.number().nonnegative(), simulation_steps: count.max(1800),
-      simulation_elapsed_seconds: z.number().min(0).max(30.000001), policy_predict_calls: z.literal(0),
+      phase: z.enum(['queued', 'observing', 'predicting', 'applying', 'idle', 'stopped']), wall_elapsed_ms: z.number().nonnegative(), simulation_steps: count.max(3600),
+      simulation_elapsed_seconds: z.number().min(0).max(60), policy_predict_calls: z.literal(0),
       applied_model_sha256: z.null(), applied_action_count: count, reference_route_calls: count,
-    }),
+    }).refine((value) => value.simulation_steps <= pausedProfileSteps[value.profile_id ?? PAUSED_PROFILE_V1] &&
+      value.simulation_elapsed_seconds === value.simulation_steps / 60),
   }).nullable(),
   capture_status: z.enum(['pending', 'verifying', 'ready', 'invalid']),
   capture: captureSchema.nullable(), artifact_operation_id: id.nullable(),
@@ -148,7 +162,9 @@ export const referenceCollectionSchema = z.object({
 }).superRefine((value, context) => {
   consistentTiming(value, context);
   if (value.execution_timing !== 'paused_simulation' || value.real_time_admission !== false ||
+    value.command.profile_id !== value.control_profile_id ||
     (value.execution && (value.execution.command_id !== value.command_id ||
+      (value.execution.simulation_runtime.profile_id ?? PAUSED_PROFILE_V1) !== value.control_profile_id ||
       value.execution.simulation_runtime.control_profile_sha256 !== value.control_profile_sha256)) ||
     (value.capture_status === 'ready' && !value.capture)) {
     context.addIssue({ code: 'custom', message: 'Reference timing, command and evidence must match.' });

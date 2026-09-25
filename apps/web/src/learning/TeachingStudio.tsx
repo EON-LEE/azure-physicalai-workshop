@@ -15,7 +15,8 @@ import {
   type ArtifactOperation, type Dataset, type LearningApi, type LearningRecord, type Project, type Resource, type Teaching, type TeachingCase, type SimulationLearningCapability,
 } from './contracts';
 import './learning.css';
-import { defaultTeachingCase, sameTeachingCase, savedTeachingCases, splitLabel } from './teachingCases';
+import { defaultTeachingCase, matchesPausedEnvironment, sameTeachingCase, savedTeachingCases, splitLabel } from './teachingCases';
+import { PAUSED_PROFILE_V1, PAUSED_PROFILE_V2, pausedProfileSteps, type PausedProfileId } from './pausedProfiles';
 
 export function TeachingStudio({ api, environments, consoleApi }: {
   api: LearningApi; environments: EnvironmentRecord[]; consoleApi?: ConsoleApi;
@@ -74,17 +75,21 @@ function ProjectForm({ api, environments, onCreated, bootstrapAllowed, policyTyp
   const [kind, setKind] = useState<'adaptation' | 'bootstrap'>('adaptation');
   const [policyType, setPolicyType] = useState<Project['policy_type'] | ''>(policyTypes[0] ?? '');
   const [timing, setTiming] = useState<'legacy' | 'paused_simulation'>('legacy');
+  const [pausedProfile, setPausedProfile] = useState<PausedProfileId>(PAUSED_PROFILE_V1);
   const [evaluationSeconds, setEvaluationSeconds] = useState('7200');
   const paused = timing === 'paused_simulation';
+  const maxSimulationSeconds = pausedProfileSteps[pausedProfile] / 60;
   const timingBlocked = paused && !simulationLearning?.reference_generation_enabled;
-  const availableCases = savedTeachingCases(environments);
+  const matchingEnvironments = paused ? environments.filter((item) => matchesPausedEnvironment(item, pausedProfile)) : environments;
+  const availableCases = savedTeachingCases(matchingEnvironments);
   const [approvedCases, setApprovedCases] = useState<TeachingCase[]>([]);
   const [caseFilter, setCaseFilter] = useState('');
   const [casePage, setCasePage] = useState(0);
   const currentCases = new Map(availableCases.map((item) => [item.case_id, item]));
   const staleCases = approvedCases.filter((item) => !sameTeachingCase(currentCases.get(item.case_id), item));
   const latestEnvironment = environments.find((item) => item.environment_id === environment?.environment_id);
-  const environmentStale = Boolean(environment && latestEnvironment?.revision !== environment.revision);
+  const environmentStale = Boolean(environment && (latestEnvironment?.revision !== environment.revision ||
+    (paused && !matchesPausedEnvironment(environment, pausedProfile))));
   const filteredCases = availableCases.filter((item) => `${item.environment_id} ${item.seed} ${item.split}`.toLowerCase().includes(caseFilter.trim().toLowerCase()));
   const casePages = Math.max(1, Math.ceil(filteredCases.length / 20));
   const visibleCasePage = Math.min(casePage, casePages - 1);
@@ -103,7 +108,7 @@ function ProjectForm({ api, environments, onCreated, bootstrapAllowed, policyTyp
       setError(new Error('저장 환경과 중복 없는 held-out seed 20~100개를 확인하세요.')); return;
     }
     const cases = seeds.flatMap((seed) => {
-      const matching = environments.filter((item) => {
+      const matching = matchingEnvironments.filter((item) => {
         const scene = item.document.scene;
         const execution = item.document.execution;
         return Boolean(scene && typeof scene === 'object' && 'seed' in scene && scene.seed === seed &&
@@ -127,7 +132,7 @@ function ProjectForm({ api, environments, onCreated, bootstrapAllowed, policyTyp
       project_kind: kind, baseline_release_id: kind === 'adaptation' ? String(fields.get('baseline')) : null,
       policy_type: policyType,
       pretrained_artifact_id: kind === 'bootstrap' ? String(fields.get('baseline')) : null,
-      control_profile_id: paused ? 'franka-position-hold-10hz-paused-v1' : 'franka-position-hold-10hz-v1',
+      control_profile_id: paused ? pausedProfile : 'franka-position-hold-10hz-v1',
       ...(paused ? {
         execution_timing: 'paused_simulation' as const, real_time_admission: false as const,
         control_profile_sha256: String(fields.get('control-profile-sha')),
@@ -138,7 +143,8 @@ function ProjectForm({ api, environments, onCreated, bootstrapAllowed, policyTyp
         id: planId.current, seeds, cases, held_out_episode_ids: [], minimum_success_rate: .9,
         minimum_absolute_improvement: .05, maximum_axis_error_m: .04, max_cartesian_speed_m_s: .2,
         execution_timing: 'paused_simulation', real_time_admission: false,
-        max_simulation_seconds: 30, max_wall_seconds: 600, max_observation_wall_ms: 2000,
+        ...(pausedProfile === PAUSED_PROFILE_V2 ? { control_profile_id: pausedProfile } : {}),
+        max_simulation_seconds: maxSimulationSeconds, max_wall_seconds: 600, max_observation_wall_ms: 2000,
         max_policy_wall_ms: 2000, max_hold_wall_ms: 2000, max_interval_wall_ms: 5000, max_heartbeat_wall_ms: 2000,
       } : {
         id: planId.current, seeds, cases, held_out_episode_ids: [], minimum_success_rate: .9,
@@ -162,18 +168,30 @@ function ProjectForm({ api, environments, onCreated, bootstrapAllowed, policyTyp
       <label className="wide-field">실행 시간 모드<select name="execution-timing" value={timing} onChange={(event) => {
         const next = event.target.value === 'paused_simulation' ? 'paused_simulation' : 'legacy';
         setTiming(next);
+        setEnvironment(null); setApprovedCases([]); setCasePage(0);
+        requestId.current = crypto.randomUUID(); planId.current = crypto.randomUUID();
         if (next === 'paused_simulation') setPolicyType(policyTypes.includes('smolvla') ? 'smolvla' : '');
       }}><option value="legacy">기존 실시간 프로파일 · 별도 실시간 게이트 유지</option>
         {simulationLearning?.supported && <option value="paused_simulation">NON_REALTIME_SIMULATION · 물리 일시정지 기반</option>}
       </select></label>
       {paused && <div className="wide-field inline-note warning">
-        <strong>한 회차 최대 30 SIM초 · 600 WALL초</strong>
+        <label>시뮬레이션 예산 버전<select name="paused-profile" value={pausedProfile} onChange={(event) => {
+          const next = event.target.value;
+          if (next !== PAUSED_PROFILE_V1 && next !== PAUSED_PROFILE_V2) return;
+          setPausedProfile(next); setEnvironment(null); setApprovedCases([]); setCasePage(0);
+          requestId.current = crypto.randomUUID(); planId.current = crypto.randomUUID();
+        }}>
+          <option value={PAUSED_PROFILE_V1}>v1 · 최대 30 SIM초</option>
+          <option value={PAUSED_PROFILE_V2}>v2 · 명시적인 새 예산 최대 60 SIM초</option>
+        </select></label>
+        <strong>한 회차 최대 {maxSimulationSeconds} SIM초 · 600 WALL초</strong>
+        <p>기존 v1 실행·결과를 v2 통과로 바꾸지 않습니다. 버전 변경 시 새 저장 배치·profile·기준 SHA를 다시 검토해야 합니다.</p>
         <p>관측·정책·물리 hold 각각 2,000ms, 전체 제어 구간 5,000ms WALL 상한과 2,000ms heartbeat를 유지합니다. 미완료 회차는 성공으로 집계하지 않습니다.</p>
         <label>전체 평가 WALL 예산 (초)<input name="evaluation-seconds" type="number" min={1} max={21600} step={1} value={evaluationSeconds} onChange={(event) => setEvaluationSeconds(event.currentTarget.value)} autoComplete="off" required /></label>
         <p>7,200초는 새 프로젝트용 제안입니다. 전체 비용 승인은 별도이며 기존 프로젝트의 기한을 연장하지 않습니다. 한 회차의 SIM/WALL 상한도 바꾸지 않습니다.</p>
-        <label>검토된 control profile SHA256<input name="control-profile-sha" pattern="[a-f0-9]{64}" required autoComplete="off" spellCheck={false} /></label>
-        <label>고정된 평가 기준 SHA256<input name="criteria-sha" pattern="[a-f0-9]{64}" required autoComplete="off" spellCheck={false} /></label>
-        <label>모델 독립 scene conditions SHA256<input name="frozen-plan-sha" pattern="[a-f0-9]{64}" required autoComplete="off" spellCheck={false} /></label>
+        <label>검토된 control profile SHA256<input key={pausedProfile} name="control-profile-sha" pattern="[a-f0-9]{64}" required autoComplete="off" spellCheck={false} /></label>
+        <label>고정된 평가 기준 SHA256<input key={pausedProfile} name="criteria-sha" pattern="[a-f0-9]{64}" required autoComplete="off" spellCheck={false} /></label>
+        <label>모델 독립 scene conditions SHA256<input key={pausedProfile} name="frozen-plan-sha" pattern="[a-f0-9]{64}" required autoComplete="off" spellCheck={false} /></label>
         {timingBlocked && <p role="status">실제 생성기·검증기 통합 전에는 저장과 유료 작업을 요청할 수 없습니다.</p>}
       </div>}
       <label className="wide-field">라이선스·하드웨어 검토 후 허용된 정확한 모델 버전<select name="policy-type" required value={policyType} onChange={(event) => { if (event.target.value === 'gr00t_n1_5' || event.target.value === 'gr00t_n1_7' || event.target.value === 'smolvla') setPolicyType(event.target.value); }}><option value="">승인된 버전 선택</option>{policyTypes.map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
@@ -181,7 +199,7 @@ function ProjectForm({ api, environments, onCreated, bootstrapAllowed, policyTyp
       <label>프로젝트 이름<input name="name" required maxLength={120} autoComplete="off" /></label>
       <label>등록할 task ID<input name="task" required pattern="[a-z][a-z0-9-]*" defaultValue="manufacturing-part-placement-v1" autoComplete="off" spellCheck={false} /></label>
       <label>저장된 LIVE 환경<select name="environment" value={environment?.environment_id ?? ''} onChange={(event) => setEnvironment(environments.find((item) => item.environment_id === event.target.value) ?? null)}>
-        <option value="">저장 환경 선택</option>{environments.map((item) => <option key={item.environment_id} value={item.environment_id}>{item.display_name}</option>)}
+        <option value="">저장 환경 선택</option>{matchingEnvironments.map((item) => <option key={item.environment_id} value={item.environment_id}>{item.display_name}</option>)}
       </select></label>
       {environmentStale && <div className="wide-field inline-note warning" role="alert">
         <p>선택한 기준 환경의 저장 버전이 바뀌었습니다. 기존 revision을 자동으로 교체하지 않습니다.</p>

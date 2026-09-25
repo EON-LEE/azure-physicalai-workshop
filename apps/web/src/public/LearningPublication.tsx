@@ -18,6 +18,7 @@ export function LearningPublication() {
         <h3>{item.title}</h3><p>{item.task}</p><p><strong>저장된 평가 · 현재 LIVE 아님</strong> · {formatTime(item.recorded_at)}</p>
         {'execution_timing' in item.comparison && <div className="inline-note warning">
           <strong>NON_REALTIME_SIMULATION · real_time_admission: false</strong>
+          <p>평가 프로파일: <code>{item.comparison.control_profile_id}</code> · 기존 프로파일 결과를 새 버전으로 바꾸지 않습니다.</p>
           <p>물리를 멈추고 관측·정책을 기다린 별도 평가입니다. 실시간 100ms/80ms 통과나 실제 로봇의 실시간 실행을 의미하지 않습니다.</p>
           <p>전체 WALL 시간 {formatCount(item.comparison.total_wall_duration_ms / 1000)}초 · 전체 SIM 시간 {formatCount(item.comparison.total_simulation_duration_ms / 1000)}초</p>
         </div>}

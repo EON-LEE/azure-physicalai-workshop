@@ -316,23 +316,29 @@ def test_runtime_independently_rechecks_the_catalog_grant_at_dispatch():
         )
     )
     command = SimulationEpisodeCommand.model_validate(calls[0].model_dump(mode="json"))
+    profile = SimpleNamespace(
+        sha256=project.value.control_profile_sha256, profile_id=project.value.control_profile_id
+    )
     assert (
-        native.authorize(
-            ACTOR.owner_key, command, SimpleNamespace(sha256=project.value.control_profile_sha256)
-        ).authorization_id
+        native.authorize(ACTOR.owner_key, command, profile).authorization_id
         == command.authorization_id
     )
     for changed in (
         {"authorization_id": uuid4()},
         {"revision": "f" * 64},
+        {"profile_id": "franka-position-hold-10hz-paused-v2"},
         {"wall_expires_at": authority.operator_grant.expires_at + timedelta(seconds=1)},
     ):
         with pytest.raises(Problem):
-            native.authorize(
-                ACTOR.owner_key,
-                command.model_copy(update=changed),
-                SimpleNamespace(sha256=project.value.control_profile_sha256),
-            )
+            native.authorize(ACTOR.owner_key, command.model_copy(update=changed), profile)
+    with pytest.raises(Problem):
+        native.authorize(
+            ACTOR.owner_key,
+            command,
+            SimpleNamespace(
+                sha256=profile.sha256, profile_id="franka-position-hold-10hz-paused-v2"
+            ),
+        )
 
 
 def test_lower_saved_scene_caps_limit_the_new_command_without_changing_legacy_wall_cap():
@@ -463,7 +469,7 @@ def test_success_requires_matching_clock_ticks_and_error_free_physical_evidence(
         payload["completed_at"] = stored.value.created_at - timedelta(seconds=1)
     else:
         payload["final_position"] = (99, 99, 99)
-    with pytest.raises(Problem):
+    with pytest.raises((Problem, ValidationError)):
         service._apply_reference(ACTOR, stored, SimulationEpisodeExecution.model_validate(payload))
     assert service.get(ACTOR, "reference_collection", body.request_id).value.status == "running"
 

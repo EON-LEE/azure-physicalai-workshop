@@ -43,6 +43,7 @@ export function SimulationComparison({ api, jobId, jobStatus, report, candidateI
         <p>Azure 작업 상태: {jobStatus} · {report.comparison_kind === 'reference_bootstrap' ? '기준 제어기는 학습된 P0가 아닙니다.' : `절대 성공률 변화: ${number(report.absolute_success_rate_improvement * 100)}%p`}</p>
       </div>
       <dl className="learning-metadata">
+        <FieldValue label="평가된 시뮬레이션 프로파일"><code>{report.control_profile_id}</code></FieldValue>
         <FieldValue label="전체 실제 WALL 시간 (초)">{number(report.total_wall_duration_ms / 1000)}</FieldValue>
         <FieldValue label="전체 실제 SIM 시간 (초)">{number(report.total_simulation_duration_ms / 1000)}</FieldValue>
         <FieldValue label="전체 시도 수">{report.total_trial_count}</FieldValue>

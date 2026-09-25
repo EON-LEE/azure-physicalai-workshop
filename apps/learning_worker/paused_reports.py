@@ -66,6 +66,7 @@ def verifier_version(config):
         "apps/learning_worker/artifacts.py",
         "apps/learning_worker/registry.py",
         "apps/api/simulation_reports.py",
+        "apps/api/models.py",
         "apps/api/learning_models.py",
     )
     return fingerprint({name: file_digest(root / name) for name in files})
@@ -190,9 +191,13 @@ def _source_rescore(verifier, actor, specification, config, locations, directory
     verifier._download_file(account, container, key, plan_path)
     plan = read_json(plan_path)
     validate_plan(plan)
-    if digest(canonical(plan)) != config["inputs"]["plan"]["sha256"] or any(
-        plan[name] != getattr(specification.project, name)
-        for name in ("control_profile_sha256", "criteria_sha256", "frozen_plan_sha256")
+    if (
+        digest(canonical(plan)) != config["inputs"]["plan"]["sha256"]
+        or plan["control_profile"]["profile_id"] != specification.project.control_profile_id
+        or any(
+            plan[name] != getattr(specification.project, name)
+            for name in ("control_profile_sha256", "criteria_sha256", "frozen_plan_sha256")
+        )
     ):
         raise Problem(
             503, "paused_plan_mismatch", "Canonical native plan or frozen provenance differs."
@@ -228,9 +233,15 @@ def _source_rescore(verifier, actor, specification, config, locations, directory
         model = verifier._model(
             actor, root, record.model_sha256, "smolvla", execution_timing="paused_simulation"
         )
-        if model["task"] != task or digest(canonical(task)) != config["task_sha256"]:
+        if (
+            model["task"] != task
+            or digest(canonical(task)) != config["task_sha256"]
+            or verifier._model_timing(model) != specification.project.timing_fields()
+        ):
             raise Problem(
-                503, "paused_model_task", "Evaluated model task differs from the project."
+                503,
+                "paused_model_task",
+                "Evaluated model task or timing provenance differs from the project.",
             )
     kwargs = {
         "scope": verifier._scope(actor),

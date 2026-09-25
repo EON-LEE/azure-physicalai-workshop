@@ -284,6 +284,15 @@ fail rather than inheriting real-time qualification. Candidate output paths
 come from the original immutable per-job config, not a mutable later project
 approval.
 
+Paused profile versions are explicit: v1 retains 1800 physics ticks / 300 frames
+/ 30 SIM seconds, while declared v2 permits 3600 ticks / 600 frames / 60 SIM
+seconds. The six-tick interval, 600-second wall ceiling, per-operation wall
+budgets and physical quality requirements are unchanged. Raw v3, model v2 and
+IPC v2 still bind their complete validated profile and SHA; an outer artifact
+schema alone does not select the newer budget. Old manifests, cases, grants,
+reports and failed v1 attempts are not rewritten. Operator-reviewed config,
+dataset, parent/candidate and report must all match the same profile.
+
 Registering an explicitly reviewed existing paused **train-only** artifact
 requires `--execution-timing paused_simulation` in addition to the existing
 bootstrap/operator/model approval checks below. It does not download a model,

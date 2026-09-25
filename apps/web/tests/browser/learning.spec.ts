@@ -50,6 +50,12 @@ test('paused-simulation budgets are explicit and cannot submit unadmitted work',
   await page.getByLabel('실행 시간 모드').selectOption('paused_simulation');
   await expect(page.getByText('한 회차 최대 30 SIM초 · 600 WALL초')).toBeVisible();
   await expect(page.getByLabel('전체 평가 WALL 예산 (초)')).toHaveValue('7200');
+  const profile = page.getByLabel('시뮬레이션 예산 버전');
+  await profile.focus();
+  await profile.selectOption('franka-position-hold-10hz-paused-v2');
+  await expect(profile).toBeFocused();
+  await expect(page.getByText('한 회차 최대 60 SIM초 · 600 WALL초')).toBeVisible();
+  await expect(page.getByText(/기존 v1 실행·결과를 v2 통과로 바꾸지 않습니다/)).toBeVisible();
   await page.getByLabel('전체 평가 WALL 예산 (초)').fill('9000');
   await expect(page.getByRole('button', { name: '불변 작업 정의 저장' })).toBeDisabled();
   await expect(page.getByText(/실시간 100ms\/80ms 통과가 아닙니다/)).toBeVisible();

@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { ApiClient } from '../src/api/client';
 import { PolicyComparison } from '../src/learning/PolicyComparison';
-import { simulationReportSchema } from '../src/learning/simulationReports';
+import { publicSimulationReportSchema, simulationReportSchema } from '../src/learning/simulationReports';
 import { publicLearningSchema } from '../src/public/learning-contract';
 import { learningApi, learningFixture } from './fixtures/learning';
 import { simulationReportFixture } from './fixtures/simulation-report';
@@ -46,6 +46,22 @@ describe('verified non-realtime report summaries', () => {
     const report = simulationReportFixture();
     expect(() => simulationReportSchema.parse({ ...report, real_time_admission: true })).toThrow();
     expect(() => simulationReportSchema.parse({ ...report, counts: { after: report.counts.after } })).toThrow();
+  });
+
+  it('allows extended trial ticks only in a profile-v2 report, not by changing duration alone', () => {
+    const original = simulationReportFixture();
+    const trial = original.trials[0]!;
+    const extended = {
+      ...original, control_profile_id: 'franka-position-hold-10hz-paused-v2',
+      trials: [{ ...trial, applied_action_count: 2100, simulation_duration_ms: 35000 }, ...original.trials.slice(1)],
+      total_simulation_duration_ms: original.total_simulation_duration_ms - trial.simulation_duration_ms + 35000,
+    };
+    expect(simulationReportSchema.parse(extended).trials[0]?.simulation_duration_ms).toBe(35000);
+    expect(() => simulationReportSchema.parse({ ...extended, control_profile_id: original.control_profile_id })).toThrow();
+    const { artifact_id: _privateArtifact, ...publicExtended } = extended;
+    expect(publicSimulationReportSchema.parse(publicExtended).trials[0]?.simulation_duration_ms).toBe(35000);
+    expect(() => publicSimulationReportSchema.parse({ ...publicExtended, control_profile_id: original.control_profile_id })).toThrow();
+    expect(simulationReportSchema.parse(original).trials[0]?.simulation_duration_ms).toBe(200);
   });
 
   it('keeps the public curated summary non-realtime without exposing a private artifact selector', () => {

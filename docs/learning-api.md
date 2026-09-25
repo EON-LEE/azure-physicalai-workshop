@@ -79,9 +79,13 @@ reference route relabeled as a policy. Prepared P0 provenance remains visible.
 ### Separate non-real-time simulation project contract
 
 `NON_REALTIME_SIMULATION` is an explicit new mode, not a relaxation or a passing
-result for the original 100 ms interval / 80 ms policy gate. Its fixed profile is
-`franka-position-hold-10hz-paused-v1`: 60 Hz physics, six held ticks per 10 Hz
-simulation-time action, with physics frozen while observation/inference is pending.
+result for the original 100 ms interval / 80 ms policy gate. Versioned profiles
+retain 60 Hz physics, six held ticks per 10 Hz simulation-time action, with
+physics frozen while observation/inference is pending. Profile
+`franka-position-hold-10hz-paused-v1` remains 30 SIM seconds / 1800 ticks;
+the explicitly selected `franka-position-hold-10hz-paused-v2` permits 60 SIM
+seconds / 3600 ticks. Neither profile can be inferred from a larger numeric
+budget or a checksum, and mismatched versions are rejected.
 It cannot authorize a real robot or inherit a real-time release.
 
 A new project must explicitly supply all of `execution_timing: paused_simulation`,
@@ -97,18 +101,32 @@ retain their original evaluation-plan semantics.
 The paused evaluation-plan branch requires exactly twenty unique held-out cases,
 `minimum_success_rate >= 0.9`, `minimum_absolute_improvement >= 0.05`,
 `maximum_axis_error_m <= 0.04`, and `max_cartesian_speed_m_s <= 0.2`.
-It uses explicit `max_simulation_seconds` (1..30) and `max_wall_seconds` (1..600),
+It uses explicit `max_simulation_seconds` (1..30 for v1; 1..60 for v2) and
+`max_wall_seconds` (1..600 for both),
 not legacy `max_step_seconds` or `maximum_inference_p95_ms`. Frozen wall-time
 caps are `max_observation_wall_ms=2000`, `max_policy_wall_ms=2000`,
 `max_hold_wall_ms=2000`, `max_interval_wall_ms=5000`, and
 `max_heartbeat_wall_ms=2000`. Saved-case opt-in and any lower environment limits
 remain authoritative; these request fields are not standalone motion authority.
 
+New v2 evaluation plans must declare `control_profile_id:
+franka-position-hold-10hz-paused-v2`, matching the project. Historical paused
+plans without that field mean **v1 only** and remain capped at 30. Serializing
+a v1 plan omits the default discriminator, preserving its original plan SHA.
+`ResolvedSimulationAuthorization` follows the same rule for `profile_id`:
+absence is legacy v1/1800, and a new v2 operator grant must explicitly name v2.
+The original raw grant file SHA still covers the exact installed bytes.
+
 Total project `budget.evaluation_seconds` is a separate explicit wall budget
 (up to 21600 seconds); the new-mode UI suggests 7200 seconds for review rather
-than changing any existing project. Per-episode 30 SIM / 600 WALL limits and
+than changing any existing project. Per-profile 30 or 60 SIM / 600 WALL limits and
 the immutable native AML absolute deadline remain distinct. An incomplete batch
 cannot be reported as all twenty cases evaluated or as successful improvement.
+The larger v2 task budget requires new saved case revisions and operator-frozen
+criteria before data collection. It does not turn an incomplete/failed v1 task
+into a pass. Physical quality (including grasp/lift, safety, 4 cm goal bounds,
+twenty paired trials, 0.9 success and 0.05 improvement), wall-operation limits,
+CPU/ML absolute deadlines and admission flags are unchanged.
 
 **Default admission boundary:** `simulation_learning` remains `supported: true`
 and reports separate, default-false stage permissions. The operator may admit
@@ -185,6 +203,8 @@ deadline. Resolution requires a trusted immutable
 wall/SIM limits and original criteria/scene-plan hashes; a UUID is not authority.
 Responses preserve required actual `simulation_runtime` wall duration, simulation
 duration/steps, phase, model/action/reference counts, and false real-time admission.
+Metrics must identify the exact profile and derive SIM seconds from verified
+physics ticks divided by 60; FloatWorld drift is not authority to widen v1.
 Missing telemetry is rejected, not replaced with zeroes. These bridge methods
 alone do not enable a public motion endpoint or runtime admission.
 
@@ -215,6 +235,11 @@ and each phase's sample count / nearest-rank p50 / p95 / maximum. It carries
 the verified report artifact ID. The original full arrays remain in immutable
 Blob JSON; the Cosmos projection is bounded to 512 KiB rather than exceeding
 Cosmos's item limit. A summary is not a replacement trace.
+Each trial's tick budget is checked against the report's declared profile
+(v1 1800, v2 3600), which must also match its frozen project. Capture receipts
+are bounded to 300 or 600 six-tick frames respectively; the native whole-profile
+hash binds data, checkpoint, command and report even when their outer schema
+version remains unchanged.
 
 Verification uses a durable content-bound claim and completed certificate.
 Owner/job/spec/config/report SHA, pinned verifier code and exact Blob ETag/size

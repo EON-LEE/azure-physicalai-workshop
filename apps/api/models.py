@@ -11,6 +11,12 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, JsonValue, mod
 Identifier = Annotated[str, Field(pattern=r"^[a-z][a-z0-9-]*(?![\s\S])", max_length=64)]
 Revision = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
 LearnedPolicyType = Literal["gr00t_n1_5", "gr00t_n1_7", "smolvla"]
+PAUSED_PROFILE_V1 = "franka-position-hold-10hz-paused-v1"
+PAUSED_PROFILE_V2 = "franka-position-hold-10hz-paused-v2"
+PausedProfileId = Literal[
+    "franka-position-hold-10hz-paused-v1", "franka-position-hold-10hz-paused-v2"
+]
+PAUSED_PROFILE_STEPS = {PAUSED_PROFILE_V1: 1800, PAUSED_PROFILE_V2: 3600}
 Position = tuple[float, float, float]
 RunStatus = Literal[
     "planning",

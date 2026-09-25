@@ -1,5 +1,11 @@
 import type { EnvironmentRecord } from '../api/contracts';
 import type { TeachingCase } from './contracts';
+import { pausedEnvironmentSchema, type PausedProfileId } from './pausedProfiles';
+
+export function matchesPausedEnvironment(record: EnvironmentRecord, profile: PausedProfileId): boolean {
+  const execution = pausedEnvironmentSchema.safeParse(record.document.learning_execution);
+  return execution.success && execution.data.profile_id === profile;
+}
 
 export function savedTeachingCases(environments: EnvironmentRecord[]): TeachingCase[] {
   return environments.flatMap((record) => {

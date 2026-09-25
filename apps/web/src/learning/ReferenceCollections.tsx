@@ -84,6 +84,8 @@ export function ReferenceCollections({ api, project, stages }: {
         <strong>REFERENCE · {actual.item.status} · 캡처 {actual.item.capture_status}</strong>
         <p>{actual.item.message}</p>
         {actual.item.execution && <dl className="learning-metadata">
+          <FieldValue label="선택된 시뮬레이션 프로파일"><code>{actual.item.control_profile_id}</code></FieldValue>
+          <FieldValue label="원래 승인 SIM 스텝 상한">{actual.item.command.max_simulation_steps}</FieldValue>
           <FieldValue label="실제 WALL 시간 (ms)">{actual.item.execution.simulation_runtime.wall_elapsed_ms}</FieldValue>
           <FieldValue label="실제 SIM 시간 (초)">{actual.item.execution.simulation_runtime.simulation_elapsed_seconds}</FieldValue>
           <FieldValue label="실제 기준 제어기 호출">{actual.item.execution.simulation_runtime.reference_route_calls}</FieldValue>

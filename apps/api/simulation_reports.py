@@ -8,7 +8,14 @@ from uuid import UUID
 from pydantic import ConfigDict, Field, StrictBool, field_validator, model_validator
 
 from apps.api.errors import Problem
-from apps.api.models import Identifier, Model, Position, Revision
+from apps.api.models import (
+    PAUSED_PROFILE_STEPS,
+    Identifier,
+    Model,
+    PausedProfileId,
+    Position,
+    Revision,
+)
 
 Role = Literal["before", "after", "reference", "candidate"]
 Duration = Annotated[float, Field(ge=0)]
@@ -76,7 +83,7 @@ class SimulationTrial(FrozenReport):
     failure_reason: str | None = Field(max_length=2048)
     safety_violation_count: int = Field(strict=True, ge=0)
     policy_predict_calls: int = Field(strict=True, ge=0)
-    applied_action_count: int = Field(strict=True, ge=0, le=1800)
+    applied_action_count: int = Field(strict=True, ge=0, le=3600)
     reference_route_calls: int = Field(strict=True, ge=0)
     final_images: dict[Literal["inspection", "overview"], Revision]
     phase_wall_ms: dict[
@@ -119,7 +126,7 @@ class SimulationReport(FrozenReport):
         "physicalai.smolvla-paired-report/v2", "physicalai.smolvla-bootstrap-report/v2"
     ]
     comparison_kind: Literal["paired_policy", "reference_bootstrap"]
-    control_profile_id: Literal["franka-position-hold-10hz-paused-v1"]
+    control_profile_id: PausedProfileId
     control_profile_sha256: Revision
     criteria_sha256: Revision
     frozen_plan_sha256: Revision
@@ -159,6 +166,11 @@ class SimulationReport(FrozenReport):
 
     @model_validator(mode="after")
     def complete_role_pair(self):
+        if any(
+            row.applied_action_count > PAUSED_PROFILE_STEPS[self.control_profile_id]
+            for row in self.trials
+        ):
+            raise ValueError("A trial exceeds the report's declared paused profile.")
         bootstrap = self.comparison_kind == "reference_bootstrap"
         roles = {"reference", "candidate"} if bootstrap else {"before", "after"}
         if (
@@ -249,6 +261,7 @@ def validate_report_binding(specification, report: SimulationReport) -> None:
             )
     if (
         project.execution_timing != "paused_simulation"
+        or report.control_profile_id != project.control_profile_id
         or report.control_profile_sha256 != project.control_profile_sha256
         or report.criteria_sha256 != project.criteria_sha256
         or report.frozen_plan_sha256 != project.frozen_plan_sha256

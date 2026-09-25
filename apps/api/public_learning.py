@@ -51,7 +51,10 @@ def learning_publication(configuration, learning):
             None
             if report.comparison_kind == "reference_bootstrap"
             else learning._baseline(
-                actor, evaluation.baseline_release_id, execution_timing="paused_simulation"
+                actor,
+                evaluation.baseline_release_id,
+                execution_timing="paused_simulation",
+                control_profile_id=project.control_profile_id,
             )
         )
         if not all(

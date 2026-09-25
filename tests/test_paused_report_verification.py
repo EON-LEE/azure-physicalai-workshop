@@ -289,8 +289,11 @@ def test_input_locations_reject_noncanonical_or_foreign_datastore_paths(monkeypa
             paused_reports._locations(verifier, ACTOR, altered, spec)
 
 
-def test_source_rescore_invokes_native_verified_entry_with_original_plan_results_and_models(
-    monkeypatch, tmp_path
+@pytest.mark.parametrize(
+    "changed_timing", [None, "profile", "criteria_sha256", "frozen_plan_sha256"]
+)
+def test_source_rescore_requires_original_plan_results_and_actual_model_timing(
+    monkeypatch, tmp_path, changed_timing
 ):
     from learning.paused import evaluation
 
@@ -306,7 +309,22 @@ def test_source_rescore_invokes_native_verified_entry_with_original_plan_results
         json.dumps(plan, indent=4)
     )
     verifier._download_prefix = lambda _account, _container, _key, target: target.mkdir()
-    verifier._model = lambda *args, **kwargs: {"task": task}
+    model = {
+        "task": task,
+        "control_profile": plan["control_profile"],
+        "execution_timing": "paused_simulation",
+        "real_time_admission": False,
+        "criteria_sha256": plan["criteria_sha256"],
+        "frozen_plan_sha256": plan["frozen_plan_sha256"],
+    }
+    if changed_timing == "profile":
+        model["control_profile"] = plan["control_profile"] | {
+            "profile_id": "franka-position-hold-10hz-paused-v2",
+            "max_simulation_steps": 3600,
+        }
+    elif changed_timing:
+        model[changed_timing] = "f" * 64
+    verifier._model = lambda *args, **kwargs: model
     verifier.registry.artifact_index = lambda actor, artifact_id: {
         "manifest_sha256": spec.candidate.model_sha256
         if artifact_id == spec.candidate.artifact_id
@@ -320,6 +338,19 @@ def test_source_rescore_invokes_native_verified_entry_with_original_plan_results
         return {"test_only": "verified-entry-result"}
 
     monkeypatch.setattr(evaluation, "evaluate_pair", native)
+    if changed_timing:
+        with pytest.raises(Problem) as failure:
+            source_rescore(
+                verifier,
+                ACTOR,
+                spec,
+                config,
+                paused_reports._locations(verifier, ACTOR, config, spec),
+                tmp_path,
+            )
+        assert failure.value.code == "paused_model_task"
+        assert calls == []
+        return
     result = source_rescore(
         verifier,
         ACTOR,
@@ -335,3 +366,33 @@ def test_source_rescore_invokes_native_verified_entry_with_original_plan_results
         "expected_plan_sha256": config["inputs"]["plan"]["sha256"],
         "expected_results_sha256": config["inputs"]["evidence"]["sha256"],
     }
+
+
+def test_matching_hash_alone_cannot_label_a_v1_native_plan_as_v2(monkeypatch, tmp_path):
+    verifier, spec, config, plan, _, _, _, _, _ = setup(monkeypatch, stub_rescore=False)
+    spec.project = spec.project.model_copy(
+        update={
+            "control_profile_id": "franka-position-hold-10hz-paused-v2",
+            "evaluation_plan": spec.project.evaluation_plan.model_copy(
+                update={
+                    "control_profile_id": "franka-position-hold-10hz-paused-v2",
+                }
+            ),
+        }
+    )
+    verifier._download_file = lambda _account, _container, _key, target: target.write_text(
+        json.dumps(plan)
+    )
+    verifier._download_prefix = lambda *_: pytest.fail(
+        "Reject crossed profile ID before bulk input I/O."
+    )
+    with pytest.raises(Problem) as failure:
+        paused_reports._source_rescore(
+            verifier,
+            ACTOR,
+            spec,
+            config,
+            paused_reports._locations(verifier, ACTOR, config, spec),
+            tmp_path,
+        )
+    assert failure.value.code == "paused_plan_mismatch"

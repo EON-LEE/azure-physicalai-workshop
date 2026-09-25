@@ -19,7 +19,18 @@ from pydantic import (
 )
 
 from apps.api.errors import Problem
-from apps.api.models import Identifier, LearnedPolicyType, Model, Principal, Revision, utcnow
+from apps.api.models import (
+    PAUSED_PROFILE_STEPS,
+    PAUSED_PROFILE_V1,
+    PAUSED_PROFILE_V2,
+    Identifier,
+    LearnedPolicyType,
+    Model,
+    PausedProfileId,
+    Principal,
+    Revision,
+    utcnow,
+)
 from apps.api.simulation_reports import SimulationReport
 
 PolicyType = Literal["gr00t_n1_5", "gr00t_n1_7", "smolvla", "act_auxiliary"]
@@ -56,8 +67,13 @@ NonnegativeInt = Annotated[int, Field(strict=True, ge=0)]
 JOB_TERMINAL = frozenset({"succeeded", "failed", "cancelled", "timed_out", "blocked"})
 TEACHING_TERMINAL = frozenset({"ready", "cancelled", "invalid", "blocked"})
 PROFILE_ID = "franka-position-hold-10hz-v1"
-PAUSED_PROFILE_ID = "franka-position-hold-10hz-paused-v1"
-ControlProfileId = Literal["franka-position-hold-10hz-v1", "franka-position-hold-10hz-paused-v1"]
+PAUSED_PROFILE_ID = PAUSED_PROFILE_V1
+PAUSED_PROFILE_V2_ID = PAUSED_PROFILE_V2
+ControlProfileId = Literal[
+    "franka-position-hold-10hz-v1",
+    "franka-position-hold-10hz-paused-v1",
+    "franka-position-hold-10hz-paused-v2",
+]
 INTEGRATION_ONLY_SEEDS = frozenset({900002})
 
 
@@ -130,6 +146,9 @@ class EvaluationPlan(Frozen):
 class PausedEvaluationPlan(Frozen):
     execution_timing: Literal["paused_simulation"]
     real_time_admission: Literal[False]
+    control_profile_id: PausedProfileId = Field(
+        default=PAUSED_PROFILE_ID, exclude_if=lambda value: value == PAUSED_PROFILE_ID
+    )
     id: UUID
     seeds: tuple[Annotated[int, Field(strict=True, ge=0, le=2147483647)], ...] = Field(
         min_length=20, max_length=20
@@ -140,7 +159,7 @@ class PausedEvaluationPlan(Frozen):
     minimum_absolute_improvement: float = Field(ge=0.05, le=1)
     maximum_axis_error_m: float = Field(gt=0, le=0.04)
     max_cartesian_speed_m_s: float = Field(gt=0, le=0.2)
-    max_simulation_seconds: int = Field(strict=True, ge=1, le=30)
+    max_simulation_seconds: int = Field(strict=True, ge=1, le=60)
     max_wall_seconds: int = Field(strict=True, ge=1, le=600)
     max_observation_wall_ms: Literal[2000]
     max_policy_wall_ms: Literal[2000]
@@ -157,6 +176,8 @@ class PausedEvaluationPlan(Frozen):
 
     @model_validator(mode="after")
     def frozen_conditions(self):
+        if self.max_simulation_seconds * 60 > PAUSED_PROFILE_STEPS[self.control_profile_id]:
+            raise ValueError("Simulation budget exceeds its explicitly declared paused profile.")
         if (
             set(self.seeds) & INTEGRATION_ONLY_SEEDS
             or len(set(self.seeds)) != 20
@@ -202,7 +223,7 @@ class TimingMetadata(Frozen):
         elif (
             any(value is None for value in fields)
             or self.real_time_admission is not False
-            or profile != PAUSED_PROFILE_ID
+            or profile not in PAUSED_PROFILE_STEPS
         ):
             raise ValueError("Paused records require exact mode, profile and provenance hashes.")
         return self
@@ -252,6 +273,8 @@ class ProjectTiming(TimingMetadata):
             self.evaluation_plan, PausedEvaluationPlan
         ):
             raise ValueError("Paused projects require SmolVLA and a separate simulation plan.")
+        elif self.evaluation_plan.control_profile_id != self.control_profile_id:
+            raise ValueError("Project and evaluation plan must declare the same paused profile.")
         return self
 
 
@@ -521,6 +544,10 @@ class CaptureReceipt(TimingMetadata):
     def source_is_evidenced(self):
         if (self.source == "learned") != (self.source_model_sha256 is not None):
             raise ValueError("Generated demonstrations must identify their actual source model.")
+        if self.execution_timing == "paused_simulation" and self.frame_count > (
+            PAUSED_PROFILE_STEPS[self.control_profile_id] // 6
+        ):
+            raise ValueError("Capture frames exceed the declared paused profile.")
         return self
 
 

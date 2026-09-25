@@ -218,13 +218,20 @@ The controls below belong to the separately protected operator area.
   images are authenticated and explicitly labeled historical, not LIVE.
 - **Separate paused-simulation learning:** When the API advertises its supported
   contract, a new-project mode selector shows `NON_REALTIME_SIMULATION`, the
-  separate per-case 30 SIM / 600 WALL caps, required profile/criteria/scene-plan
+  separate per-case 30 SIM / 600 WALL caps for v1, required profile/criteria/scene-plan
   hashes, and an explicit total evaluation WALL budget (7200-second suggestion,
-  maximum 21600).   These are draft authorization bounds, not measured durations
+  maximum 21600). These are draft authorization bounds, not measured durations
   or an extension of an old project. Stage permissions default off; unavailable
   reference generation, training, evaluation and release actions remain disabled.
   Existing records retain their exact bounds/provenance. Real-time 100 ms / 80 ms qualification remains separate
   and is never implied by this mode or by a native SDK schema check.
+  An explicit budget-version selector can choose paused v2 (60 SIM / 600 WALL);
+  v1 remains the default, not an automatically widened project. Changing version
+  clears reviewed case selections and provenance inputs and requires matching
+  saved schema/profile versions. Held-out selection filters by the same version
+  so old/new cases sharing physical seeds cannot be silently substituted.
+  Existing records show their declared profile and actual WALL/SIM measurements;
+  no v1 failure is reinterpreted as a v2 success.
 - **REFERENCE generation:** The separately admitted NRT path says
   `reference_controller · 수동 시연 아님`. It requires an explicit case selection
   and motion checkbox, sends only the request/case/approval, and uses a

@@ -91,6 +91,7 @@ class ReferenceAuthorization(Frozen):
             or self.project_id != project.id
             or self.case_id != case.case_id
             or project.execution_timing != "paused_simulation"
+            or permit.profile_id != project.control_profile_id
             or permit.controller != "reference_controller"
             or permit.authorization_kind != "reference_collection"
             or permit.purpose != "demonstration"
@@ -165,6 +166,7 @@ class ReferenceCollection(OwnedRecord, TimingMetadata):
             or self.command.environment_id != self.teaching_case.environment_id
             or self.command.revision != self.teaching_case.revision
             or self.command.authorization_kind != "reference_collection"
+            or self.command.profile_id != self.control_profile_id
         ):
             raise ValueError("The original reference command and approved case must match.")
         return self

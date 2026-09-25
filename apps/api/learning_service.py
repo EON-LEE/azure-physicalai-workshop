@@ -506,7 +506,7 @@ class LearningService:
         return self._apply_artifact(actor, stored, state)
 
     def _baseline(
-        self, actor: Principal, release_id: UUID, *, execution_timing=None
+        self, actor: Principal, release_id: UUID, *, execution_timing=None, control_profile_id=None
     ) -> PolicyRelease:
         local = self.store.get_learning(actor.owner_key, "release", release_id)
         if local:
@@ -523,7 +523,9 @@ class LearningService:
         if release.owner_key != actor.owner_key or release.id != release_id:
             raise Problem(404, "policy_release_missing", "Reviewed policy not found.")
         self._policy(release.policy_type)
-        profile = PAUSED_PROFILE_ID if execution_timing == "paused_simulation" else PROFILE_ID
+        profile = control_profile_id or (
+            PAUSED_PROFILE_ID if execution_timing == "paused_simulation" else PROFILE_ID
+        )
         if release.control_profile_id != profile or release.execution_timing != execution_timing:
             raise Problem(
                 409, "policy_type_mismatch", "A reviewed compatible learned policy is required."
@@ -645,7 +647,10 @@ class LearningService:
                 )
         else:
             baseline = self._baseline(
-                actor, body.baseline_release_id, execution_timing=body.execution_timing
+                actor,
+                body.baseline_release_id,
+                execution_timing=body.execution_timing,
+                control_profile_id=body.control_profile_id,
             )
             if baseline.task_id != body.task_id or baseline.policy_type != body.policy_type:
                 raise Problem(
@@ -716,7 +721,10 @@ class LearningService:
             parent = self._training_parent(actor, project.pretrained_artifact_id)
         else:
             baseline = self._baseline(
-                actor, body.parent_release_id, execution_timing=project.execution_timing
+                actor,
+                body.parent_release_id,
+                execution_timing=project.execution_timing,
+                control_profile_id=project.control_profile_id,
             )
         if (parent or baseline).policy_type != project.policy_type:
             raise Problem(
@@ -938,7 +946,10 @@ class LearningService:
                         None
                         if run.comparison_kind == "reference_bootstrap"
                         else self._baseline(
-                            actor, run.baseline_release_id, execution_timing="paused_simulation"
+                            actor,
+                            run.baseline_release_id,
+                            execution_timing="paused_simulation",
+                            control_profile_id=project.control_profile_id,
                         )
                     )
                     validate_report_binding(
@@ -1097,6 +1108,7 @@ class LearningService:
         if (
             result.command_id != record.command_id
             or metrics.controller != "reference_controller"
+            or metrics.profile_id != record.control_profile_id
             or metrics.control_profile_sha256 != record.control_profile_sha256
             or metrics.applied_model_sha256 is not None
             or metrics.policy_predict_calls
@@ -1274,7 +1286,10 @@ class LearningService:
             self._training_parent(actor, run.pretrained_artifact_id)
             if project.project_kind == "bootstrap"
             else self._baseline(
-                actor, run.parent_release_id, execution_timing=project.execution_timing
+                actor,
+                run.parent_release_id,
+                execution_timing=project.execution_timing,
+                control_profile_id=project.control_profile_id,
             )
         )
         if candidate is None or (
@@ -1431,7 +1446,10 @@ class LearningService:
             self._bootstrap_actor(actor)
         else:
             baseline = self._baseline(
-                actor, body.baseline_release_id, execution_timing=project.execution_timing
+                actor,
+                body.baseline_release_id,
+                execution_timing=project.execution_timing,
+                control_profile_id=project.control_profile_id,
             )
         self._cost(project, body.maximum_cost_usd)
         run = EvaluationRun(
@@ -1479,7 +1497,10 @@ class LearningService:
                 None
                 if project.project_kind == "bootstrap"
                 else self._baseline(
-                    actor, run.baseline_release_id, execution_timing="paused_simulation"
+                    actor,
+                    run.baseline_release_id,
+                    execution_timing="paused_simulation",
+                    control_profile_id=project.control_profile_id,
                 )
             )
             if project.project_kind == "bootstrap":
