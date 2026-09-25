@@ -118,10 +118,17 @@ to bound predicted TCP displacement to `min(0.1, requested_speed) * 0.1` metres.
 The independent pressure-producing gripper target is **not** rescaled when the
 arm path is slowed. Like the legacy `GripperRamp`, the paused reference integrates
 from its previous **issued** finger targets, not a fresh offset from measured
-fingers at every interval. The closed/open destination is first bounded by both
-measured tracking and previous-target slew envelopes, then approached by at most
-0.0025 m in two-finger vector distance per interval. Small measured contact
-jitter can move that feasible destination without dropping accumulated pressure.
+fingers at every interval. Each finger's feasible interval is the intersection
+of its hard joint bounds, measured tracking envelope and previous-target slew
+envelope. The teacher's closed/open destination is projected into those intervals,
+then approached from the previous issued target by at most 0.0025 m in two-finger
+vector distance per interval. This does not require a ray from the measured
+position toward open/closed to enter the feasible region: at the first v2
+release failure, one measured finger was 20.5 nanometres outside the previous
+90% planning edge despite a nonempty intersection and a valid hard tracking gap.
+Empty intersections and a bounded step that cannot reach the intersection still
+fail; no tolerance, planning margin or hard limit is widened. Small measured
+contact jitter can move the feasible destination without dropping accumulated pressure.
 Saturation is a legitimate pressure hold, not proof of contact or grasp; targets
 cannot jump to zero while the measured fingers remain about 0.025 m open.
 Start/reset discards old targets and cancellation still fences actual application.

@@ -1,6 +1,7 @@
 """CPU pressure-target regressions using observed joints; no contact-force/GPU proof."""
 
 import sys
+from dataclasses import replace
 from math import dist
 from types import ModuleType, SimpleNamespace
 
@@ -36,6 +37,127 @@ OBSERVED_ISSUED = (
     0.023233404066660326,
     0.023272221011245046,
 )
+# Actual failed release at control tick 392; original report SHA:
+# ea1425ed7b06b0bfd551492ade5593aea40f8601fd42935ea1dd8da2bed008df.
+RELEASE_MEASURED = (
+    0.2736085057258606,
+    -0.5007233619689941,
+    -1.346930980682373,
+    -2.5404746532440186,
+    -0.7866237163543701,
+    2.3161733150482178,
+    0.29163673520088196,
+    0.024796346202492714,
+    0.025225045159459114,
+)
+RELEASE_PREVIOUS = (
+    0.27820679545402527,
+    -0.5039578676223755,
+    -1.3512566089630127,
+    -2.540459632873535,
+    -0.7631874084472656,
+    2.310464859008789,
+    0.2761975824832916,
+    0.02125759389337329,
+    0.021625024670362474,
+)
+RELEASE_RMP = (
+    0.2807035744190216,
+    -0.5061625838279724,
+    -1.3538373708724976,
+    -2.540193796157837,
+    -0.7653034329414368,
+    2.3094444274902344,
+    0.2776278257369995,
+)
+
+
+def test_actual_release_with_nonempty_boxes_is_not_rejected_by_a_measured_origin_ray():
+    limit = 0.0036
+    assert limit < RELEASE_MEASURED[8] - RELEASE_PREVIOUS[8] < 0.004
+    fingers = reference_gripper_targets(RELEASE_MEASURED, RELEASE_PREVIOUS, closed=False)
+    expected_step = 0.0025 / (2**0.5)
+    assert fingers == pytest.approx(
+        tuple(previous + expected_step for previous in RELEASE_PREVIOUS[7:]), abs=1e-12
+    )
+    assert dist(fingers, RELEASE_PREVIOUS[7:]) <= 0.0025 + 1e-12
+    for measured, previous, target in zip(
+        RELEASE_MEASURED[7:], RELEASE_PREVIOUS[7:], fingers, strict=True
+    ):
+        lower, upper = (
+            max(0.0, measured - limit, previous - limit),
+            min(0.04, measured + limit, previous + limit),
+        )
+        assert lower < upper
+        assert lower <= target <= upper
+    validate_position_target(RELEASE_MEASURED, RELEASE_MEASURED[:7] + fingers, RELEASE_PREVIOUS)
+
+
+def test_actual_release_pair_reaches_six_exact_sdk_targets_without_changing_arm_proposal(
+    paused_hardware,
+):
+    from learning.paused import CONTROL_PROFILE_V2_ID
+
+    cell, _, _ = paused_hardware
+    cell.control_profile = replace(
+        cell.control_profile, profile_id=CONTROL_PROFILE_V2_ID, max_simulation_steps=3600
+    )
+    cell.robot.joints = Array(RELEASE_MEASURED)
+    cell.issued_targets = RELEASE_PREVIOUS
+    cell.controller.forward = lambda **kwargs: Action(Array(RELEASE_RMP), joint_indices=range(7))
+    targets = cell.paused_reference_targets(
+        (0.22, -0.38, 0.2), False, phase="release", control_tick=392
+    )
+    assert targets[:7] == RELEASE_RMP
+    validate_position_target(RELEASE_MEASURED, targets, RELEASE_PREVIOUS)
+    assert all(a > b for a, b in zip(targets[7:], RELEASE_PREVIOUS[7:], strict=True))
+    for _ in range(6):
+        control = cell.apply_paused_tick(targets)
+        assert control.commanded_joint_targets == targets
+        assert control.commanded_joint_velocities == (0.0,) * 9
+    assert len(cell.robot.actions) == 6
+    assert all(tuple(action.joint_positions) == targets for action in cell.robot.actions)
+    assert cell.reference_target_diagnostic["last_issued_targets"] == targets
+    assert cell.reference_target_diagnostic["actual_hold_steps"] == 6
+
+
+@pytest.mark.parametrize("closed", [False, True])
+@pytest.mark.parametrize("beyond_margin", [0.0, 1e-12, 2.048909664e-8, 1e-6])
+def test_phase_reversal_near_the_planning_boundary_keeps_the_same_box_limits(closed, beyond_margin):
+    sign = -1 if closed else 1
+    previous = LIFT_START[:7] + (0.025, 0.025)
+    measured = previous[:7] + (0.025 + sign * (0.0036 + beyond_margin),) * 2
+    targets = reference_gripper_targets(measured, previous, closed=closed)
+    assert dist(targets, previous[7:]) <= 0.0025 + 1e-12
+    assert all(sign * (target - old) > 0 for target, old in zip(targets, previous[7:], strict=True))
+    assert all(
+        abs(target - actual) <= 0.0036 for target, actual in zip(targets, measured[7:], strict=True)
+    )
+    assert all(
+        abs(target - old) <= 0.0036 for target, old in zip(targets, previous[7:], strict=True)
+    )
+    validate_position_target(measured, measured[:7] + targets, previous)
+
+
+@pytest.mark.parametrize("closed", [False, True])
+def test_nonempty_gripper_box_is_not_reached_by_widening_a_too_short_vector_step(closed):
+    previous = LIFT_START[:7] + (0.02, 0.02)
+    measured = LIFT_START[:7] + (0.026, 0.026)
+    lower = measured[7] - 0.0036
+    upper = previous[7] + 0.0036
+    assert lower < upper
+    assert dist(previous[7:], (lower, lower)) > 0.0025
+    with pytest.raises(ValueError, match="feasible"):
+        reference_gripper_targets(measured, previous, closed=closed)
+
+
+@pytest.mark.parametrize("closed", [False, True])
+def test_a_truly_empty_gripper_tracking_slew_box_still_fails(closed):
+    measured = LIFT_START[:7] + (0.03, 0.03)
+    previous = LIFT_START[:7] + (0.02, 0.02)
+    assert measured[7] - 0.0036 > previous[7] + 0.0036
+    with pytest.raises(ValueError, match="feasible"):
+        reference_gripper_targets(measured, previous, closed=closed)
 
 
 def test_paused_reference_accumulates_a_bounded_pressure_target_instead_of_resetting_to_measured(

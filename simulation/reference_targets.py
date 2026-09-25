@@ -10,8 +10,10 @@ from pathlib import Path
 from learning.common import file_digest, finite, require, vector
 from learning.contract import (
     DEFAULT_JOINT_VELOCITY_LIMITS,
+    JOINT_LOWER,
     JOINT_NAMES,
     JOINT_UNITS,
+    JOINT_UPPER,
     bounded_joints,
 )
 from simulation.control import check_measured_motion, validate_position_target
@@ -187,18 +189,23 @@ def reference_gripper_targets(
         raise ValueError("A reference gripper command must explicitly open or close.")
     start = previous[7:]
     requested = (0.0, 0.0) if closed else (0.04, 0.04)
-    _, fraction, _ = _path_fraction_bounds(
-        measured[7:], requested, measured[7:], start, PLANNING_STEP_LIMITS[7:]
-    )
-    distance = dist(measured[7:], requested)
-    feasible = (
-        move_toward(measured[7:], requested, distance * fraction)
-        if distance and fraction > 0
-        else measured[7:]
-    )
+    feasible = []
+    for actual, issued, goal, limit, joint_lower, joint_upper in zip(
+        measured[7:],
+        start,
+        requested,
+        PLANNING_STEP_LIMITS[7:],
+        JOINT_LOWER[7:],
+        JOINT_UPPER[7:],
+        strict=True,
+    ):
+        lower = max(joint_lower, actual - limit, issued - limit)
+        upper = min(joint_upper, actual + limit, issued + limit)
+        require(lower <= upper, "No feasible reference gripper tracking/slew box intersection.")
+        feasible.append(min(upper, max(lower, goal)))
     # Like GripperRamp, integrate from the issued target; keep a feasible
-    # pressure hold when contact prevents closure, including small measured jitter.
-    targets = move_toward(start, feasible, 0.025 * CONTROL_DT)
+    # pressure hold without requiring a measured-to-goal ray to enter the box.
+    targets = move_toward(start, tuple(feasible), 0.025 * CONTROL_DT)
     _path_fraction_bounds(targets, targets, measured[7:], start, PLANNING_STEP_LIMITS[7:])
     return targets
 
