@@ -85,9 +85,7 @@ def validate_model(
             isinstance(training, dict)
             and training.get("raw_schema") == RAW_SCHEMA
             and training.get("conversion_schema") == CONVERSION_SCHEMA
-            and all(
-                training.get(name) == value[name] for name in MODE_FIELDS - {"timestamp_basis"}
-            ),
+            and all(training.get(name) == value[name] for name in MODE_FIELDS),
             "Trained paused model is not bound to its actual v3 data and frozen plan",
         )
     return shared._validate_model(

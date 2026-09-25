@@ -31,6 +31,32 @@ LEGACY_CODE_FILES = shared.CODE_FILES + (
     "learning/smolvla/rollout.py",
 )
 CODE_FILES = LEGACY_CODE_FILES + ("learning/deadlines.py",)
+PAUSED_FIELDS = frozenset(
+    {"execution_timing", "real_time_admission", "criteria_sha256", "frozen_plan_sha256"}
+)
+PAUSED_CODE_FILES = CODE_FILES + (
+    "learning/paused/__init__.py",
+    "learning/paused/contract.py",
+    "learning/paused/capture.py",
+    "learning/paused/dataset.py",
+    "learning/paused/artifacts.py",
+    "learning/paused/prepare.py",
+    "learning/paused/train.py",
+    "learning/paused/inference.py",
+    "learning/paused/ipc.py",
+    "learning/paused/model.py",
+    "learning/paused/components.py",
+)
+
+
+def is_paused(config: dict) -> bool:
+    return config.get("execution_timing") == "paused_simulation"
+
+
+def code_files(config: dict) -> tuple[str, ...]:
+    if is_paused(config):
+        return PAUSED_CODE_FILES
+    return CODE_FILES if config["schema"] == CONFIG_SCHEMA else LEGACY_CODE_FILES
 
 
 def validate_config(config: dict) -> None:
@@ -39,6 +65,24 @@ def validate_config(config: dict) -> None:
         "Unsupported SmolVLA Azure configuration schema",
     )
     base = dict(config)
+    if PAUSED_FIELDS & set(config):
+        from learning.common import sha256
+
+        require(
+            config["schema"] == CONFIG_SCHEMA
+            and PAUSED_FIELDS.issubset(config)
+            and is_paused(config)
+            and config["real_time_admission"] is False,
+            "Paused Azure v2 requires the entire closed explicit timing/criteria variant",
+        )
+        require(
+            config.get("kind") == "train",
+            "Paused evaluation components require the separately verified recording producer",
+        )
+        sha256(config["criteria_sha256"], "frozen criteria")
+        sha256(config["frozen_plan_sha256"], "model-independent frozen conditions plan")
+        for name in PAUSED_FIELDS:
+            base.pop(name)
     if config["schema"] == CONFIG_SCHEMA:
         validate_deadline(base.pop("job_deadline_utc", None))
     inputs = None
@@ -71,7 +115,9 @@ def build_job(config: dict, snapshot_sha256: str, job_name: str) -> dict:
         job_name,
         validator=validate_config,
         policy_type=POLICY_TYPE,
-        command_module="learning.smolvla.components",
+        command_module="learning.paused.components"
+        if is_paused(config)
+        else "learning.smolvla.components",
         include_backbone=True,
     )
 
@@ -86,18 +132,19 @@ def create_plan(
         source_root=source_root,
         validator=validate_config,
         job_builder=build_job,
-        code_files=CODE_FILES if config["schema"] == CONFIG_SCHEMA else LEGACY_CODE_FILES,
+        code_files=code_files(config),
         plan_schema=PLAN_SCHEMA if config["schema"] == CONFIG_SCHEMA else LEGACY_PLAN_SCHEMA,
     )
 
 
 def read_plan(path: Path) -> dict:
-    legacy = read_json(path / "plan.json").get("schema") == LEGACY_PLAN_SCHEMA
+    header = read_json(path / "plan.json")
+    legacy = header.get("schema") == LEGACY_PLAN_SCHEMA
     plan = shared.read_plan(
         path,
         validator=validate_config,
         job_builder=build_job,
-        code_files=LEGACY_CODE_FILES if legacy else CODE_FILES,
+        code_files=code_files(header["config"]),
         plan_schema=LEGACY_PLAN_SCHEMA if legacy else PLAN_SCHEMA,
     )
     require(
@@ -107,8 +154,10 @@ def read_plan(path: Path) -> dict:
     return plan
 
 
-def verify_code(root: Path, expected_sha256: str) -> None:
-    shared.verify_code(root, expected_sha256, code_files=CODE_FILES)
+def verify_code(root: Path, expected_sha256: str, *, config: dict | None = None) -> None:
+    shared.verify_code(
+        root, expected_sha256, code_files=code_files(config) if config is not None else CODE_FILES
+    )
 
 
 class PolicyJobs(shared.Gr00tJobs):

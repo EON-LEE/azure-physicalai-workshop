@@ -101,6 +101,32 @@ def import_assets(
     profile: ControlProfile,
     task: DemonstrationSource,
 ) -> dict:
+    require(isinstance(profile, ControlProfile), "Use the explicit paused asset preparation entry")
+    from learning.smolvla.artifacts import model_contract, validate_model
+
+    return _import_assets(
+        model_source,
+        backbone_source,
+        output,
+        scope=scope,
+        profile=profile,
+        task=task,
+        model_builder=model_contract,
+        model_validator=validate_model,
+    )
+
+
+def _import_assets(
+    model_source: Path,
+    backbone_source: Path,
+    output: Path,
+    *,
+    scope: Scope,
+    profile,
+    task: DemonstrationSource,
+    model_builder,
+    model_validator,
+) -> dict:
     scope.validate()
     profile.validate()
     task.validate()
@@ -127,9 +153,7 @@ def import_assets(
     }
     write_json(output / "backbone" / "backbone.json", backbone)
     backbone_sha = file_digest(output / "backbone" / "backbone.json")
-    from learning.smolvla.artifacts import model_contract, validate_model
-
-    model = model_contract(
+    model = model_builder(
         checkpoint=output / "model" / "checkpoint",
         scope=scope,
         profile=profile,
@@ -140,7 +164,7 @@ def import_assets(
     )
     write_json(output / "model" / "model.json", model)
     checksum = file_digest(output / "model" / "model.json")
-    validate_model(
+    model_validator(
         output / "model", expected_scope=scope, expected_model_sha256=checksum, for_inference=False
     )
     return {

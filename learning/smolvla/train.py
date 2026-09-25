@@ -126,6 +126,41 @@ def run_training(
     client,
     options: TrainOptions,
 ) -> dict:
+    require("execution_timing" not in config, "Use the explicitly selected paused training entry")
+    return _run_training(
+        dataset,
+        parent_root,
+        backbone_root,
+        output,
+        scope=scope,
+        parent_model_sha256=parent_model_sha256,
+        conversion_sha256=conversion_sha256,
+        code_snapshot_sha256=code_snapshot_sha256,
+        config=config,
+        client=client,
+        options=options,
+    )
+
+
+def _run_training(
+    dataset: Path,
+    parent_root: Path,
+    backbone_root: Path,
+    output: Path,
+    *,
+    scope: Scope,
+    parent_model_sha256: str,
+    conversion_sha256: str,
+    code_snapshot_sha256: str,
+    config: dict,
+    client,
+    options: TrainOptions,
+    model_validator=validate_model,
+    conversion_validator=validate_conversion,
+    profile_type=ControlProfile,
+    model_builder=model_contract,
+    mode_metadata: dict | None = None,
+) -> dict:
     from learning.smolvla.azure import job_deadline
 
     deadline = job_deadline(config)
@@ -139,13 +174,13 @@ def run_training(
         file_digest(dataset / "conversion.json") == conversion_sha256,
         "Conversion checksum mismatch",
     )
-    converted = validate_conversion(dataset, scope)
+    converted = conversion_validator(dataset, scope)
     deadline.check()
     require(
         converted["test_only"] is False and converted.get("control_profile") is not None,
         "Production SmolVLA requires actual scoped v2 demonstrations",
     )
-    parent = validate_model(
+    parent = model_validator(
         parent_root,
         expected_scope=scope,
         expected_model_sha256=parent_model_sha256,
@@ -153,11 +188,21 @@ def run_training(
     )
     deadline.check()
     validate_resume(parent, mode=options.resume_mode)
-    profile = ControlProfile(**converted["control_profile"])
+    profile = profile_type(**converted["control_profile"])
     require(
-        profile.sha256 == ControlProfile(**parent["control_profile"]).sha256,
+        profile.sha256 == profile_type(**parent["control_profile"]).sha256,
         "Parent and real training data use different servo profiles",
     )
+    if mode_metadata is not None:
+        require(
+            profile.sha256 == config["control_profile_sha256"]
+            and digest(canonical(parent["task"])) == config["task_sha256"]
+            and all(
+                parent.get(key) == converted.get(key) == value
+                for key, value in mode_metadata.items()
+            ),
+            "Paused parent and actual data differ from the approved frozen mode/plan",
+        )
     require(
         all(
             {name: episode["demonstration"][name] for name in ("task_id", "instruction", "goal_id")}
@@ -189,7 +234,10 @@ def run_training(
     write_json(
         output / "training-context.json",
         {
-            "schema": "physicalai.smolvla-training-context/v1",
+            "schema": "physicalai.smolvla-training-context/v2"
+            if mode_metadata is not None
+            else "physicalai.smolvla-training-context/v1",
+            **(mode_metadata or {}),
             **binding,
             "scope": asdict(scope),
             "parent_model_sha256": parent_model_sha256,
@@ -229,6 +277,9 @@ def run_training(
         parent_model_sha256=parent_model_sha256,
         conversion_sha256=conversion_sha256,
         code_snapshot_sha256=code_snapshot_sha256,
+        model_builder=model_builder,
+        model_validator=model_validator,
+        mode_metadata=mode_metadata,
     )
     deadline.check()
     return result
@@ -250,6 +301,9 @@ def _seal_checkpoint(
     parent_model_sha256: str,
     conversion_sha256: str,
     code_snapshot_sha256: str,
+    model_builder=model_contract,
+    model_validator=validate_model,
+    mode_metadata: dict | None = None,
 ) -> dict:
     marker = read_json(step_dir / "training_state" / "training_step.json")
     require(
@@ -284,7 +338,14 @@ def _seal_checkpoint(
         )
         episodes[item["episode_id"]] = item
     previous_steps = parent["training"]["cumulative_optimizer_steps"] if parent["training"] else 0
-    model = model_contract(
+    training_metadata = {}
+    if mode_metadata is not None:
+        training_metadata = {
+            **mode_metadata,
+            "raw_schema": "physicalai.demonstrations/v3",
+            "conversion_schema": converted["schema"],
+        }
+    model = model_builder(
         checkpoint=checkpoint,
         scope=scope,
         profile=profile,
@@ -292,6 +353,7 @@ def _seal_checkpoint(
         backbone_manifest_sha256=parent["backbone_manifest_sha256"],
         role="candidate",
         training={
+            **training_metadata,
             "parent_model_sha256": parent_model_sha256,
             "parent_weights_sha256": parent["weights_sha256"],
             "raw_manifest_sha256": converted["raw_manifest_sha256"],
@@ -322,11 +384,12 @@ def _seal_checkpoint(
     )
     write_json(destination / "model.json", model)
     model_sha = file_digest(destination / "model.json")
-    validate_model(destination, expected_scope=scope, expected_model_sha256=model_sha)
+    model_validator(destination, expected_scope=scope, expected_model_sha256=model_sha)
     write_json(
         output / "result.json",
         {
             **binding,
+            **(mode_metadata or {}),
             "optimizer_steps": step,
             "candidate": destination.relative_to(output).as_posix(),
             "model_manifest_sha256": model_sha,

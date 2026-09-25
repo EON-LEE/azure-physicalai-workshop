@@ -53,6 +53,7 @@ def fixture(root):
         loss=None,
         execution_timing="paused_simulation",
         real_time_admission=False,
+        timestamp_basis="simulation_time",
         raw_schema="physicalai.demonstrations/v3",
         conversion_schema="physicalai.lerobot-conversion/v3",
         criteria_sha256="d" * 64,

@@ -386,6 +386,41 @@ than supplying a reference action. This command path has CPU codec, actual
 Linux socket and schema tests; a trained paused checkpoint/CUDA execution is
 still required before claiming real model operation or quality.
 
+The paused training producer uses a closed discriminated variant of
+`physicalai.smolvla-azure/v2`: all of `execution_timing="paused_simulation"`,
+`real_time_admission=false`, `criteria_sha256` and `frozen_plan_sha256` must be
+present together. The latter is the **model-independent frozen scene/conditions
+plan**, not a native evaluation-plan hash. `job_deadline_utc` remains the original
+absolute wall-clock expiry. Snapshot/plan/job tags bind these fields and the
+actual `learning.paused.components` code. Legacy v2 without the discriminator
+keeps its previous real-time command; mixed/unknown fields and cross-mode job
+tags fail closed.
+
+```bash
+python -m learning.paused.prepare \
+  --model-source /approved/private-vendor/model \
+  --backbone-source /approved/private-vendor/backbone \
+  --binding /approved/paused-binding.json --output /approved/new-paused-initialization
+python -m learning.smolvla.azure \
+  --config /approved/paused-training-config.json \
+  --plan-dir /approved/new-offline-plan --job-name "$DETERMINISTIC_JOB_NAME"
+```
+
+Preparation only verifies/copies the pinned local private vendor bytes into a
+**train-only** checkpoint-v2 bundle; no inferred nine-dimensional vendor stats
+or ready-to-act candidate is manufactured. The binding additionally supplies
+the approved task, real new profile, current criteria and frozen conditions
+hashes. Actual training explicitly dispatches to `learning.paused.train`,
+validates raw-v3 conversion/profile/task/criteria lineage, and reuses the real
+`lerobot.scripts.lerobot_train` command. Initialization derives new nine-dimensional
+normalization from the train split; the existing pinned two-camera feature
+mapping, 50-action horizon, one consumed action and local backbone remain.
+Only actual changed parameter fingerprints and upstream optimizer markers seal
+a candidate-v2 manifest. All long phases remain bounded by the original UTC
+deadline supervisor; no automatic resume, publishing or paid submission occurs.
+At this producer milestone paused comparison jobs are explicitly blocked until
+their separate recording/evaluation producer is integrated.
+
 Preflight reads **the actual separate outbound-rule endpoint** through
 `client.workspace_outbound_rules.list(workspace_name=...)`. The default workspace
 GET projection is insufficient. Inactive/missing approved private endpoints

@@ -229,6 +229,13 @@ def running_job_binding(client, config: dict) -> dict:
             "config_schema": config["schema"],
             "job_deadline_utc": config["job_deadline_utc"],
         }
+        if "execution_timing" in config:
+            expected.update(
+                execution_timing=config["execution_timing"],
+                real_time_admission="false",
+                criteria_sha256=config["criteria_sha256"],
+                frozen_plan_sha256=config["frozen_plan_sha256"],
+            )
         require(
             all(
                 (job.tags or {}).get(key) == value
@@ -261,6 +268,13 @@ def job_tags(config: dict, snapshot_sha256: str, *, policy_type: str = POLICY_TY
     }
     if "job_deadline_utc" in config:
         tags.update(config_schema=config["schema"], job_deadline_utc=config["job_deadline_utc"])
+    if "execution_timing" in config:
+        tags.update(
+            execution_timing=config["execution_timing"],
+            real_time_admission="false",
+            criteria_sha256=config["criteria_sha256"],
+            frozen_plan_sha256=config["frozen_plan_sha256"],
+        )
     return tags
 
 
@@ -298,7 +312,12 @@ def build_job(
         }
 
     require(
-        command_module in ("learning.gr00t.components", "learning.smolvla.components"),
+        command_module
+        in (
+            "learning.gr00t.components",
+            "learning.smolvla.components",
+            "learning.paused.components",
+        ),
         "Arbitrary job entry points are forbidden",
     )
     base_command = f"python -m {command_module}"
@@ -594,6 +613,13 @@ class Gr00tJobs:
                 or (job.tags or {}).get("config_schema") == self.config["schema"]
             ),
             "Named job deadline does not match this approved config",
+        )
+        mode_fields = ("execution_timing", "criteria_sha256", "frozen_plan_sha256")
+        require(
+            all((job.tags or {}).get(key) == self.config.get(key) for key in mode_fields)
+            and (job.tags or {}).get("real_time_admission")
+            == ("false" if "execution_timing" in self.config else None),
+            "Named job mode/criteria/conditions differs from its approved config",
         )
 
     def status(self, job_name: str) -> dict:

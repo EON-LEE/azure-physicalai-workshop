@@ -91,15 +91,25 @@ def check_actual_cancel_sdk(config: dict) -> dict:
     }
 
 
-def run(output: Path, *, job_deadline_utc: str | None = None) -> dict:
+def run(output: Path, *, job_deadline_utc: str | None = None, paused: bool = False) -> dict:
     from azure.ai.ml import load_job
 
     require(not output.exists(), "Choose a new offline schema-check directory")
     config = example_config()
     if job_deadline_utc is not None:
         config.update(schema="physicalai.smolvla-azure/v2", job_deadline_utc=job_deadline_utc)
+    if paused:
+        require(
+            job_deadline_utc is not None, "Paused schema check requires an explicit UTC deadline"
+        )
+        config.update(
+            execution_timing="paused_simulation",
+            real_time_admission=False,
+            criteria_sha256="d" * 64,
+            frozen_plan_sha256="e" * 64,
+        )
     successes = []
-    for kind in ("train", "compare", "bootstrap_compare"):
+    for kind in ("train",) if paused else ("train", "compare", "bootstrap_compare"):
         current = copy.deepcopy(config)
         current["kind"] = kind
         if kind != "train":
@@ -129,6 +139,7 @@ def run(output: Path, *, job_deadline_utc: str | None = None) -> dict:
         "check": "real-azure-ai-ml-1.35.0-schema",
         "policy_type": "smolvla",
         "config_schema": config["schema"],
+        "execution_timing": config.get("execution_timing", "real_time"),
         "cancellation_sdk": check_actual_cancel_sdk(config),
         "schemas": successes,
         "cloud_calls": 0,
@@ -143,5 +154,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--job-deadline-utc")
+    parser.add_argument("--paused", action="store_true")
     args = parser.parse_args()
-    print(json.dumps(run(args.output, job_deadline_utc=args.job_deadline_utc), indent=2))
+    print(
+        json.dumps(
+            run(args.output, job_deadline_utc=args.job_deadline_utc, paused=args.paused), indent=2
+        )
+    )
