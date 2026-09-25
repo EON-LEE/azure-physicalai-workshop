@@ -5,8 +5,9 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from math import dist
+from pathlib import Path
 
-from learning.common import finite, vector
+from learning.common import file_digest, finite, require, vector
 from learning.contract import (
     DEFAULT_JOINT_VELOCITY_LIMITS,
     JOINT_NAMES,
@@ -23,6 +24,111 @@ MAX_REFERENCE_TRACE_INTERVALS = 300
 PLANNING_STEP_LIMITS = tuple(
     value * CONTROL_DT * REFERENCE_LIMIT_FRACTION for value in DEFAULT_JOINT_VELOCITY_LIMITS
 )
+GRASP_FRAME_VERSION = "franka-default-inner-pad-centroid/v1"
+GRASP_ASSET_SHA256 = "72956d2a7f0313d7effcff46c6b43ec616af8d2e1dd2055e4a152ad09767308e"
+GRASP_SOURCE_CALIBRATION_SHA256 = "8990211d9cbd4c19c99b0c496cf64a624acefc2b55dcbf406b7bef25e03f3a68"
+GRASP_CONTACT_PHASES = frozenset({"lower-to-part", "grasp", "lower-to-destination", "release"})
+TCP_TO_PAD_CENTROID_M = (0.000002636002657491832, 0.0, 0.002904602840903575)
+# Verified inner-triangle area centroid plus the authored finger origin, relative
+# to right_gripper (hand z=0.1 m, opposite hand x/y axes), not the whole-finger box.
+GRASP_ASSET_FILES = (
+    (
+        "Isaac/Robots/FrankaRobotics/FrankaPanda/franka.usd",
+        "33718d4409ffaee8140ec9ff2c17e8fc11de7b22bde992e9f0b85d0711a921e2",
+    ),
+    (
+        "Isaac/Robots/FrankaRobotics/FrankaPanda/Props/panda_leftfinger.usd",
+        "f44bb0ac9d905a243b43263d72eb344b0e88a42dc07469eafb47874ec75227d0",
+    ),
+    (
+        "Isaac/Robots/FrankaRobotics/FrankaPanda/Props/panda_rightfinger.usd",
+        "18d03137c2403524127f9a6e7db96780c1b663042563cba02cb14fa632e81850",
+    ),
+    (
+        "Isaac/Robots/FrankaRobotics/FrankaPanda/configuration/franka_robot_schema.usd",
+        "5ccff6da4abdb74deb90c4007df5edb3c5bcddc3b6eeed38682838eb55e28074",
+    ),
+)
+
+
+def reference_tcp_target(contact_point, orientation) -> tuple[float, float, float]:
+    point = vector(contact_point, 3, "desired reference contact point")
+    offset = _oriented_pad_offset(orientation)
+    return tuple(value - delta for value, delta in zip(point, offset, strict=True))
+
+
+def reference_contact_point(tcp_point, orientation) -> tuple[float, float, float]:
+    point = vector(tcp_point, 3, "measured reference TCP")
+    offset = _oriented_pad_offset(orientation)
+    return tuple(value + delta for value, delta in zip(point, offset, strict=True))
+
+
+def _oriented_pad_offset(orientation) -> tuple[float, float, float]:
+    w, x, y, z = vector(orientation, 4, "reference TCP orientation")
+    require(abs(w * w + x * x + y * y + z * z - 1) <= 1e-6, "A unit TCP orientation is required")
+    a, b, c = TCP_TO_PAD_CENTROID_M
+    tx, ty, tz = 2 * (y * c - z * b), 2 * (z * a - x * c), 2 * (x * b - y * a)
+    return (
+        a + w * tx + y * tz - z * ty,
+        b + w * ty + z * tx - x * tz,
+        c + w * tz + x * ty - y * tx,
+    )
+
+
+def verify_grasp_calibration_asset(
+    root: Path, asset: Path, archive_sha256: str, variants: dict[str, str]
+) -> dict:
+    require(
+        archive_sha256 == GRASP_ASSET_SHA256, "Reference grasp calibration asset archive mismatch"
+    )
+    require(
+        variants == {"Mesh": "Performance", "Gripper": "Default"},
+        "Reference grasp calibration requires the verified asset variants",
+    )
+    require(
+        root.is_absolute()
+        and root.is_dir()
+        and not root.is_symlink()
+        and asset.is_absolute()
+        and not asset.is_symlink(),
+        "Reference grasp calibration requires the verified local asset cache",
+    )
+    marker = root / ".complete"
+    require(
+        marker.is_file()
+        and not marker.is_symlink()
+        and marker.stat().st_size <= 128
+        and marker.read_text(encoding="ascii") == GRASP_ASSET_SHA256,
+        "Reference grasp calibration asset cache marker mismatch",
+    )
+    require(
+        asset.resolve() == (root / GRASP_ASSET_FILES[0][0]).resolve(),
+        "Reference grasp calibration root asset mismatch",
+    )
+    observed = {}
+    for relative, checksum in GRASP_ASSET_FILES:
+        path = root / relative
+        require(
+            path.is_file()
+            and not path.is_symlink()
+            and path.resolve().is_relative_to(root.resolve())
+            and path.stat().st_size <= 1024**2,
+            "Reference grasp calibration geometry is missing or unbounded",
+        )
+        require(
+            file_digest(path) == checksum, "Reference grasp calibration geometry checksum mismatch"
+        )
+        observed[relative] = checksum
+    return {
+        "calibration_id": GRASP_FRAME_VERSION,
+        "archive_sha256": GRASP_ASSET_SHA256,
+        "variants": dict(variants),
+        "verified_geometry_sha256": observed,
+        "tcp_frame": "right_gripper",
+        "contact_frame": "inner_pad_centroid",
+        "tcp_to_pad_centroid_m": TCP_TO_PAD_CENTROID_M,
+        "source_calibration_sha256": GRASP_SOURCE_CALIBRATION_SHA256,
+    }
 
 
 @dataclass(frozen=True)

@@ -314,6 +314,8 @@ def test_actual_learned_adapter_applies_model_targets_with_no_reference_controll
         raise AssertionError("A learned target must never use the reference trajectory planner")
 
     monkeypatch.setattr(adapter, "plan_reference_targets", forbidden_planner)
+    monkeypatch.setattr(adapter, "reference_tcp_target", forbidden_planner)
+    monkeypatch.setattr(adapter, "reference_contact_point", forbidden_planner)
     if unsafe:
         measured = tuple(cell.robot.get_joint_positions())
         model.predict_chunk = lambda observation: ((0.08,) + measured[1:],) * 16

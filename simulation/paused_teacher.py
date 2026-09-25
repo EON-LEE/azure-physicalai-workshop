@@ -17,6 +17,20 @@ PICK_PLACE_INSTRUCTION = (
 )
 
 
+def is_pick_place_task(
+    task: TaskDefinition | None, spec: SceneSpec, target_station_id: str
+) -> bool:
+    if task is None or task.task_id != PICK_PLACE_TASK_ID:
+        return False
+    if (
+        task.instruction != PICK_PLACE_INSTRUCTION
+        or task.goal_id != target_station_id
+        or target_station_id != spec.rejected_id
+    ):
+        raise ValueError("The direct reference route requires the exact approved task.")
+    return True
+
+
 class PausedReferenceTeacher:
     def __init__(
         self,
@@ -32,13 +46,7 @@ class PausedReferenceTeacher:
         self.spec = spec
         self.initial = initial
         self.wall_deadline_ns, self.clock_ns = wall_deadline_ns, clock_ns
-        if task is not None and task.task_id == PICK_PLACE_TASK_ID:
-            if (
-                task.instruction != PICK_PLACE_INSTRUCTION
-                or task.goal_id != target_station_id
-                or target_station_id != spec.rejected_id
-            ):
-                raise ValueError("The direct reference route requires the exact approved task.")
+        if is_pick_place_task(task, spec, target_station_id):
             self.route = PickPlaceRoute(
                 tcp,
                 initial.object_position,
@@ -63,7 +71,7 @@ class PausedReferenceTeacher:
         self.cached = None
         self.grasp_verified = False
 
-    def target(self, state: FrozenPhysicsState, *, tcp, finger_gap):
+    def target(self, state: FrozenPhysicsState, *, tcp, finger_gap, route_point=None):
         if self.clock_ns() >= self.wall_deadline_ns:
             raise RuntimeError("The original automated reference episode wall deadline expired.")
         state.validate()
@@ -98,7 +106,9 @@ class PausedReferenceTeacher:
             ):
                 raise RuntimeError("The actual reference lift did not verify a part grasp.")
             self.grasp_verified = True
-        self.cached = self.route.next_target(tcp, gap, state.object_position)
+        self.cached = self.route.next_target(
+            tcp if route_point is None else route_point, gap, state.object_position
+        )
         if self.route.done:
             self.cached = None
         return self.cached

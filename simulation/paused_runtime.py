@@ -73,10 +73,12 @@ class PausedReferenceRuntime:
             self.observation = observation
             self.episode.observation_ready(self.episode.freeze_id, current)
             phase = self.teacher.route.current.name if not self.teacher.route.done else None
+            tcp = self.hardware._measured_tcp()
             planned = self.teacher.target(
                 current,
-                tcp=self.hardware._measured_tcp(),
+                tcp=tcp,
                 finger_gap=sum(current.joint_positions[7:]),
+                route_point=self.hardware.paused_reference_route_point(tcp, phase),
             )
             if planned is None:
                 if not self.hardware.paused_goal_reached():

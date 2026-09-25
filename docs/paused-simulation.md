@@ -190,6 +190,49 @@ values are stiffness 400, damping 80 and maximum force 7.2. These are **asset
 parameters**, not verified effective runtime gains or measured forces. The
 existing nine-target action contract is unchanged.
 
+### Asset-calibrated teacher contact frame
+
+The canonical paused teacher uses `franka-default-inner-pad-centroid/v1` only
+for `lower-to-part`, `grasp`, `lower-to-destination` and `release`. Its desired
+point is the contact-pad centre/object centre, not a renamed measured TCP.
+The verified inward source-triangle area centroids and authored joint origin
+give a pad-centre offset from `right_gripper` of
+`(0.000002636002657491832, 0, 0.002904602840903575)` metres in TCP coordinates.
+The command subtracts that offset rotated by the **desired** TCP orientation.
+At the down-facing orientation the TCP goal is about 2.9046 mm above the
+unchanged object-centre goal; a rotated orientation rotates the correction
+instead of applying a blind world-Z offset.
+
+Arrival/dwell compares against the inverse contact point computed from the
+**actual measured** TCP orientation. Grasp proof and the measured speed/workspace
+watchdogs continue to use the original `right_gripper` TCP. Approach, carry/lift
+clearance, transit and retreat keep their existing TCP targets. The release
+contact target stays in the calibrated frame until retreat so the object goal
+does not shift when opening begins. All resulting joint targets still pass the
+shared tracking/slew/FK planner, and the exact issued nine-joint vectors remain
+the raw action labels. No learned output or legacy inspection route is mapped
+through this teacher calibration.
+
+Before using the calibration, the runtime checks the exact approved archive
+identity and completed-cache marker, the root USD and both finger geometry
+checksums, the robot-schema layer checksum, and the loaded `Mesh=Performance` /
+`Gripper=Default` variants. Missing or changed identity fails explicitly instead
+of falling back to uncalibrated motion. Private diagnostics identify both
+command/reference frames, measured TCP/reference points, calibration version
+and verified asset identity. The measured frame, physical gains, damping,
+force caps, material, object mass and all admission criteria are unchanged.
+
+Offline analysis of actual attempt 04 used its recorded cube quaternion, not
+an upright assumption: at physics step 1,190 the cube was tilted about 30.64
+degrees. Clipping the verified inward source triangles against that oriented
+cube gave about 1.50% left-pad and 20.71% right-pad source-area intersection.
+During closure the pad centres were within about 1.5--2.1 mm of the part centre;
+by the failed lift they were about 34.6 mm above it. This is consistent with
+slip/roll during lifting, not a large static TCP error. These are source-mesh
+geometry calculations, **not** cooked contact manifolds or force measurements.
+The small frame correction is verified calibration, but is not claimed to cure
+the slip or to establish successful grasp, placement or 30-second completion.
+
 ## Reference capture vertical slice
 
 `SimulatorRuntime` dispatches only a separately authorized

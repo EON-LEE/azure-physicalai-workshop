@@ -43,6 +43,9 @@ def running(paused_core):
         def _measured_tcp(self):
             return (0.35, 0.25, 0.38)
 
+        def paused_reference_route_point(self, tcp, phase):
+            return tcp
+
         def paused_reference_targets(self, point, closed, *, phase, control_tick):
             return JOINTS
 
@@ -280,6 +283,9 @@ def test_main_runtime_dispatches_real_paused_reference_and_finishes_capture_off_
 
         def _measured_tcp(self):
             return (0.35, 0.25, 0.38)
+
+        def paused_reference_route_point(self, tcp, phase):
+            return tcp
 
         def paused_reference_targets(self, point, closed, *, phase, control_tick):
             if fault == "proposal" and control_tick == 2:

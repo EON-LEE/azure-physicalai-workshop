@@ -74,14 +74,19 @@ from simulation.motion import (
 )
 from simulation.paused_control import FrozenPhysicsState
 from simulation.paused_observation import PausedPublication, PausedPublicationCache
+from simulation.paused_teacher import is_pick_place_task
 from simulation.physics_scheduling import physics_scheduling_readback, require_control_scheduling
 from simulation.policy_executor import PolicyExecutor
 from simulation.reference_targets import (
+    GRASP_CONTACT_PHASES,
     MAX_REFERENCE_TRACE_INTERVALS,
     REFERENCE_LIMIT_FRACTION,
     plan_reference_targets,
+    reference_contact_point,
     reference_gripper_targets,
+    reference_tcp_target,
     reference_tracking_violations,
+    verify_grasp_calibration_asset,
 )
 from simulation.runtime_contracts import PolicyCommand, TeachingStart
 
@@ -139,6 +144,7 @@ class IsaacWorkcell:
         self._reference_target_trace: list[dict] = []
         self._paused_camera_diagnostic: dict = {}
         self._gripper_asset_evidence: dict = {}
+        self._grasp_frame_binding: dict | None = None
 
     def load(self, spec: SceneSpec) -> None:
         self._validate_asset_bundle()
@@ -148,6 +154,7 @@ class IsaacWorkcell:
         self._reference_target_trace = []
         self._paused_camera_diagnostic = {}
         self._gripper_asset_evidence = {}
+        self._grasp_frame_binding = None
         self.parked_state = None
         self.paused_publications = PausedPublicationCache()
         if self.world is not None and can_reset_in_place(self.spec, spec):
@@ -582,6 +589,23 @@ class IsaacWorkcell:
                 "A paused learned episode cannot select the scripted reference servo."
             )
         self.spec.require_paused_authority()
+        self._grasp_frame_binding = None
+        if is_pick_place_task(request.task, self.spec, request.target_station_id):
+            try:
+                variant_sets = self.world.stage.GetPrimAtPath(self.robot.prim_path).GetVariantSets()
+                self._grasp_frame_binding = verify_grasp_calibration_asset(
+                    Path(os.environ.get("FRANKA_ASSET_ROOT", "")),
+                    Path(os.environ.get("FRANKA_USD_PATH", "")),
+                    os.environ.get("FRANKA_ASSET_SHA256", ""),
+                    {
+                        name: variant_sets.GetVariantSet(name).GetVariantSelection()
+                        for name in ("Mesh", "Gripper")
+                    },
+                )
+            except (AttributeError, OSError, RuntimeError) as exc:
+                raise ValueError(
+                    "The verified reference grasp calibration asset is unavailable."
+                ) from exc
         self._check_control_scheduling("command_start")
         self.control_mode = "paused_simulation"
         self.control_done = False
@@ -619,6 +643,15 @@ class IsaacWorkcell:
         self.paused_measured_success = False
         self._gripper_asset_evidence = self._read_gripper_asset_evidence()
         self.world.play()
+
+    def paused_reference_route_point(self, tcp, phase) -> tuple[float, float, float]:
+        if self._grasp_frame_binding is None or phase not in GRASP_CONTACT_PHASES:
+            return tcp
+        base_position, base_orientation = self.robot.get_world_pose()
+        self.kinematics.set_robot_base_pose(base_position, base_orientation)
+        _, rotation = self.articulation_kinematics.compute_end_effector_pose()
+        orientation = tuple(float(value) for value in rot_matrix_to_quat(rotation))
+        return reference_contact_point(tcp, orientation)
 
     @staticmethod
     def _drive_field_readback(values, name: str) -> dict:
@@ -808,12 +841,26 @@ class IsaacWorkcell:
                 "reference measured velocities",
             )
             point = vector(point, 3, "reference Cartesian target")
-            diagnostic["cartesian_target"] = point
+            contact_phase = self._grasp_frame_binding is not None and phase in GRASP_CONTACT_PHASES
+            diagnostic["reference_target_frame"] = (
+                "inner_pad_centroid" if contact_phase else "right_gripper"
+            )
+            diagnostic["reference_target_position"] = point
+            diagnostic["measured_tcp_frame"] = "right_gripper"
+            diagnostic["measured_tcp"] = self._measured_tcp()
+            diagnostic["measured_route_point"] = self.paused_reference_route_point(
+                diagnostic["measured_tcp"], phase
+            )
             diagnostic["orientation_previous"] = self.orientation_target
             self.orientation_target = rotate_toward(
                 self.orientation_target, (0.0, 0.0, 1.0, 0.0), 0.5 / 10
             )
             diagnostic["orientation_target"] = self.orientation_target
+            tcp_target = (
+                reference_tcp_target(point, self.orientation_target) if contact_phase else point
+            )
+            diagnostic["cartesian_target"] = tcp_target
+            diagnostic["cartesian_target_frame"] = "right_gripper"
             policy = self.controller.get_articulation_motion_policy()
             diagnostic["rmp_dt"] = finite(policy.get_default_physics_dt(), "RMP integration dt")
             diagnostic["rmp_maximum_substep_size"] = finite(
@@ -830,7 +877,7 @@ class IsaacWorkcell:
                 "and the declared 0.1s horizon",
             )
             proposed = self.controller.forward(
-                target_end_effector_position=np.array(point),
+                target_end_effector_position=np.array(tcp_target),
                 target_end_effector_orientation=np.array(self.orientation_target),
             )
             if proposed.joint_positions is None:
@@ -915,6 +962,7 @@ class IsaacWorkcell:
             "intervals": deepcopy(self._reference_target_trace),
             "max_retained_intervals": MAX_REFERENCE_TRACE_INTERVALS,
             "gripper_asset": deepcopy(self._gripper_asset_evidence),
+            "grasp_frame_calibration": deepcopy(self._grasp_frame_binding),
         }
 
     def apply_paused_tick(self, targets: tuple[float, ...]) -> AppliedControl:
