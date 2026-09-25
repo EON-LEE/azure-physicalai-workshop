@@ -6,7 +6,7 @@ Real-time reference behavior, raw v1/v2 semantics and real-time policy
 admission remain unchanged. No GPU execution or dataset is authorized by
 these source changes.
 
-The frozen profile identifier is `franka-position-hold-10hz-paused-v1`.
+The original profile identifier is `franka-position-hold-10hz-paused-v1`.
 Every new command/artifact must explicitly declare
 `execution_timing: "paused_simulation"` and `real_time_admission: false`.
 Authorization also requires a newly saved, versioned
@@ -22,6 +22,23 @@ Only `inspection-cell-learning-v1` may declare it. `SceneRegistry` decodes
 these validated values into immutable `PausedSceneAuthority`; requested wall
 and six-tick-aligned simulation budgets cannot exceed the lower saved limits.
 A budget change creates a new environment revision and scene binding.
+
+The separately approved v2 pair is `schema="physicalai.paused-simulation/v2"`
+with `profile_id="franka-position-hold-10hz-paused-v2"` and an explicit
+`max_simulation_seconds` of 1..60. The wall ceiling stays 600 seconds. A v1
+schema with the v2 profile, the inverse combination, or an unknown version is
+rejected even if a small requested budget would fit both. Legacy real-time
+commands and v1 keep their original 30-second/1,800-tick ceiling.
+
+Native `PausedControlProfile` requires the closed ID/ceiling pairs v1/1,800 or
+v2/3,600; omission still selects v1. The pure driver receives the trusted
+installed profile rather than a raised global maximum. Commands, resolved
+grants, metrics, saved scenes, model manifests, capture and acceptance must
+agree on the version and whole-profile hash. `ResolvedSimulationAuthorization`
+omits the default v1 `profile_id` when serializing historical wire shapes,
+but includes explicit v2. This never changes the SHA of an original grant file.
+New v2 criteria and saved case revisions are required before execution; an old
+v1 failure or capture cannot be renamed, extended or promoted into v2.
 
 ## Physics and wall time are independent
 
@@ -41,7 +58,7 @@ Frozen upper bounds, intersected with lower approved environment/command limits:
 | Policy pending, original absolute deadline | 2,000 ms wall time |
 | Held-six-tick subwindow, intersected with the original whole interval | 2,000 ms wall time |
 | Whole observation through all six applied ticks | 5,000 ms wall time |
-| Automated episode | 600 seconds wall time and 1,800 actual physics ticks |
+| Automated episode | 600 seconds wall; v1 at most 1,800 ticks, explicit v2 at most 3,600 |
 | Main-thread heartbeat / blocking SDK work | 2,000 ms wall time |
 | Human session and positive jog authority | Existing 300 s / 250 ms wall limits |
 
@@ -80,6 +97,7 @@ error. This fixes reporting of ordinary accumulation drift without extending
 the task, operation or heartbeat deadlines. At the last allowed tick the
 measured goal may succeed; otherwise the strict cap ends the episode and any
 valid completed capture remains truncated, with no 1,801st step.
+The same rule applies at v2's 3,600-tick/60-second boundary without a 3,601st step.
 
 ### Reference-expert target generation
 
@@ -119,7 +137,7 @@ issued bounded teacher target**, never the raw RMP endpoint. No learned output
 uses this planner, and the legacy 60 Hz reference path is unchanged.
 
 The private operator receipt includes `reference_target_evidence`: an independent
-latest-attempt snapshot and at most 300 completed-interval snapshots. They retain
+latest-attempt snapshot and at most 300 v1 or 600 v2 completed-interval snapshots. They retain
 phase/tick, measured q/qdot, previous issued targets, native RMP positions and
 velocities, Cartesian/orientation goals, unchanged limits, limiting joints,
 arm-path fractions, FK displacement and actual issued targets/held ticks.
@@ -462,6 +480,13 @@ bindings, plus the unchanged physical limits. `accepted` here is explicitly
 non-real-time reference-capture evidence, not a learned-model or real-time gate.
 Host orchestration must also retain all failure logs/receipts, check the
 independent shutdown deadline and restore/deallocate resources as authorized.
+
+The private attempt reader selects its limit from the **trusted saved scene's**
+profile: the original 4 MiB ceiling for v1, and an explicit 8 MiB ceiling for v2's
+complete 600-interval proof. The decoded profile and hash must still match.
+This is not a global JSON-reader increase and does not truncate bad trials or
+drop applied controls. Raw v3/model v2/IPC v2 schemas remain profile-bound and
+otherwise unchanged.
 
 `paused_servo_sha256()` separately fingerprints the paused driver, worker,
 teacher, observation proof, contracts, capture, probe/authority code and shared

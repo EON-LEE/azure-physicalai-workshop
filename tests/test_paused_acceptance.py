@@ -32,6 +32,7 @@ def report(paused_core):
         "command_id": str(request.command_id),
         "simulator_image_digest": "sha256:" + "b" * 64,
         "control_profile_sha256": core.paused_profile.sha256,
+        "control_profile": asdict(core.paused_profile),
         "criteria_sha256": "c" * 64,
         "frozen_plan_sha256": "d" * 64,
         "physical_task_success": True,

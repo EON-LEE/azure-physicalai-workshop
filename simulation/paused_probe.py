@@ -14,12 +14,13 @@ from uuid import uuid4
 
 from apps.api.models import EnvironmentRecord, utcnow
 from learning.common import read_json, require
-from learning.paused import PausedControlProfile, protocol_schemas
+from learning.paused import protocol_schemas
 from simulation.capture_status import CaptureStatusStore
 from simulation.core import SimulationCore
 from simulation.extensions import SceneRegistry
 from simulation.paused_configuration import OperatorPausedAuthority, paused_servo_sha256
 from simulation.paused_contracts import SimulationEpisodeCommand
+from simulation.paused_profiles import paused_profile
 from simulation.probe_control import _close_application, _persist_receipt, initialize_probe_assets
 from simulation.run_isaac import SimulatorRuntime, create_simulation_app
 
@@ -41,7 +42,10 @@ def arguments(argv=None):
 
 def run(args) -> dict:
     environment = EnvironmentRecord.model_validate(read_json(args.environment_record))
-    profile = PausedControlProfile(paused_servo_sha256())
+    scene_authority = (
+        SceneRegistry(load_installed=False).build(environment).require_paused_authority()
+    )
+    profile = paused_profile(paused_servo_sha256(), scene_authority.profile_id)
     authority = OperatorPausedAuthority.load(
         args.operator_grant,
         args.grant_sha256,

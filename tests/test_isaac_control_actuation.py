@@ -846,7 +846,7 @@ def test_paused_reference_trace_capacity_fails_before_a_new_plan_without_discard
 ):
     cell, _, _ = paused_hardware
     assert cell.reference_target_evidence()["max_retained_intervals"] == 300
-    monkeypatch.setattr(sys.modules["simulation.isaac_adapter"], "MAX_REFERENCE_TRACE_INTERVALS", 1)
+    monkeypatch.setattr(cell, "_reference_trace_limit", lambda: 1)
     targets = cell.paused_reference_targets(
         (0.35, 0.25, 0.31), False, phase="source_approach", control_tick=0
     )
@@ -862,10 +862,15 @@ def test_paused_reference_trace_capacity_fails_before_a_new_plan_without_discard
     assert cell.controller.forward_calls == 1
 
 
+@pytest.mark.parametrize("version,frames,limit_mib", [(1, 300, 4), (2, 600, 8)])
 def test_maximum_private_reference_trace_and_all_six_tick_controls_fit_the_receipt_limit(
-    paused_hardware, tmp_path
+    paused_hardware,
+    tmp_path,
+    version,
+    frames,
+    limit_mib,
 ):
-    from learning.common import read_json
+    from simulation.paused_profiles import paused_profile, read_paused_attempt
     from simulation.probe_control import _persist_receipt
 
     cell, _, _ = paused_hardware
@@ -897,8 +902,12 @@ def test_maximum_private_reference_trace_and_all_six_tick_controls_fit_the_recei
     controls = [asdict(cell.apply_paused_tick(targets)) for _ in range(6)]
     trace = cell.reference_target_evidence()["intervals"][0]
     assert len(trace["limit_violations"]) == 14
-    # Synthetic serialization stress only: 300 full-length records with all
+    # Synthetic serialization stress only: full-length records with all
     # seven arm joints violating both raw-proposal envelopes, never GPU data.
+    profile_id = f"franka-position-hold-10hz-paused-v{version}"
+    profile = paused_profile("a" * 64, profile_id)
+    cell.control_profile = profile
+    assert cell.reference_target_evidence()["max_retained_intervals"] == frames
     interval = {
         "freeze_id": "12345678-1234-1234-1234-123456789012",
         "observation_physics_step": 1860,
@@ -912,21 +921,26 @@ def test_maximum_private_reference_trace_and_all_six_tick_controls_fit_the_recei
     }
     report = {
         "schema": "physicalai.paused-reference-attempt/v1",
+        "execution_timing": "paused_simulation",
+        "real_time_admission": False,
+        "control_profile": asdict(profile),
+        "control_profile_sha256": profile.sha256,
         "physical_status": "failed",
-        "metrics": {"intervals": [interval] * 300},
+        "metrics": {"intervals": [interval] * frames},
         "reference_target_evidence": {
             "latest": trace,
-            "intervals": [trace] * 300,
-            "max_retained_intervals": 300,
+            "intervals": [trace] * frames,
+            "max_retained_intervals": frames,
         },
         "reserved_other_receipt_metadata": "x" * (64 * 1024),
     }
     path = tmp_path / "bounded-receipt.json"
     _persist_receipt(path, report)
     size = path.stat().st_size
-    assert size < 4 * 1024 * 1024
-    assert len(read_json(path)["reference_target_evidence"]["intervals"]) == 300
-    print(f"MAX_REFERENCE_RECEIPT_BYTES={size}")
+    assert size < limit_mib * 1024 * 1024
+    decoded = read_paused_attempt(path, expected_profile_id=profile_id)
+    assert len(decoded["reference_target_evidence"]["intervals"]) == frames
+    print(f"V{version}_MAX_REFERENCE_RECEIPT_BYTES={size}")
 
 
 @pytest.mark.parametrize(

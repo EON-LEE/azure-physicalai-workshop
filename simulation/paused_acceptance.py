@@ -11,14 +11,26 @@ from apps.api.errors import Problem
 from apps.api.models import EnvironmentRecord
 from learning.common import canonical, digest, finite, integer, read_json, require, sha256, vector
 from learning.contract import Scope
+from learning.paused import PausedControlProfile
 from learning.paused.capture import validate_dataset
 from simulation.extensions import SceneRegistry
 from simulation.paused_gripper_servo import validate_servo_receipt
+from simulation.paused_profiles import read_paused_attempt
 
 
 def validate_attempt(report: dict, *, environment: EnvironmentRecord, mode: str) -> dict:
     spec = SceneRegistry(load_installed=False).build(environment)
     authority = spec.require_paused_authority()
+    require(
+        isinstance(report.get("control_profile"), dict), "An explicit report profile is required"
+    )
+    profile = PausedControlProfile(**report["control_profile"])
+    profile.validate()
+    require(
+        profile.profile_id == authority.profile_id
+        and report.get("control_profile_sha256") == profile.sha256,
+        "Report profile differs from the explicitly versioned scene",
+    )
     require(
         report.get("schema") == "physicalai.paused-reference-attempt/v1"
         and report.get("execution_timing") == "paused_simulation"
@@ -40,7 +52,9 @@ def validate_attempt(report: dict, *, environment: EnvironmentRecord, mode: str)
     )
     metrics = report.get("metrics")
     require(isinstance(metrics, dict), "Missing actual paused timing metrics")
-    steps = integer(metrics.get("simulation_steps"), "actual simulation steps", 12, 1800)
+    steps = integer(
+        metrics.get("simulation_steps"), "actual simulation steps", 12, profile.max_simulation_steps
+    )
     require(
         0
         < finite(metrics.get("wall_elapsed_ms"), "wall duration")
@@ -147,8 +161,11 @@ def main() -> None:
     parser.add_argument("--mode", choices=("mechanics", "reference-task"), required=True)
     args = parser.parse_args()
     try:
-        report = read_json(args.report)
         environment = EnvironmentRecord.model_validate(read_json(args.environment_record))
+        authority = (
+            SceneRegistry(load_installed=False).build(environment).require_paused_authority()
+        )
+        report = read_paused_attempt(args.report, expected_profile_id=authority.profile_id)
         result = validate_attempt(report, environment=environment, mode=args.mode)
         raw = validate_dataset(
             args.dataset_root,

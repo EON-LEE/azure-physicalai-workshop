@@ -50,7 +50,12 @@ from learning.contract import (
     Scope,
 )
 from learning.inference import PolicyObservation
-from learning.paused import FrozenCameraSample, FrozenPolicyObservation, InitialFrozenPublication
+from learning.paused import (
+    FrozenCameraSample,
+    FrozenPolicyObservation,
+    InitialFrozenPublication,
+    PausedControlProfile,
+)
 from simulation.asset_references import validate_usd_bundle
 from simulation.camera_observation import (
     camera_evidence,
@@ -966,10 +971,10 @@ class IsaacWorkcell:
                 isinstance(phase, str) and 0 < len(phase) <= 64, "A reference phase is required"
             )
             require(
-                len(self._reference_target_trace) < MAX_REFERENCE_TRACE_INTERVALS,
+                len(self._reference_target_trace) < self._reference_trace_limit(),
                 "The bounded reference trace cannot discard previous actual intervals",
             )
-            integer(control_tick, "reference control tick", 0, MAX_REFERENCE_TRACE_INTERVALS - 1)
+            integer(control_tick, "reference control tick", 0, self._reference_trace_limit() - 1)
             joints = vector(
                 tuple(float(value) for value in self.robot.get_joint_positions()),
                 9,
@@ -1101,10 +1106,15 @@ class IsaacWorkcell:
         return {
             "latest": deepcopy(self.reference_target_diagnostic),
             "intervals": deepcopy(self._reference_target_trace),
-            "max_retained_intervals": MAX_REFERENCE_TRACE_INTERVALS,
+            "max_retained_intervals": self._reference_trace_limit(),
             "gripper_asset": deepcopy(self._gripper_asset_evidence),
             "grasp_frame_calibration": deepcopy(self._grasp_frame_binding),
         }
+
+    def _reference_trace_limit(self) -> int:
+        if isinstance(self.control_profile, PausedControlProfile):
+            return self.control_profile.max_frames
+        return MAX_REFERENCE_TRACE_INTERVALS
 
     def apply_paused_tick(self, targets: tuple[float, ...]) -> AppliedControl:
         self._check_control_scheduling("before_control_tick")

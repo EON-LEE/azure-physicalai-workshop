@@ -222,3 +222,78 @@ def test_only_explicit_v2_private_attempts_have_an_eight_mib_read_budget(
     else:
         with pytest.raises(ValueError):
             read_paused_attempt(path, expected_profile_id=profile_id)
+
+
+def test_v2_physical_gate_accepts_complete_600_intervals_only_for_the_new_scene_and_profile(
+    paused_core,
+):
+    from copy import deepcopy
+
+    from test_paused_acceptance import report
+
+    from simulation.paused_acceptance import validate_attempt
+
+    old_environment, value = report(paused_core)
+    document = paused_v2_document()
+    document["execution"].update(record_demonstration=True, demonstration_split="test")
+    _, environment = scene(document)
+    profile = paused_profile("a" * 64, CONTROL_PROFILE_V2_ID)
+    value.update(
+        environment_id=environment.environment_id,
+        revision=environment.revision,
+        control_profile=asdict(profile),
+        control_profile_sha256=profile.sha256,
+    )
+    value["gripper_servo"]["owner"].update(
+        environment_id=environment.environment_id, revision=environment.revision
+    )
+    interval = value["metrics"]["intervals"][0]
+    value["metrics"].update(
+        simulation_steps=3600,
+        simulation_elapsed_seconds=60.0,
+        intervals=[
+            {
+                **interval,
+                "observation_physics_step": 60 + index * 6,
+                "completed_physics_step": 66 + index * 6,
+            }
+            for index in range(600)
+        ],
+    )
+    value["capture"]["receipt"]["frame_count"] = 600
+    assert validate_attempt(value, environment=environment, mode="reference-task")["accepted"]
+    with pytest.raises(ValueError):
+        validate_attempt(value, environment=old_environment, mode="reference-task")
+    mislabeled = deepcopy(value)
+    old_profile = paused_profile("a" * 64)
+    mislabeled.update(
+        control_profile=asdict(old_profile), control_profile_sha256=old_profile.sha256
+    )
+    with pytest.raises(ValueError):
+        validate_attempt(mislabeled, environment=environment, mode="reference-task")
+
+
+def test_versioned_pure_driver_stops_before_a_3601st_tick():
+    from test_paused_control import ready, tick
+
+    profile = paused_profile("a" * 64, CONTROL_PROFILE_V2_ID)
+    current = state()
+    clock = [1_000_000_000]
+    driver = PausedEpisode(
+        current,
+        wall_deadline_ns=601_000_000_000,
+        max_simulation_steps=3600,
+        authorized=lambda: True,
+        clock_ns=lambda: clock[0],
+        profile=profile,
+    )
+    for _ in range(600):
+        ready(driver, current, clock, observe_ms=1, predict_ms=1)
+        for _ in range(6):
+            current, _ = tick(driver, current, clock, wall_ms=1)
+    assert driver.metrics()["simulation_elapsed_seconds"] == 60.0
+    assert driver.metrics()["simulation_steps"] == 3600
+    with pytest.raises(RuntimeError, match="budget"):
+        driver.begin_observation(current)
+    with pytest.raises(RuntimeError):
+        driver.before_tick(current)

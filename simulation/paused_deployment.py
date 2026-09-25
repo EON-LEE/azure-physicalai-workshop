@@ -21,6 +21,7 @@ from simulation.paused_configuration import (
     PausedOperatorGrant,
     paused_servo_sha256,
 )
+from simulation.paused_profiles import paused_profile
 from simulation.runtime_configuration import _read_pinned
 
 
@@ -57,6 +58,7 @@ class InstalledPausedPolicyProvider:
             and permit.control_profile_sha256 == profile.sha256,
             "The installed paused authority differs from the actual runtime/profile",
         )
+        require(permit.profile_id == profile.profile_id, "Installed paused profile versions differ")
         require(
             permit.controller == "learned"
             and permit.policy_type == "smolvla"
@@ -147,5 +149,8 @@ def load_paused_policy_deployment():
         return None, None
     if not path or not checksum:
         raise ValueError("Paused learned deployment requires a pinned catalogue and checksum.")
-    profile = PausedControlProfile(paused_servo_sha256())
+    catalogue = PausedPolicyCatalogue.model_validate(_read_pinned(Path(path), checksum))
+    profile_ids = {entry.grant.authorization.profile_id for entry in catalogue.policies}
+    require(len(profile_ids) == 1, "Installed paused policies cannot mix profile versions")
+    profile = paused_profile(paused_servo_sha256(), next(iter(profile_ids)))
     return profile, InstalledPausedPolicyProvider.load(Path(path), checksum, profile)
