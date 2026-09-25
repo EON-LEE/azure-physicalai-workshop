@@ -244,8 +244,12 @@ def test_parent_frozen_two_second_hold_cap_intersects_the_original_whole_interva
 def test_delayed_driver_start_cannot_renew_or_hide_original_admission_wall_time():
     initial = state()
     runtime = PausedEpisode(
-        initial, started_ns=1_000_000_000, wall_deadline_ns=601_000_000_000,
-        max_simulation_steps=1800, authorized=lambda: True, clock_ns=lambda: 1_500_000_000,
+        initial,
+        started_ns=1_000_000_000,
+        wall_deadline_ns=601_000_000_000,
+        max_simulation_steps=1800,
+        authorized=lambda: True,
+        clock_ns=lambda: 1_500_000_000,
     )
     assert runtime.metrics()["wall_elapsed_ms"] == 500
     assert runtime.started_ns == 1_000_000_000
