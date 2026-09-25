@@ -107,7 +107,10 @@ class PausedReferenceTeacher:
                 raise RuntimeError("The actual reference lift did not verify a part grasp.")
             self.grasp_verified = True
         self.cached = self.route.next_target(
-            tcp if route_point is None else route_point, gap, state.object_position
+            tcp if route_point is None else route_point,
+            gap,
+            state.object_position,
+            grasp_verified=self.grasp_verified,
         )
         if self.route.done:
             self.cached = None

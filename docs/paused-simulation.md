@@ -187,8 +187,19 @@ first moves vertically to clearance before lateral approach. Transfers stay
 at clearance; descent/ascent occur only in the source/drop corridors. These
 tool/payload bounds are **not** whole-arm collision or pad-contact certification.
 The lift still needs actual measured part height, TCP proximity and finger gap
-before transport. Neither speed limits nor the 30 simulation-second deadline
-are increased; a nominal CPU route duration is not actual actuator admission.
+before transport. Neither speed limits nor the selected profile's simulation
+deadline are increased by the route; a nominal CPU duration is not actual actuator admission.
+
+For this exact task, `lower-to-destination` arrives only when the commanded
+route target has reached the unchanged goal, grasp was previously verified,
+the current finger gap remains within 0.005..0.055 m, measured part X/Y are each
+within the existing 0.04 m goal tolerance, and part Z is within the existing
+strict 0.012 m waypoint tolerance. The existing waypoint dwell still applies.
+This avoids demanding unnecessary tool X/Y precision after the object reaches
+the placement volume. It is a measured near-placement condition, not a contact
+sensor or support-force claim. Legacy `InspectionRoute` arrival is unchanged.
+Advancing to release is not success: actual opening, TCP separation/retreat,
+part settling and the final physical goal checks remain required.
 
 The actual source `687fabd` attempt reached 279 intervals/1,674 physics ticks
 before failing grasp verification. The part finished at its source height

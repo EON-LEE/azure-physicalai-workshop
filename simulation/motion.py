@@ -126,7 +126,12 @@ class InspectionRoute:
         return self.points[self.index]
 
     def next_target(
-        self, measured: Point, finger_gap: float, part_position: Point
+        self,
+        measured: Point,
+        finger_gap: float,
+        part_position: Point,
+        *,
+        grasp_verified: bool = False,
     ) -> tuple[Point, bool]:
         if not isfinite(finger_gap) or finger_gap < -1e-5:
             raise ValueError("Measured gripper opening must be finite and nonnegative.")
@@ -138,10 +143,7 @@ class InspectionRoute:
         grip_ready = (waypoint.name != "grasp" or finger_gap <= 0.055) and (
             waypoint.name != "release" or finger_gap >= 0.07
         )
-        arrived = dist(measured, waypoint.position) < 0.012
-        if waypoint.name == "release":
-            # Opening the fingers can displace the wrist through contact with the platform.
-            arrived = dist(part_position, waypoint.position) < 0.04
+        arrived = self._arrived(waypoint, measured, finger_gap, part_position, grasp_verified)
         if dist(self.target, waypoint.position) < 1e-6 and arrived and grip_ready:
             self.settled += self.dt
             if self.settled >= waypoint.settle_seconds:
@@ -150,6 +152,19 @@ class InspectionRoute:
         else:
             self.settled = 0.0
         return self.target, waypoint.closed
+
+    def _arrived(
+        self,
+        waypoint: Waypoint,
+        measured: Point,
+        finger_gap: float,
+        part_position: Point,
+        grasp_verified: bool,
+    ) -> bool:
+        if waypoint.name == "release":
+            # Opening the fingers can displace the wrist through contact with the platform.
+            return dist(part_position, waypoint.position) < 0.04
+        return dist(measured, waypoint.position) < 0.012
 
 
 class PickPlaceRoute(InspectionRoute):
@@ -194,3 +209,23 @@ class PickPlaceRoute(InspectionRoute):
             Waypoint("release", destination, False, 0.6),
             Waypoint("retreat", (destination[0], destination[1], lift), False, 0.2),
         )
+
+    def _arrived(
+        self,
+        waypoint: Waypoint,
+        measured: Point,
+        finger_gap: float,
+        part_position: Point,
+        grasp_verified: bool,
+    ) -> bool:
+        if waypoint.name == "lower-to-destination":
+            return (
+                grasp_verified is True
+                and 0.005 <= finger_gap <= 0.055
+                and all(
+                    abs(actual - goal) <= 0.04
+                    for actual, goal in zip(part_position[:2], waypoint.position[:2], strict=True)
+                )
+                and abs(part_position[2] - waypoint.position[2]) < 0.012
+            )
+        return super()._arrived(waypoint, measured, finger_gap, part_position, grasp_verified)
