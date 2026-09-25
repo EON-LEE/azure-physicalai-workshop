@@ -106,11 +106,22 @@ holds for exactly six actual 60 Hz physics steps. Wall-clock budgets and
 simulation-time limits are recorded separately, and its versioned data, models
 and results cannot qualify a real-time controller. Actual Azure runs have
 exercised this path's camera, frozen-state, actuation and manifest-last storage.
-The latest recorded reference attempt applied 1,110 physics ticks and lifted
-the part approximately 29 mm, then failed the unchanged 50 mm grasp criterion.
-Its 185 captured frames are retained as truncated integration/test evidence,
-not successful demonstrations or training data. This path has not yet completed
-a successful full-task demonstration, policy training or paired physical acceptance.
+Early attempts lifted the part approximately 29 mm and failed the unchanged
+50 mm grasp criterion. Later, an explicitly verified single-finger servo
+calibration retained the authored force cap and achieved measured grasp,
+lift and transport into the destination volume. Release and full-task
+acceptance were still not established; failed and truncated captures remain
+integration/test evidence, not training data.
+
+The separate, explicitly selected paused v2 profile permits 60 simulation
+seconds; the original paused v1 remains limited to 30 seconds, and neither
+qualifies real-time control. Old recordings are not relabeled for the new
+budget. The latest physical-verification attempt was interrupted by an
+external administrative VM deallocation before a result could be verified.
+Its physical outcome is unknown, not a pass. Further GPU execution requires
+an approved uninterrupted execution window. A successful full-task
+demonstration, actual policy training and paired physical acceptance remain
+unverified, and learning admission remains disabled.
 
 See [policy learning](docs/policy-learning.md),
 [the learning API](docs/learning-api.md), and
