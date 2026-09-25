@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -86,4 +87,15 @@ def test_timeout_kills_the_actual_training_descendant_as_well(tmp_path):
         run_bounded([sys.executable, "-c", script], JobDeadline(value))
     pid = int(pid_file.read_text())
     state = Path(f"/proc/{pid}/stat")
-    assert not state.exists() or state.read_text().split()[2] == "Z"
+
+    def stopped():
+        try:
+            return state.read_text().split()[2] == "Z"
+        except FileNotFoundError:
+            return True
+
+    # SIGKILL is asynchronous; the group leader can be reaped before its child is scheduled.
+    end = time.monotonic() + 1
+    while not stopped() and time.monotonic() < end:
+        time.sleep(0.005)
+    assert stopped()

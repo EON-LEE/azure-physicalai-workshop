@@ -26,6 +26,7 @@ from learning.smolvla.adaptation import IMAGE_SIZE
 from learning.train import CONVERSION_KEYS, _validate_conversion_contents
 
 TIMING_FILE = "source-timing.jsonl"
+TRAIN_SEEDS = frozenset((*range(10001, 10021), *range(11001, 11021)))
 
 
 def convert_dataset(
@@ -49,6 +50,10 @@ def convert_dataset(
         validated.manifest["criteria_sha256"] == sha256(expected_criteria_sha256)
         and validated.manifest["frozen_plan_sha256"] == sha256(expected_frozen_plan_sha256),
         "Raw data differs from the approved frozen criteria/conditions",
+    )
+    require(
+        all(episode.metadata["seed"] in TRAIN_SEEDS for episode in validated.split("train")),
+        "Validation/final-held-out seeds cannot be relabelled into the frozen train cohort",
     )
     result = convert._convert_validated(
         validated,
@@ -131,6 +136,7 @@ def validate_conversion(root: Path, expected_scope: Scope) -> dict:
     )
     counts = []
     for episode in value["episodes"]:
+        require(episode["seed"] in TRAIN_SEEDS, "Unapproved or held-out training seed")
         PausedEpisodeBudget(
             **keys(
                 episode["budget"], set(PausedEpisodeBudget.__dataclass_fields__), "episode budget"

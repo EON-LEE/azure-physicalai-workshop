@@ -418,8 +418,74 @@ mapping, 50-action horizon, one consumed action and local backbone remain.
 Only actual changed parameter fingerprints and upstream optimizer markers seal
 a candidate-v2 manifest. All long phases remain bounded by the original UTC
 deadline supervisor; no automatic resume, publishing or paid submission occurs.
-At this producer milestone paused comparison jobs are explicitly blocked until
-their separate recording/evaluation producer is integrated.
+The paused comparison commands use the distinct recording/evaluation producer
+below; its presence does not waive worker enrollment, actual data or operator
+submission approval.
+
+### Paused evaluation evidence and release boundaries
+
+`learning.paused.evaluation` uses paired/bootstrap **plan v2, results v3 and
+report v2**. A native evaluation plan binds the actual runtime and models plus
+the model-independent frozen conditions/criteria separately. Its closed
+`quality_limits` are exactly 20 held-out cases, minimum success rate 0.9,
+minimum absolute adaptation improvement 0.05 and zero safety violations. Seeds
+30001–30020 and attempt zero are the fixed final cohort. Train conversion only
+admits the separately frozen 10001–10020 and 11001–11020 cohorts; changing a
+final-test split label cannot make it a training input.
+
+`learning.paused.rollout.PausedRolloutRecorder(root, plan=..., runtime=..., grant=...)`
+materializes the alternating all-attempt schedule and a distinct operator grant
+v2. `record_attempt` accepts a validated raw-v3 evaluation capture, actual
+per-physics-tick `TaskState` records, final camera frames and main-thread
+heartbeat timestamps. It derives, rather than trusts, timing, model/reference
+counts and task outcomes. Attempts must be sequential, use distinct actual
+commands and stay inside the original grant. `record_failure` preserves
+before-scene/camera/policy failures without inventing poses, actions or model
+execution; an interrupted schedule produces `incomplete-recording.json` and
+exits nonzero, never a publishable success result.
+
+Finalization writes `results.json` last after rereading every copied capture,
+PNG, grant, task trace and attempt manifest. The independent verifier checks
+all source checksums and re-derives each trial, including all failures. Runtime
+provenance must identify actual Azure Isaac/RTX execution, the new profile and
+probe receipt; test fixtures are explicitly rejected by the live verifier.
+This is still artifact consistency under the trusted runtime/operator boundary,
+not proof that a self-asserted hash alone represents physical execution.
+
+Physical success requires the existing reviewed `TaskWatchdog` semantics:
+measured part lift at least 5 cm, TCP/part separation at most 9 cm and finger
+gap 0.005–0.055 m sustained for 0.05 simulation seconds; then placement within
+4 cm on every axis, open gap at least 0.07 m, TCP/part separation at least
+0.05 m and measured part speed at most 0.02 m/s sustained for 0.3 simulation
+seconds. The evaluator recomputes this from the actual trace and checks
+per-physics-tick TCP speed/workspace limits. It explicitly labels this
+`measured_lift_proximity_finger_gap_no_contact_sensor`, not force/contact sensing.
+The independent reference implementation is source-pinned to the reviewed
+runtime predicate; an actual 417-state CPU golden comparison matched its state
+and outcomes without changing the runtime's control module or fingerprint.
+
+Each report has canonical `execution_timing` / `real_time_admission=false`,
+`comparison_kind`, scope/profile/runtime/criteria/frozen-plan SHAs,
+`evaluation_plan_sha256`, `results_sha256`, `quality_gate_passed`, `conclusion`,
+per-role `counts` / `success_rates`, `absolute_success_rate_improvement`,
+`latency_wall_ms` (`samples`, `p50`, `p95`, `max`), total wall/simulation duration,
+resource/safety violation counts and every trial. Trials preserve both
+`wall_duration_ms` and `simulation_duration_ms`, all policy/observation/hold/
+whole-interval/heartbeat wall samples and recomputed physical predicate evidence.
+Paired reports identify before/after models; bootstrap reports instead identify
+the real candidate and separate reference-controller hash. Bootstrap is not a
+fictional pretrained before-policy.
+
+`evaluate_pair` / `evaluate_bootstrap` validate actual trained v2 model lineage,
+exclude held-out IDs/seeds from all model training ancestry, verify the complete
+recording, and only then enable quality metrics. Pure `compare_trials` is a
+test/analysis projection, not admission evidence. Any individual 2/2/2/5-second,
+episode or heartbeat limit violation fails the gate; percentiles cannot hide it.
+An adaptation is `improved` only with verified evidence, at least 18/20 candidate
+successes and at least one additional success out of the same 20 cases.
+Missing evidence yields an error/nonzero result, and a completed-but-failing
+quality assessment writes its false report before exiting nonzero.
+No new-mode report can satisfy the old real-time release catalogue.
 
 Preflight reads **the actual separate outbound-rule endpoint** through
 `client.workspace_outbound_rules.list(workspace_name=...)`. The default workspace

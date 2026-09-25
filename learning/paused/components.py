@@ -24,7 +24,7 @@ from learning.smolvla.train import TrainOptions
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Explicit paused-simulation Azure components.")
-    parser.add_argument("command", choices=("export", "train"))
+    parser.add_argument("command", choices=("export", "train", "compare", "bootstrap"))
     for name in ("input", "output", "runtime-config"):
         parser.add_argument(f"--{name}", required=True, type=Path)
     parser.add_argument("--snapshot-sha256", required=True)
@@ -116,6 +116,45 @@ def main() -> None:
         )
         deadline.check()
         return
+    from learning.paused.evaluation import evaluate_bootstrap, evaluate_pair
+
+    require(args.parent is not None and args.plan is not None, "Missing frozen evaluation inputs")
+    plan = read_json(args.plan)
+    require(
+        plan["criteria_sha256"] == config["criteria_sha256"]
+        and plan["frozen_plan_sha256"] == config["frozen_plan_sha256"]
+        and plan["control_profile_sha256"] == config["control_profile_sha256"],
+        "Evaluation profile/criteria/conditions changed",
+    )
+    kwargs = {
+        "scope": scope,
+        "expected_plan_sha256": config["inputs"]["plan"]["sha256"],
+        "expected_results_sha256": config["inputs"]["evidence"]["sha256"],
+    }
+    if args.command == "compare":
+        require(
+            args.after is not None
+            and config["kind"] == "compare"
+            and plan["policy_before_sha256"] == config["inputs"]["policy_before"]["sha256"]
+            and plan["policy_after_sha256"] == config["inputs"]["policy_after"]["sha256"],
+            "Missing or rebound actual policy pair",
+        )
+        report = evaluate_pair(plan, args.input, args.parent, args.after, **kwargs)
+    else:
+        require(
+            config["kind"] == "bootstrap_compare"
+            and plan["candidate_model_sha256"] == config["inputs"]["candidate"]["sha256"],
+            "Wrong or rebound bootstrap candidate",
+        )
+        report = evaluate_bootstrap(plan, args.input, args.parent, **kwargs)
+    deadline.check()
+    from learning.common import write_json
+
+    report.update(running_job_binding(client, config))
+    args.output.mkdir(parents=True, exist_ok=True)
+    deadline.check()
+    write_json(args.output / "report.json", report)
+    require(report["quality_gate_passed"], "Paused physical evidence did not pass quality gates")
 
 
 if __name__ == "__main__":

@@ -109,7 +109,7 @@ def run(output: Path, *, job_deadline_utc: str | None = None, paused: bool = Fal
             frozen_plan_sha256="e" * 64,
         )
     successes = []
-    for kind in ("train",) if paused else ("train", "compare", "bootstrap_compare"):
+    for kind in ("train", "compare", "bootstrap_compare"):
         current = copy.deepcopy(config)
         current["kind"] = kind
         if kind != "train":

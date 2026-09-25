@@ -83,3 +83,27 @@ def test_legacy_training_conversion_validator_rejects_paused_data(tmp_path, mock
     )
     with pytest.raises(ContractError):
         validate_conversion(output, SCOPE)
+
+
+def test_final_heldout_seed_cannot_enter_training_by_changing_its_split(tmp_path, monkeypatch):
+    from learning import convert
+    from learning.paused.dataset import convert_dataset
+    from tests.learning.test_paused_capture import shifted_sample, writer
+
+    captured = writer(tmp_path / "raw", split="train", seed=30001)
+    captured.append(shifted_sample(0))
+    captured.append(shifted_sample(1, terminal=True))
+    captured.finalize()
+    monkeypatch.setattr(
+        convert, "require_lerobot", lambda: pytest.fail("No heldout training import")
+    )
+    with pytest.raises(ContractError, match="held.out"):
+        convert_dataset(
+            captured.root,
+            tmp_path / "model-input",
+            expected_scope=SCOPE,
+            expected_manifest_sha256=file_digest(captured.root / "manifest.json"),
+            expected_criteria_sha256="d" * 64,
+            expected_frozen_plan_sha256="e" * 64,
+            allow_test_fixture=True,
+        )

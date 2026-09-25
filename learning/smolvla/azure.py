@@ -46,6 +46,9 @@ PAUSED_CODE_FILES = CODE_FILES + (
     "learning/paused/ipc.py",
     "learning/paused/model.py",
     "learning/paused/components.py",
+    "learning/paused/evaluation.py",
+    "learning/paused/rollout.py",
+    "learning/paused/task.py",
 )
 
 
@@ -74,10 +77,6 @@ def validate_config(config: dict) -> None:
             and is_paused(config)
             and config["real_time_admission"] is False,
             "Paused Azure v2 requires the entire closed explicit timing/criteria variant",
-        )
-        require(
-            config.get("kind") == "train",
-            "Paused evaluation components require the separately verified recording producer",
         )
         sha256(config["criteria_sha256"], "frozen criteria")
         sha256(config["frozen_plan_sha256"], "model-independent frozen conditions plan")
