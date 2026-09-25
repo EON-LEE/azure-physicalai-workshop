@@ -10,7 +10,7 @@ import { PolicyComparison } from './PolicyComparison';
 import { TeachingControls } from './TeachingControls';
 import {
   sourceLabel, type CoachResponse, type CreateProjectBody, type Evaluation, type Job,
-  type LearningApi, type LearningRecord, type Project, type Resource, type Teaching, type TeachingCase,
+  type LearningApi, type LearningRecord, type Project, type Resource, type Teaching, type TeachingCase, type SimulationLearningCapability,
 } from './contracts';
 import './learning.css';
 import { defaultTeachingCase, sameTeachingCase, savedTeachingCases, splitLabel } from './teachingCases';
@@ -34,6 +34,11 @@ export function TeachingStudio({ api, environments, consoleApi }: {
     <div className="learning-boundary"><BookOpen size={21} aria-hidden="true" /><div><strong>작업 시연 → 고정 데이터 → 실제 정책 학습 → 같은 시험 → 검토된 정책</strong>
       <p>현재 상용 후보는 SmolVLA입니다. 라이선스가 미확인된 GR00T 요청을 다른 모델로 자동 대체하지 않습니다. 좌표 JSON 변경·Foundry 대화를 학습으로 부르지 않으며 ACT는 보조 경로입니다.</p></div><Badge>{capability.data?.enabled ? '승인된 API 연결' : '기본 비활성'}</Badge></div>
     <ErrorNotice error={capability.error} title="학습 기능 상태를 확인하지 못했습니다" retry={capability.refresh} />
+    {capability.data?.simulation_learning && <div className="inline-note warning" role="status">
+      <strong>NON_REALTIME_SIMULATION · 별도 시뮬레이션 학습 모드</strong>
+      <p>물리를 멈춘 채 관측·추론을 기다립니다. 실시간 100ms/80ms 통과가 아닙니다. 실제 로봇의 실시간 실행 권한으로 사용할 수 없습니다.</p>
+      {!capability.data.simulation_learning.enabled && <p>새 모드의 생성기·검증기·런타임 통합이 아직 승인되지 않았습니다. 학습·시연·모델 실행은 차단됩니다.</p>}
+    </div>}
     {!capability.data && !capability.error && <Loading>학습 API 통합 상태를 확인하는 중…</Loading>}
     {capability.data && !capability.data.enabled && <section className="panel"><EmptyState icon={<ShieldCheck size={27} />} title="학습 기능이 아직 활성화되지 않았습니다">
       {capability.data.message} 실제 Azure 학습·정책 적용·미사용 조건 평가를 검증한 뒤 운영자가 활성화해야 합니다. 유료 작업, 시연, checkpoint 예시를 대신 만들지 않습니다.
@@ -49,15 +54,15 @@ export function TeachingStudio({ api, environments, consoleApi }: {
       }}><option value="">프로젝트를 선택하세요</option>{projects.data?.items.map((entry) => <option key={entry.item.id} value={entry.item.id}>{entry.item.display_name}</option>)}</select></div>
         <button type="button" className="button secondary" onClick={() => setCreate((value) => !value)}><Plus size={15} aria-hidden="true" />새 학습 작업 정의</button></div>
       <ErrorNotice error={projects.error} title="내 학습 프로젝트를 불러오지 못했습니다" retry={projects.refresh} />
-      {create && <ProjectForm api={api} environments={environments} policyTypes={capability.data.policy_types} bootstrapAllowed={capability.data.bootstrap_allowed} onCreated={(value) => { setSelected(value); projects.refresh(); setCreate(false); }} />}
+      {create && <ProjectForm api={api} environments={environments} policyTypes={capability.data.policy_types} bootstrapAllowed={capability.data.bootstrap_allowed} simulationLearning={capability.data.simulation_learning} onCreated={(value) => { setSelected(value); projects.refresh(); setCreate(false); }} />}
       {selected && <ProjectWorkspace key={selected.item.id} api={api} project={selected} consoleApi={consoleApi} environments={environments} coachConfigured={capability.data.coach_configured} />}
       {!selected && !create && <EmptyState icon={<BookOpen size={28} />} title="학습할 작업을 선택하세요">이미 검토된 P0와 실제 시연 데이터를 연결합니다. 아직 정책이 없는 환경의 초기 P0는 별도의 승인된 부트스트랩 절차가 필요합니다.</EmptyState>}
     </>}
   </div>;
 }
 
-function ProjectForm({ api, environments, onCreated, bootstrapAllowed, policyTypes }: {
-  api: LearningApi; environments: EnvironmentRecord[]; onCreated(value: Resource<Project>): void; bootstrapAllowed: boolean; policyTypes: Project['policy_type'][];
+function ProjectForm({ api, environments, onCreated, bootstrapAllowed, policyTypes, simulationLearning }: {
+  api: LearningApi; environments: EnvironmentRecord[]; onCreated(value: Resource<Project>): void; bootstrapAllowed: boolean; policyTypes: Project['policy_type'][]; simulationLearning?: SimulationLearningCapability;
 }) {
   const [error, setError] = useState<unknown>(null);
   const [busy, setBusy] = useState(false);
@@ -66,6 +71,10 @@ function ProjectForm({ api, environments, onCreated, bootstrapAllowed, policyTyp
   const [environment, setEnvironment] = useState<EnvironmentRecord | null>(environments[0] ?? null);
   const [kind, setKind] = useState<'adaptation' | 'bootstrap'>('adaptation');
   const [policyType, setPolicyType] = useState<Project['policy_type'] | ''>(policyTypes[0] ?? '');
+  const [timing, setTiming] = useState<'legacy' | 'paused_simulation'>('legacy');
+  const [evaluationSeconds, setEvaluationSeconds] = useState('7200');
+  const paused = timing === 'paused_simulation';
+  const timingBlocked = paused && !simulationLearning?.enabled;
   const availableCases = savedTeachingCases(environments);
   const [approvedCases, setApprovedCases] = useState<TeachingCase[]>([]);
   const [caseFilter, setCaseFilter] = useState('');
@@ -79,6 +88,9 @@ function ProjectForm({ api, environments, onCreated, bootstrapAllowed, policyTyp
   const visibleCasePage = Math.min(casePage, casePages - 1);
   const visibleCases = filteredCases.slice(visibleCasePage * 20, (visibleCasePage + 1) * 20);
   const submit = async (form: HTMLFormElement) => {
+    if (timingBlocked) {
+      setError(new Error('별도 시뮬레이션 학습 통합이 아직 승인되지 않았습니다.')); return;
+    }
     if (environmentStale || staleCases.length) {
       setError(new Error('변경된 저장 버전을 확인하고 해당 환경과 배치를 다시 선택하세요.')); return;
     }
@@ -113,15 +125,26 @@ function ProjectForm({ api, environments, onCreated, bootstrapAllowed, policyTyp
       project_kind: kind, baseline_release_id: kind === 'adaptation' ? String(fields.get('baseline')) : null,
       policy_type: policyType,
       pretrained_artifact_id: kind === 'bootstrap' ? String(fields.get('baseline')) : null,
-      control_profile_id: 'franka-position-hold-10hz-v1',
+      control_profile_id: paused ? 'franka-position-hold-10hz-paused-v1' : 'franka-position-hold-10hz-v1',
+      ...(paused ? {
+        execution_timing: 'paused_simulation' as const, real_time_admission: false as const,
+        control_profile_sha256: String(fields.get('control-profile-sha')),
+        criteria_sha256: String(fields.get('criteria-sha')), frozen_plan_sha256: String(fields.get('frozen-plan-sha')),
+      } : {}),
       teaching_cases: teachingCases,
-      evaluation_plan: {
+      evaluation_plan: paused ? {
+        id: planId.current, seeds, cases, held_out_episode_ids: [], minimum_success_rate: .9,
+        minimum_absolute_improvement: .05, maximum_axis_error_m: .04, max_cartesian_speed_m_s: .2,
+        execution_timing: 'paused_simulation', real_time_admission: false,
+        max_simulation_seconds: 30, max_wall_seconds: 600, max_observation_wall_ms: 2000,
+        max_policy_wall_ms: 2000, max_hold_wall_ms: 2000, max_interval_wall_ms: 5000, max_heartbeat_wall_ms: 2000,
+      } : {
         id: planId.current, seeds, cases, held_out_episode_ids: [], minimum_success_rate: .9,
         maximum_axis_error_m: .04, maximum_inference_p95_ms: 80, max_step_seconds: 30,
         max_cartesian_speed_m_s: .2,
       },
       budget: {
-        teaching_seconds: 120, training_seconds: 3600, evaluation_seconds: 1800,
+        teaching_seconds: 120, training_seconds: 3600, evaluation_seconds: paused ? Number(evaluationSeconds) : 1800,
         optimizer_steps: Number(fields.get('steps')), maximum_cost_usd: String(fields.get('cost')),
       },
     };
@@ -134,6 +157,23 @@ function ProjectForm({ api, environments, onCreated, bootstrapAllowed, policyTyp
   return <form className="panel learning-project-form" onSubmit={(event) => { event.preventDefault(); void submit(event.currentTarget); }}>
     <div className="panel-heading"><h2>불변 작업·데이터·평가 기준 정의</h2></div>
     <div className="learning-form-grid">
+      <label className="wide-field">실행 시간 모드<select name="execution-timing" value={timing} onChange={(event) => {
+        const next = event.target.value === 'paused_simulation' ? 'paused_simulation' : 'legacy';
+        setTiming(next);
+        if (next === 'paused_simulation') setPolicyType(policyTypes.includes('smolvla') ? 'smolvla' : '');
+      }}><option value="legacy">기존 실시간 프로파일 · 별도 실시간 게이트 유지</option>
+        {simulationLearning?.supported && <option value="paused_simulation">NON_REALTIME_SIMULATION · 물리 일시정지 기반</option>}
+      </select></label>
+      {paused && <div className="wide-field inline-note warning">
+        <strong>한 회차 최대 30 SIM초 · 600 WALL초</strong>
+        <p>관측·정책·물리 hold 각각 2,000ms, 전체 제어 구간 5,000ms WALL 상한과 2,000ms heartbeat를 유지합니다. 미완료 회차는 성공으로 집계하지 않습니다.</p>
+        <label>전체 평가 WALL 예산 (초)<input name="evaluation-seconds" type="number" min={1} max={21600} step={1} value={evaluationSeconds} onChange={(event) => setEvaluationSeconds(event.currentTarget.value)} autoComplete="off" required /></label>
+        <p>7,200초는 새 프로젝트용 제안입니다. 전체 비용 승인은 별도이며 기존 프로젝트의 기한을 연장하지 않습니다. 한 회차의 SIM/WALL 상한도 바꾸지 않습니다.</p>
+        <label>검토된 control profile SHA256<input name="control-profile-sha" pattern="[a-f0-9]{64}" required autoComplete="off" spellCheck={false} /></label>
+        <label>고정된 평가 기준 SHA256<input name="criteria-sha" pattern="[a-f0-9]{64}" required autoComplete="off" spellCheck={false} /></label>
+        <label>모델 독립 scene conditions SHA256<input name="frozen-plan-sha" pattern="[a-f0-9]{64}" required autoComplete="off" spellCheck={false} /></label>
+        {timingBlocked && <p role="status">실제 생성기·검증기 통합 전에는 저장과 유료 작업을 요청할 수 없습니다.</p>}
+      </div>}
       <label className="wide-field">라이선스·하드웨어 검토 후 허용된 정확한 모델 버전<select name="policy-type" required value={policyType} onChange={(event) => { if (event.target.value === 'gr00t_n1_5' || event.target.value === 'gr00t_n1_7' || event.target.value === 'smolvla') setPolicyType(event.target.value); }}><option value="">승인된 버전 선택</option>{policyTypes.map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
       {bootstrapAllowed && <label className="wide-field">작업 유형<select value={kind} name="project-kind" onChange={(event) => setKind(event.target.value === 'bootstrap' ? 'bootstrap' : 'adaptation')}><option value="adaptation">실제 P0에서 고객 P1 학습</option><option value="bootstrap">승인 운영자: 첫 Franka P0 부트스트랩</option></select></label>}
       <label>프로젝트 이름<input name="name" required maxLength={120} autoComplete="off" /></label>
@@ -184,7 +224,7 @@ function ProjectForm({ api, environments, onCreated, bootstrapAllowed, policyTyp
     </div>
     <p className="form-hint">이 화면은 가격이나 용량을 추정하지 않습니다. 실제 유료 제출 전 서버가 승인된 compute·가격·시간 한도를 검증합니다. P0/P1는 동일한 미사용 조건에서 비교하며 성공 장면만 남기지 않습니다.</p>
     <ErrorNotice error={error} title="작업 정의를 저장하지 못했습니다" />
-    <button type="submit" className="button" disabled={busy || environmentStale || staleCases.length > 0}>{busy ? '저장 중…' : '불변 작업 정의 저장'}</button>
+    <button type="submit" className="button" disabled={busy || timingBlocked || environmentStale || staleCases.length > 0}>{busy ? '저장 중…' : '불변 작업 정의 저장'}</button>
   </form>;
 }
 
@@ -231,6 +271,32 @@ function ProjectWorkspace({ api, project, consoleApi, environments, coachConfigu
   const datasets = data.filter((entry) => entry.item.kind === 'dataset');
   const candidates = data.filter((entry) => entry.item.kind === 'candidate');
   const sessionList = data.filter((entry) => entry.item.kind === 'teaching');
+  if (project.item.execution_timing === 'paused_simulation') {
+    const plan = project.item.evaluation_plan;
+    return <section className="panel learning-project-summary">
+      <div className="panel-heading"><h2>{project.item.display_name}</h2><Badge tone="amber">NON_REALTIME_SIMULATION</Badge></div>
+      <div className="learning-panel-body">
+        <p>{project.item.instruction}</p>
+        <div className="inline-note warning" role="status"><strong>별도 시뮬레이션 실행 통합 대기</strong>
+          <p>이 작업은 실시간 100ms/80ms 통과가 아닙니다. 새 모델·평가·런타임 검증기 연결 전에는 기존 실시간 조작·학습·게시 경로를 사용하지 않습니다.</p>
+        </div>
+        {'execution_timing' in plan && <>
+          <p>한 회차 상한: {plan.max_simulation_seconds} SIM초 · {plan.max_wall_seconds} WALL초</p>
+          <p>관측 {plan.max_observation_wall_ms}ms · 정책 {plan.max_policy_wall_ms}ms · 전체 구간 {plan.max_interval_wall_ms}ms WALL</p>
+        </>}
+        <p>전체 평가 WALL 예산: {new Intl.NumberFormat('ko-KR').format(project.item.budget.evaluation_seconds)}초</p>
+        <p>예산과 상한은 실제 소요 시간·optimizer 수행·시뮬레이션 성공의 증거가 아닙니다.</p>
+        <dl className="learning-metadata">
+          <FieldValue label="새 control profile"><code>{project.item.control_profile_id}</code></FieldValue>
+          <FieldValue label="profile SHA"><code>{project.item.control_profile_sha256}</code></FieldValue>
+          <FieldValue label="평가 기준 SHA"><code>{project.item.criteria_sha256}</code></FieldValue>
+          <FieldValue label="모델 독립 scene conditions SHA"><code>{project.item.frozen_plan_sha256}</code></FieldValue>
+          <FieldValue label="별도 API evaluation plan SHA"><code>{project.item.evaluation_plan_sha256}</code></FieldValue>
+        </dl>
+        <ErrorNotice error={records.error} title="저장된 작업 기록 갱신 실패" retry={records.refresh} />
+      </div>
+    </section>;
+  }
   return <>
     <section className="panel learning-project-summary"><div className="panel-heading"><h2>{project.item.display_name}</h2><Badge>{project.item.policy_type} · 검증 전 자동 게시 없음</Badge></div>
       <div className="learning-panel-body"><p>{project.item.instruction}</p><dl className="learning-metadata"><FieldValue label="환경 revision"><code>{project.item.revision}</code></FieldValue><FieldValue label="기준 P0 release"><code>{project.item.baseline_release_id}</code></FieldValue><FieldValue label="held-out plan SHA"><code>{project.item.evaluation_plan_sha256}</code></FieldValue><FieldValue label="조작 프로파일"><code>{project.item.control_profile_id}</code></FieldValue></dl></div></section>

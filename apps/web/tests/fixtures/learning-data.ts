@@ -4,6 +4,7 @@ import type {
 
 const uuid = (value: number) => `10000000-1111-4111-8111-${String(value).padStart(12, '0')}`;
 const sha = (value: string) => value.repeat(64);
+const legacyProfile = 'franka-position-hold-10hz-v1';
 const base = (value: number) => ({
   id: uuid(value), actor_id: uuid(90),
   created_at: '2026-09-23T00:00:00Z', updated_at: '2026-09-23T00:00:00Z',
@@ -15,7 +16,7 @@ export function learningFixture() {
     task_id: 'part-kitting-v1', instruction: 'TEST-ONLY: 부품을 키팅 트레이에 놓습니다.',
     policy_type: 'smolvla',
     goal_station_id: 'accepted', environment_id: 'reference-cell', revision: sha('a'),
-    baseline_release_id: uuid(2), pretrained_artifact_id: null, control_profile_id: 'franka-position-hold-10hz-v1',
+    baseline_release_id: uuid(2), pretrained_artifact_id: null, control_profile_id: legacyProfile,
     evaluation_plan_sha256: sha('b'),
     teaching_cases: [
       { case_id: 'train-anchor', environment_id: 'reference-cell', revision: sha('a'), seed: 10001, split: 'train' },
@@ -37,7 +38,7 @@ export function learningFixture() {
     captures: [{
       episode_id: uuid(6), artifact_id: uuid(5), manifest_sha256: sha('d'), frame_count: 20,
       source: 'reference_controller', seed: 10001, task_id: project.item.task_id,
-      control_profile_id: project.item.control_profile_id, source_model_sha256: null,
+      control_profile_id: legacyProfile, source_model_sha256: null,
       case_id: 'train-anchor', environment_id: 'reference-cell', revision: sha('a'), split: 'train',
     }],
   } };

@@ -19,6 +19,19 @@ test('seventy owner environments remain browsable with bounded case rows and ret
   expect(await page.evaluate(() => window.__learningFixture.calls.includes('createProject'))).toBe(false);
 });
 
+test('paused-simulation budgets are explicit and cannot submit unadmitted work', async ({ page }) => {
+  await page.goto('/?scenario=learning-pages&view=learning');
+  await expect(page.getByRole('note')).toContainText('Azure / GPU 동작 검증이 아닙니다');
+  await page.getByRole('button', { name: '새 학습 작업 정의' }).click();
+  await page.getByLabel('실행 시간 모드').selectOption('paused_simulation');
+  await expect(page.getByText('한 회차 최대 30 SIM초 · 600 WALL초')).toBeVisible();
+  await expect(page.getByLabel('전체 평가 WALL 예산 (초)')).toHaveValue('7200');
+  await page.getByLabel('전체 평가 WALL 예산 (초)').fill('9000');
+  await expect(page.getByRole('button', { name: '불변 작업 정의 저장' })).toBeDisabled();
+  await expect(page.getByText(/실시간 100ms\/80ms 통과가 아닙니다/)).toBeVisible();
+  expect(await page.evaluate(() => window.__learningFixture.calls.some((call) => ['teach', 'train', 'evaluate'].includes(call)))).toBe(false);
+});
+
 test('teaching remains blocked without verified dependencies and never creates a paid job', async ({ page }) => {
   await page.goto('/?scenario=learning-off&view=learning');
   await expect(page.getByRole('heading', { name: '학습 기능이 아직 활성화되지 않았습니다' })).toBeVisible();

@@ -33,15 +33,40 @@ export const evaluationPlanSchema = z.object({
   maximum_inference_p95_ms: z.number().positive().max(80),
   max_step_seconds: z.number().int().positive().max(30),
   max_cartesian_speed_m_s: z.number().positive().max(.2),
-});
+}).strict();
+export const pausedEvaluationPlanSchema = z.object({
+  execution_timing: z.literal('paused_simulation'), real_time_admission: z.literal(false),
+  id, seeds: z.array(count).length(20), held_out_episode_ids: z.array(id),
+  cases: z.array(z.object({ seed: count, environment_id: z.string(), revision: sha })).length(20),
+  minimum_success_rate: z.number().min(.9).max(1),
+  minimum_absolute_improvement: z.number().min(.05).max(1),
+  maximum_axis_error_m: z.number().positive().max(.04),
+  max_cartesian_speed_m_s: z.number().positive().max(.2),
+  max_simulation_seconds: z.number().int().min(1).max(30),
+  max_wall_seconds: z.number().int().min(1).max(600),
+  max_observation_wall_ms: z.literal(2000), max_policy_wall_ms: z.literal(2000),
+  max_hold_wall_ms: z.literal(2000), max_interval_wall_ms: z.literal(5000),
+  max_heartbeat_wall_ms: z.literal(2000),
+}).strict();
 export const projectSchema = z.object({
   ...base, kind: z.literal('project'), display_name: z.string(), task_id: z.string(),
   policy_type: policyType,
   instruction: z.string(), goal_station_id: z.string(), environment_id: z.string(), revision: sha,
   project_kind: z.enum(['adaptation', 'bootstrap']), baseline_release_id: id.nullable(),
-  pretrained_artifact_id: id.nullable(), control_profile_id: profile,
-  evaluation_plan: evaluationPlanSchema, evaluation_plan_sha256: sha, budget: budgetSchema,
+  pretrained_artifact_id: id.nullable(), control_profile_id: z.enum(['franka-position-hold-10hz-v1', 'franka-position-hold-10hz-paused-v1']),
+  execution_timing: z.literal('paused_simulation').optional(),
+  real_time_admission: z.literal(false).optional(),
+  control_profile_sha256: sha.optional(), criteria_sha256: sha.optional(), frozen_plan_sha256: sha.optional(),
+  evaluation_plan: z.union([evaluationPlanSchema, pausedEvaluationPlanSchema]), evaluation_plan_sha256: sha, budget: budgetSchema,
   teaching_cases: z.array(teachingCaseSchema).max(1000).default([]),
+}).superRefine((project, context) => {
+  const paused = project.execution_timing === 'paused_simulation';
+  if (paused !== (project.control_profile_id === 'franka-position-hold-10hz-paused-v1') ||
+    paused !== ('execution_timing' in project.evaluation_plan) ||
+    (paused && (project.real_time_admission !== false || !project.control_profile_sha256 || !project.criteria_sha256 || !project.frozen_plan_sha256 || project.policy_type !== 'smolvla')) ||
+    (!paused && [project.real_time_admission, project.control_profile_sha256, project.criteria_sha256, project.frozen_plan_sha256].some((value) => value !== undefined))) {
+    context.addIssue({ code: 'custom', message: 'Project timing, profile and immutable provenance must match.' });
+  }
 });
 export const datasetSchema = z.object({
   ...base, kind: z.literal('dataset'), project_id: id, status: z.literal('ready'),
@@ -134,12 +159,19 @@ export const grantSchema = z.object({
   sequence: z.number().int().positive(), delta_xyz_m: z.tuple([z.number(), z.number(), z.number()]),
   gripper: z.enum(['open', 'close', 'hold']), expires_at: date, consumed_by: id.nullable(),
 });
+export const simulationLearningSchema = z.object({
+  execution_timing: z.literal('paused_simulation'), real_time_admission: z.literal(false),
+  supported: z.literal(true), enabled: z.boolean(),
+  status: z.string(), message: z.string(),
+});
+export type SimulationLearningCapability = z.infer<typeof simulationLearningSchema>;
 export const capabilitiesSchema = z.object({
   enabled: z.boolean(), status: z.enum(['disabled', 'blocked', 'configured']), message: z.string(),
   policy_types: z.array(policyType), control_profiles: z.array(profile),
   training_verified: z.literal(false), coach_configured: z.boolean(),
   bootstrap_allowed: z.boolean().default(false),
   model_admission: z.enum(['configured_not_verified', 'license_or_hardware_unapproved']).optional(),
+  simulation_learning: simulationLearningSchema.optional(),
 });
 export const coachSchema = z.object({
   request_id: id, model_response_id: z.string().min(1), authority: z.literal('proposal_only'),

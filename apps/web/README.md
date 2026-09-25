@@ -216,6 +216,16 @@ The controls below belong to the separately protected operator area.
   not success. Cancellation is available without waiting for an in-flight
   approval response and is not complete until the API confirms it. Evidence
   images are authenticated and explicitly labeled historical, not LIVE.
+- **Separate paused-simulation learning:** When the API advertises its supported
+  contract, a new-project mode selector shows `NON_REALTIME_SIMULATION`, the
+  separate per-case 30 SIM / 600 WALL caps, required profile/criteria/scene-plan
+  hashes, and an explicit total evaluation WALL budget (7200-second suggestion,
+  maximum 21600). These are draft authorization bounds, not measured durations
+  or an extension of an old project. Current producer/verifier admission is
+  blocked, so no paused save, teaching, paid job or old real-time control is
+  presented as usable. Existing paused project records are read-only with their
+  exact bounds/provenance. Real-time 100 ms / 80 ms qualification remains separate
+  and is never implied by this mode or by a native SDK schema check.
 
 Visible camera views poll at most once per second. Runtime status polls every
 three seconds, nonterminal run details every two seconds, and visible history

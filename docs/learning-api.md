@@ -71,6 +71,64 @@ The initial reviewed profile is `franka-position-hold-10hz-v1`, not the existing
 environment. Baseline P0 must be a real approved learned policy, not a scripted
 reference route relabeled as a policy. Prepared P0 provenance remains visible.
 
+### Separate non-real-time simulation project contract
+
+`NON_REALTIME_SIMULATION` is an explicit new mode, not a relaxation or a passing
+result for the original 100 ms interval / 80 ms policy gate. Its fixed profile is
+`franka-position-hold-10hz-paused-v1`: 60 Hz physics, six held ticks per 10 Hz
+simulation-time action, with physics frozen while observation/inference is pending.
+It cannot authorize a real robot or inherit a real-time release.
+
+A new project must explicitly supply all of `execution_timing: paused_simulation`,
+`real_time_admission: false`, the new `control_profile_id`,
+`control_profile_sha256`, `criteria_sha256`, and `frozen_plan_sha256`.
+The last hash pins the operator's **model-independent frozen scene conditions**,
+not a later model-pair-specific native plan hash. Those remain separate bindings.
+Mode, profile, all hashes and the evaluation-plan branch must agree; aliases,
+missing pins, implicit paused defaults and real-time qualification are rejected.
+Legacy serialized projects and request fingerprints omit these new fields and
+retain their original evaluation-plan semantics.
+
+The paused evaluation-plan branch requires exactly twenty unique held-out cases,
+`minimum_success_rate >= 0.9`, `minimum_absolute_improvement >= 0.05`,
+`maximum_axis_error_m <= 0.04`, and `max_cartesian_speed_m_s <= 0.2`.
+It uses explicit `max_simulation_seconds` (1..30) and `max_wall_seconds` (1..600),
+not legacy `max_step_seconds` or `maximum_inference_p95_ms`. Frozen wall-time
+caps are `max_observation_wall_ms=2000`, `max_policy_wall_ms=2000`,
+`max_hold_wall_ms=2000`, `max_interval_wall_ms=5000`, and
+`max_heartbeat_wall_ms=2000`. Saved-case opt-in and any lower environment limits
+remain authoritative; these request fields are not standalone motion authority.
+
+Total project `budget.evaluation_seconds` is a separate explicit wall budget
+(up to 21600 seconds); the new-mode UI suggests 7200 seconds for review rather
+than changing any existing project. Per-episode 30 SIM / 600 WALL limits and
+the immutable native AML absolute deadline remain distinct. An incomplete batch
+cannot be reported as all twenty cases evaluated or as successful improvement.
+
+**Current admission boundary:** the API exposes `simulation_learning` capability
+metadata with `supported: true`, `enabled: false`,
+`status: producer_verifier_unavailable`. Closed types and UI draft fields are not
+proof that the actual runtime, v3 data, v2 model/report producers or verifiers are
+admitted. Paused project/motion/training/evaluation/release mutations return
+explicit 503 before falling through any old real-time path. The UI shows the
+new-mode bounds and blocked status; no environment flag alone enables missing
+adapters. New model/report outputs must be verified through their separate
+committed native producers before this boundary can be opened.
+
+The private bridge has separate `SimulationEpisodeCommand` /
+`SimulationEpisodeExecution` API DTOs for `/v1/simulation-episodes` and its
+owner-scoped read/cancel routes. A command uses `wall_expires_at`,
+`max_simulation_steps`, canonical `execution_timing`, `real_time_admission:false`,
+`profile_id`, and `controller` independent of the run's
+`inspection|released_skill` mode. It is not a legacy `MotionCommand` with a longer
+deadline. Resolution requires a trusted immutable
+`ResolvedSimulationAuthorization`, including owner/scene/task/profile, purpose,
+wall/SIM limits and original criteria/scene-plan hashes; a UUID is not authority.
+Responses preserve required actual `simulation_runtime` wall duration, simulation
+duration/steps, phase, model/action/reference counts, and false real-time admission.
+Missing telemetry is rejected, not replaced with zeroes. These bridge methods
+alone do not enable a public motion endpoint or runtime admission.
+
 ### Varied teaching cases and split isolation
 
 New projects **must explicitly freeze** `teaching_cases`:

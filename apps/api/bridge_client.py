@@ -21,6 +21,7 @@ from apps.api.models import (
     ReleasedPolicyBinding,
     SimulationStatus,
 )
+from apps.api.simulation_models import SimulationEpisodeCommand, SimulationEpisodeExecution
 
 log = logging.getLogger(__name__)
 
@@ -165,6 +166,30 @@ class AzureSimulatorBridge:
             "/v1/teaching",
             owner,
             json=body.model_dump(mode="json"),
+        )
+
+    def dispatch_simulation_episode(
+        self, owner: str, command: SimulationEpisodeCommand
+    ) -> SimulationEpisodeExecution:
+        return self._model(
+            SimulationEpisodeExecution,
+            "POST",
+            "/v1/simulation-episodes",
+            owner,
+            json=command.model_dump(mode="json", by_alias=True),
+        )
+
+    def simulation_episode(self, owner: str, command_id: UUID) -> SimulationEpisodeExecution:
+        return self._model(
+            SimulationEpisodeExecution, "GET", f"/v1/simulation-episodes/{command_id}", owner
+        )
+
+    def cancel_simulation_episode(self, owner: str, command_id: UUID) -> SimulationEpisodeExecution:
+        return self._model(
+            SimulationEpisodeExecution,
+            "POST",
+            f"/v1/simulation-episodes/{command_id}/cancel",
+            owner,
         )
 
     def teaching(self, owner: str, session_id: UUID) -> TeachingRuntimeState:

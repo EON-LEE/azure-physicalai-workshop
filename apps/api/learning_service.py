@@ -152,6 +152,17 @@ class LearningService:
             "model_admission": "configured_not_verified"
             if self.allowed_policy_types
             else "license_or_hardware_unapproved",
+            "simulation_learning": {
+                "execution_timing": "paused_simulation",
+                "real_time_admission": False,
+                "supported": True,
+                "enabled": False,
+                "status": "producer_verifier_unavailable",
+                "message": (
+                    "The separate non-real-time contract is defined, but end-to-end runtime, "
+                    "model and evaluation adapters are not admitted. No fallback or paid work."
+                ),
+            },
         }
 
     def _enabled(self) -> None:
@@ -252,6 +263,15 @@ class LearningService:
                 503,
                 "learning_policy_unapproved",
                 "No verified license and hardware admission exists for this pinned policy type.",
+            )
+
+    @staticmethod
+    def _timing_admission(project: LearningProject) -> None:
+        if project.execution_timing == "paused_simulation":
+            raise Problem(
+                503,
+                "paused_learning_unavailable",
+                "Paused runtime/model/report adapters are not admitted; no fallback was used.",
             )
 
     def get(self, actor: Principal, kind: str, resource_id: UUID) -> Stored:
@@ -395,6 +415,7 @@ class LearningService:
         existing = self._existing(actor, "project", record.id, record.fingerprint)
         if existing:
             return existing
+        self._timing_admission(record)
         environment = self._saved_scene(actor, body.environment_id, body.revision)
         if body.goal_station_id not in {item["id"] for item in environment.document["stations"]}:
             raise Problem(422, "unknown_task_goal", "Select a goal in the pinned environment.")
@@ -445,6 +466,7 @@ class LearningService:
         context = self.get(actor, "project", project_id)
         require_etag(context, etag)
         project = context.value
+        self._timing_admission(project)
         self._policy(project.policy_type)
         if body.policy_type != project.policy_type:
             raise Problem(
@@ -665,6 +687,7 @@ class LearningService:
                 raise Problem(503, "regressing_job_metrics", "Worker step count regressed.")
         if target == "succeeded" and isinstance(run, TrainingRun):
             project = self.get(actor, "project", run.project_id).value
+            self._timing_admission(project)
             artifacts = self._dependency(self.artifacts, "Verified learning artifacts")
             candidate = receipt.candidate
             self._check_candidate(actor, project, run, candidate)
@@ -676,6 +699,7 @@ class LearningService:
                 raise Problem(503, "missing_evaluation_evidence", "A paired report is required.")
             if receipt.report is not None:
                 project = self.get(actor, "project", run.project_id).value
+                self._timing_admission(project)
                 artifacts = self._dependency(self.artifacts, "Verified learning artifacts")
                 candidate = self.get(actor, "candidate", run.candidate_id).value
                 if run.comparison_kind == "reference_bootstrap":
@@ -825,6 +849,7 @@ class LearningService:
         context = self.get(actor, "project", project_id)
         require_etag(context, etag)
         project = context.value
+        self._timing_admission(project)
         candidate = self.get(actor, "candidate", body.candidate_id).value
         if (
             candidate.project_id != project_id
@@ -890,6 +915,7 @@ class LearningService:
             raise Problem(409, "release_gate_failed", "A completed paired evaluation is required.")
         candidate = self.get(actor, "candidate", body.candidate_id).value
         project = self.get(actor, "project", candidate.project_id).value
+        self._timing_admission(project)
         if project.project_kind == "bootstrap":
             self._bootstrap_actor(actor)
             validate_bootstrap_report(project, candidate, run.report)
@@ -961,6 +987,7 @@ class LearningService:
         context = self.get(actor, "project", project_id)
         require_etag(context, etag)
         project = context.value
+        self._timing_admission(project)
         case = project.selected_case(body.case_id)
         runtime = self._dependency(self.runtime, "Verified teaching runtime")
         anchor = self._saved_scene(actor, project.environment_id, project.revision)
@@ -1286,6 +1313,7 @@ class LearningService:
         require_etag(context, etag)
         captures = []
         project = context.value
+        self._timing_admission(project)
         for session_id in body.teaching_session_ids:
             session = self.get(actor, "teaching", session_id).value
             if (

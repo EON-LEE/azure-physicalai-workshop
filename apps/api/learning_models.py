@@ -8,7 +8,15 @@ from decimal import Decimal
 from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import AwareDatetime, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    AwareDatetime,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 from apps.api.errors import Problem
 from apps.api.models import Identifier, LearnedPolicyType, Model, Principal, Revision, utcnow
@@ -47,6 +55,8 @@ NonnegativeInt = Annotated[int, Field(strict=True, ge=0)]
 JOB_TERMINAL = frozenset({"succeeded", "failed", "cancelled", "timed_out", "blocked"})
 TEACHING_TERMINAL = frozenset({"ready", "cancelled", "invalid", "blocked"})
 PROFILE_ID = "franka-position-hold-10hz-v1"
+PAUSED_PROFILE_ID = "franka-position-hold-10hz-paused-v1"
+ControlProfileId = Literal["franka-position-hold-10hz-v1", "franka-position-hold-10hz-paused-v1"]
 INTEGRATION_ONLY_SEEDS = frozenset({900002})
 
 
@@ -116,7 +126,107 @@ class EvaluationPlan(Frozen):
         return fingerprint(self.model_dump(mode="json"))
 
 
-def validate_teaching_partition(cases: tuple[TeachingCase, ...], plan: EvaluationPlan) -> None:
+class PausedEvaluationPlan(Frozen):
+    execution_timing: Literal["paused_simulation"]
+    real_time_admission: Literal[False]
+    id: UUID
+    seeds: tuple[Annotated[int, Field(strict=True, ge=0, le=2147483647)], ...] = Field(
+        min_length=20, max_length=20
+    )
+    held_out_episode_ids: tuple[UUID, ...] = Field(max_length=10000)
+    cases: tuple[EvaluationCase, ...] = Field(min_length=20, max_length=20)
+    minimum_success_rate: float = Field(ge=0.9, le=1)
+    minimum_absolute_improvement: float = Field(ge=0.05, le=1)
+    maximum_axis_error_m: float = Field(gt=0, le=0.04)
+    max_cartesian_speed_m_s: float = Field(gt=0, le=0.2)
+    max_simulation_seconds: int = Field(strict=True, ge=1, le=30)
+    max_wall_seconds: int = Field(strict=True, ge=1, le=600)
+    max_observation_wall_ms: Literal[2000]
+    max_policy_wall_ms: Literal[2000]
+    max_hold_wall_ms: Literal[2000]
+    max_interval_wall_ms: Literal[5000]
+    max_heartbeat_wall_ms: Literal[2000]
+
+    @field_validator("real_time_admission", mode="before")
+    @classmethod
+    def never_realtime(cls, value):
+        if value is not False:
+            raise ValueError("Paused evaluation requires explicit real_time_admission=false.")
+        return value
+
+    @model_validator(mode="after")
+    def frozen_conditions(self):
+        if (
+            set(self.seeds) & INTEGRATION_ONLY_SEEDS
+            or len(set(self.seeds)) != 20
+            or len(set(self.held_out_episode_ids)) != len(self.held_out_episode_ids)
+            or tuple(case.seed for case in self.cases) != self.seeds
+            or len({(case.environment_id, case.revision) for case in self.cases}) != 20
+        ):
+            raise ValueError("Paused evaluation requires all twenty unique frozen held-out cases.")
+        return self
+
+    @property
+    def sha256(self) -> str:
+        return fingerprint(self.model_dump(mode="json"))
+
+
+class ProjectTiming(Frozen):
+    execution_timing: Literal["paused_simulation"] | None = None
+    real_time_admission: Literal[False] | None = None
+    control_profile_sha256: Revision | None = None
+    criteria_sha256: Revision | None = None
+    frozen_plan_sha256: Revision | None = None
+
+    @field_validator("real_time_admission", mode="before")
+    @classmethod
+    def no_qualification_coercion(cls, value):
+        if value is not None and value is not False:
+            raise ValueError("Simulation mode cannot coerce or claim real-time qualification.")
+        return value
+
+    @model_validator(mode="after")
+    def explicit_profile_and_provenance(self):
+        fields = (
+            self.real_time_admission,
+            self.control_profile_sha256,
+            self.criteria_sha256,
+            self.frozen_plan_sha256,
+        )
+        profile = self.control_profile_id
+        if self.execution_timing is None:
+            if any(value is not None for value in fields) or profile != PROFILE_ID:
+                raise ValueError("Legacy projects cannot implicitly adopt paused timing pins.")
+            if not isinstance(self.evaluation_plan, EvaluationPlan):
+                raise ValueError("Legacy projects retain the original real-time evaluation plan.")
+        elif (
+            any(value is None for value in fields)
+            or self.real_time_admission is not False
+            or profile != PAUSED_PROFILE_ID
+            or self.policy_type != "smolvla"
+            or not isinstance(self.evaluation_plan, PausedEvaluationPlan)
+        ):
+            raise ValueError("Paused projects require exact mode, profile, hashes and evaluation.")
+        return self
+
+    @model_serializer(mode="wrap")
+    def original_legacy_shape(self, handler: SerializerFunctionWrapHandler) -> dict:
+        value = handler(self)
+        if self.execution_timing is None:
+            for field in (
+                "execution_timing",
+                "real_time_admission",
+                "control_profile_sha256",
+                "criteria_sha256",
+                "frozen_plan_sha256",
+            ):
+                value.pop(field, None)
+        return value
+
+
+def validate_teaching_partition(
+    cases: tuple[TeachingCase, ...], plan: EvaluationPlan | PausedEvaluationPlan
+) -> None:
     if not cases:
         return
     if (
@@ -135,7 +245,7 @@ def validate_teaching_partition(cases: tuple[TeachingCase, ...], plan: Evaluatio
         )
 
 
-class CreateProject(Frozen):
+class CreateProject(ProjectTiming):
     request_id: UUID
     display_name: str = Field(min_length=1, max_length=120, pattern=r"\S")
     task_id: Identifier
@@ -147,8 +257,8 @@ class CreateProject(Frozen):
     project_kind: Literal["adaptation", "bootstrap"] = "adaptation"
     baseline_release_id: UUID | None
     pretrained_artifact_id: UUID | None = None
-    control_profile_id: Literal["franka-position-hold-10hz-v1"]
-    evaluation_plan: EvaluationPlan
+    control_profile_id: ControlProfileId
+    evaluation_plan: EvaluationPlan | PausedEvaluationPlan
     teaching_cases: tuple[TeachingCase, ...] = Field(min_length=1, max_length=1000)
     budget: Budget
 
@@ -176,7 +286,7 @@ class OwnedRecord(Frozen):
         return self.model_dump(mode="json", exclude={"owner_key", "fingerprint", "tenant_id"})
 
 
-class LearningProject(OwnedRecord):
+class LearningProject(OwnedRecord, ProjectTiming):
     kind: Literal["project"] = "project"
     display_name: str
     task_id: Identifier
@@ -188,8 +298,8 @@ class LearningProject(OwnedRecord):
     project_kind: Literal["adaptation", "bootstrap"] = "adaptation"
     baseline_release_id: UUID | None
     pretrained_artifact_id: UUID | None = None
-    control_profile_id: Literal["franka-position-hold-10hz-v1"]
-    evaluation_plan: EvaluationPlan
+    control_profile_id: ControlProfileId
+    evaluation_plan: EvaluationPlan | PausedEvaluationPlan
     teaching_cases: tuple[TeachingCase, ...] = Field(default=(), max_length=1000)
     budget: Budget
 

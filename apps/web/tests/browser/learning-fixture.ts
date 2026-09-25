@@ -12,6 +12,11 @@ export function browserLearning(trace: LearningTrace, enabled: boolean): Learnin
       enabled, status: enabled ? 'configured' : 'disabled', message: 'TEST ONLY: no actual model or GPU verification.',
       policy_types: enabled ? ['smolvla'] : [], control_profiles: ['franka-position-hold-10hz-v1'],
       training_verified: false, coach_configured: false, bootstrap_allowed: false,
+      simulation_learning: {
+        execution_timing: 'paused_simulation', real_time_admission: false,
+        supported: true, enabled: false, status: 'producer_verifier_unavailable',
+        message: 'TEST ONLY: the separate paused runtime and report integration is blocked.',
+      },
     }; },
     async projects() { mark('projects'); return { items: [data.project] }; },
     createProject: unsupported,

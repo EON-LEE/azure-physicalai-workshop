@@ -256,6 +256,12 @@ class PolicyLearningWorker:
         return jobs, sdk.create_plan
 
     def preflight(self, actor, specification):
+        if specification.project.execution_timing == "paused_simulation":
+            raise Problem(
+                503,
+                "paused_learning_unavailable",
+                "Paused runtime/data/model/report adapters are not admitted; no legacy fallback.",
+            )
         if specification.project.policy_type not in self.allowed_policy_types:
             raise Problem(
                 503,
