@@ -109,6 +109,7 @@ def test_private_reference_diagnostics_are_saved_before_teardown_on_failure(
     module.IsaacWorkcell = lambda: SimpleNamespace(
         reference_target_evidence=lambda: diagnostic,
         paused_camera_evidence=lambda: camera_evidence,
+        paused_gripper_servo_evidence=lambda: {"status": "not_applied"},
     )
     monkeypatch.setitem(sys.modules, "simulation.isaac_adapter", module)
     persisted = []

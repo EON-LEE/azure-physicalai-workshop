@@ -18,8 +18,10 @@ from test_teaching_runtime import teaching as teaching
 from learning.contract import CameraSample, FrameSample, Scope
 from learning.inference import ControlContext, GuardedPolicyAdapter, PolicyObservation
 from simulation.extensions import PausedSceneAuthority
+from simulation.paused_gripper_servo import DriveReadback
 from simulation.physics_scheduling import PHYSICS_THREAD_SETTING
 from simulation.policy_executor import PolicyExecutor
+from simulation.reference_targets import GRASP_ASSET_SHA256
 
 
 class Array(list):
@@ -208,6 +210,36 @@ def hardware(teaching, monkeypatch):
 
     cell.robot = Robot()
     cell.world = World()
+    drive = [
+        DriveReadback(
+            (22918.3125,) * 7 + (400.0, 0.0),
+            (4583.66259765625,) * 7 + (80.0, 0.0),
+            (87.0,) * 4 + (12.0,) * 3 + (7.199999809265137, 0.0),
+        )
+    ]
+
+    def write_stiffness(value):
+        drive[0] = replace(drive[0], stiffness=drive[0].stiffness[:7] + (value, 0.0))
+
+    # These tests isolate actuation/capture; the native gain setter has its own SDK-bound tests.
+    cell._read_paused_drive_snapshot = lambda: drive[0]
+    cell._write_paused_finger_stiffness = write_stiffness
+    cell._read_paused_gripper_asset = lambda: {
+        "archive_sha256": GRASP_ASSET_SHA256,
+        "joint_names": tuple(f"panda_joint{i}" for i in range(1, 8))
+        + ("panda_finger_joint1", "panda_finger_joint2"),
+        "driven_joint_index": 7,
+        "driven_joint_type": "PhysicsPrismaticJoint",
+        "drive_type": "force",
+        "authored_stiffness": 400.0,
+        "authored_damping": 80.0,
+        "authored_max_force": 7.199999809265137,
+        "passive_joint_index": 8,
+        "passive_has_drive": False,
+        "mimic_axis": "rotX",
+        "mimic_gearing": -1.0,
+        "mimic_reference": "panda_finger_joint1",
+    }
     cell.dynamics = SimpleNamespace(
         get_generalized_gravity_forces=lambda: [Array([1.0] * 7 + [0.0, 0.0])]
     )

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 from copy import deepcopy
@@ -73,6 +74,7 @@ from simulation.motion import (
     rotate_toward,
 )
 from simulation.paused_control import FrozenPhysicsState
+from simulation.paused_gripper_servo import DriveReadback, PausedGripperServo
 from simulation.paused_observation import PausedPublication, PausedPublicationCache
 from simulation.paused_teacher import is_pick_place_task
 from simulation.physics_scheduling import physics_scheduling_readback, require_control_scheduling
@@ -87,6 +89,7 @@ from simulation.reference_targets import (
     reference_tcp_target,
     reference_tracking_violations,
     verify_grasp_calibration_asset,
+    verify_paused_franka_asset,
 )
 from simulation.runtime_contracts import PolicyCommand, TeachingStart
 
@@ -145,6 +148,8 @@ class IsaacWorkcell:
         self._paused_camera_diagnostic: dict = {}
         self._gripper_asset_evidence: dict = {}
         self._grasp_frame_binding: dict | None = None
+        self._paused_gripper_servo: PausedGripperServo | None = None
+        self._paused_gripper_state_evidence: dict = {}
 
     def load(self, spec: SceneSpec) -> None:
         self._validate_asset_bundle()
@@ -288,6 +293,7 @@ class IsaacWorkcell:
             raise RuntimeError("The reference surface-defect material is not visibly bound.")
 
     def _prepare_episode(self) -> None:
+        self._restore_paused_gripper_servo()
         self.control_mode = "reference"
         self.control_done = True
         self.actuation_guard = None
@@ -354,6 +360,7 @@ class IsaacWorkcell:
         )
 
     def start(self, target_id: str, recording=None) -> None:
+        self._restore_paused_gripper_servo()
         self.control_mode = "reference"
         self.control_done = True
         self.policy_executor = None
@@ -405,6 +412,7 @@ class IsaacWorkcell:
         return changed
 
     def _start_control(self, mode, command, core: SimulationCore, recording) -> None:
+        self._restore_paused_gripper_servo()
         if core.control_profile is None:
             raise RuntimeError("The aligned control profile has not been enabled.")
         self._check_control_scheduling("command_start")
@@ -588,8 +596,7 @@ class IsaacWorkcell:
             raise RuntimeError(
                 "A paused learned episode cannot select the scripted reference servo."
             )
-        self.spec.require_paused_authority()
-        self._grasp_frame_binding = None
+        self._prepare_paused_servo(request, core)
         if is_pick_place_task(request.task, self.spec, request.target_station_id):
             try:
                 variant_sets = self.world.stage.GetPrimAtPath(self.robot.prim_path).GetVariantSets()
@@ -606,6 +613,26 @@ class IsaacWorkcell:
                 raise ValueError(
                     "The verified reference grasp calibration asset is unavailable."
                 ) from exc
+        self.controller = RMPFlowController(
+            name="paused-reference-expert",
+            robot_articulation=self.robot,
+            physics_dt=1 / core.paused_profile.control_sim_hz,
+        )
+        _, rotation = self.articulation_kinematics.compute_end_effector_pose()
+        self.orientation_target = tuple(float(value) for value in rot_matrix_to_quat(rotation))
+        self._gripper_asset_evidence = self._read_gripper_asset_evidence()
+        self.world.play()
+
+    def prepare_paused_learned(self, request, core: SimulationCore) -> None:
+        if request.controller != "learned" or request.model_sha256 is None:
+            raise RuntimeError("An explicitly authorized paused learned model is required.")
+        self._prepare_paused_servo(request, core)
+        self.world.play()
+
+    def _prepare_paused_servo(self, request, core: SimulationCore) -> None:
+        if core.paused_profile is None:
+            raise RuntimeError("A separately approved paused servo profile is required.")
+        self.spec.require_paused_authority()
         self._check_control_scheduling("command_start")
         self.control_mode = "paused_simulation"
         self.control_done = False
@@ -615,6 +642,9 @@ class IsaacWorkcell:
         self.scene_epoch = core.epoch
         self.target = request.target_station_id
         self.route = None
+        self.controller = None
+        self._grasp_frame_binding = None
+        self._gripper_asset_evidence = {}
         self.parked_state = None
         self.policy_executor = None
         self.issued_targets = None
@@ -629,20 +659,131 @@ class IsaacWorkcell:
         self.articulation_kinematics = ArticulationKinematicsSolver(
             self.robot, self.kinematics, "right_gripper"
         )
-        self.controller = RMPFlowController(
-            name="paused-reference-expert",
-            robot_articulation=self.robot,
-            physics_dt=1 / core.paused_profile.control_sim_hz,
-        )
         self.last_effector_position = self._measured_tcp()
-        _, rotation = self.articulation_kinematics.compute_end_effector_pose()
-        self.orientation_target = tuple(float(value) for value in rot_matrix_to_quat(rotation))
         self.task_watchdog = TaskWatchdog(self.position(), self.spec.station(self.target).position)
         self.grasp_verified = False
         self.peak_tcp_speed = 0.0
         self.paused_measured_success = False
-        self._gripper_asset_evidence = self._read_gripper_asset_evidence()
-        self.world.play()
+        self._prepare_paused_gripper_servo()
+
+    def _read_paused_drive_snapshot(self) -> DriveReadback:
+        controller = self.robot.get_articulation_controller()
+        kp, kd = controller.get_gains()
+        return DriveReadback(
+            tuple(float(value) for value in kp),
+            tuple(float(value) for value in kd),
+            tuple(float(value) for value in controller.get_max_efforts()),
+        )
+
+    def _read_paused_gripper_asset(self) -> dict:
+        from pxr import UsdPhysics
+
+        root = self.robot.prim_path
+        variants = self.world.stage.GetPrimAtPath(root).GetVariantSets()
+        identity = verify_paused_franka_asset(
+            Path(os.environ.get("FRANKA_ASSET_ROOT", "")),
+            Path(os.environ.get("FRANKA_USD_PATH", "")),
+            os.environ.get("FRANKA_ASSET_SHA256", ""),
+            {
+                name: variants.GetVariantSet(name).GetVariantSelection()
+                for name in ("Mesh", "Gripper")
+            },
+        )
+        driven = self.world.stage.GetPrimAtPath(root + "/panda_hand/panda_finger_joint1")
+        passive = self.world.stage.GetPrimAtPath(root + "/panda_hand/panda_finger_joint2")
+        require(
+            driven and passive and driven.HasAPI(UsdPhysics.DriveAPI, "linear"),
+            "The actual authored linear finger drive is unavailable",
+        )
+        drive = UsdPhysics.DriveAPI(driven, "linear")
+        values = {}
+        for name, attribute in (
+            ("drive_type", drive.GetTypeAttr()),
+            ("authored_stiffness", drive.GetStiffnessAttr()),
+            ("authored_damping", drive.GetDampingAttr()),
+            ("authored_max_force", drive.GetMaxForceAttr()),
+        ):
+            require(
+                attribute and attribute.HasAuthoredValueOpinion(),
+                "Expected authored finger drive data",
+            )
+            values[name] = attribute.Get() if name == "drive_type" else float(attribute.Get())
+        schemas = passive.GetMetadata("apiSchemas")
+        require(schemas is not None, "The actual passive mimic schema is unavailable")
+        schemas = list(schemas.GetAddedOrExplicitItems())
+        reference = passive.GetRelationship("physxMimicJoint:rotX:referenceJoint").GetTargets()
+        require(reference == [driven.GetPath()], "The actual mimic reference differs")
+        return {
+            **identity,
+            **values,
+            "joint_names": tuple(self.robot.dof_names),
+            "driven_joint_index": self.robot.get_dof_index("panda_finger_joint1"),
+            "driven_joint_type": driven.GetTypeName(),
+            "passive_joint_index": self.robot.get_dof_index("panda_finger_joint2"),
+            "passive_has_drive": any(name.startswith("PhysicsDriveAPI:") for name in schemas),
+            "mimic_axis": "rotX" if "PhysxMimicJointAPI:rotX" in schemas else None,
+            "mimic_gearing": float(passive.GetAttribute("physxMimicJoint:rotX:gearing").Get()),
+            "mimic_reference": driven.GetName(),
+        }
+
+    def _write_paused_finger_stiffness(self, value: float) -> None:
+        from isaacsim.core.simulation_manager import SimulationManager
+        from omni.timeline import get_timeline_interface
+
+        require(
+            not get_timeline_interface().is_stopped()
+            and SimulationManager.get_physics_sim_view() is not None
+            and self.dynamics.is_physics_handle_valid(),
+            "A live non-stopped physics view is required; USD gain fallback is forbidden",
+        )
+        before = self.frozen_physics_state(self.scene_epoch)
+        self.dynamics.set_gains(
+            kps=np.array([[value]]),
+            indices=np.array([0]),
+            joint_indices=np.array([7]),
+            save_to_usd=False,
+        )
+        if self.frozen_physics_state(self.scene_epoch) != before:
+            raise RuntimeError("The native gain change altered the frozen physical state.")
+
+    def _prepare_paused_gripper_servo(self) -> None:
+        if self._paused_gripper_servo is None:
+            self._paused_gripper_servo = PausedGripperServo(
+                read=self._read_paused_drive_snapshot,
+                write_stiffness=self._write_paused_finger_stiffness,
+            )
+
+        def calibrate():
+            before = self.frozen_physics_state(self.scene_epoch)
+            self._paused_gripper_state_evidence = {
+                "before": {**asdict(before), "epoch": str(before.epoch)},
+                "first_publication_precedes_calibration": self.paused_publications.publication
+                is not None,
+            }
+            self._paused_gripper_servo.apply(
+                self.control_binding, self._read_paused_gripper_asset()
+            )
+            after = self.frozen_physics_state(self.scene_epoch)
+            self._paused_gripper_state_evidence["after"] = {
+                **asdict(after),
+                "epoch": str(after.epoch),
+            }
+            if after != before:
+                raise RuntimeError("Paused gain calibration changed the frozen physical state.")
+
+        self.control_core.apply_guarded(self.control_binding, calibrate)
+
+    def _restore_paused_gripper_servo(self) -> None:
+        if self._paused_gripper_servo is not None:
+            self._paused_gripper_servo.restore()
+
+    def paused_gripper_servo_evidence(self) -> dict | None:
+        if self._paused_gripper_servo is None:
+            return None
+        return {
+            **self._paused_gripper_servo.evidence(),
+            "frozen_state": deepcopy(self._paused_gripper_state_evidence),
+        }
 
     def paused_reference_route_point(self, tcp, phase) -> tuple[float, float, float]:
         if self._grasp_frame_binding is None or phase not in GRASP_CONTACT_PHASES:
@@ -969,6 +1110,9 @@ class IsaacWorkcell:
         self._check_control_scheduling("before_control_tick")
         if not self.control_core.actuation_allowed(self.control_binding):
             raise RuntimeError("The paused episode authority is no longer active.")
+        if self._paused_gripper_servo is None:
+            raise RuntimeError("The required paused gripper servo was not calibrated.")
+        self._paused_gripper_servo.verify(self.control_binding)
         efforts = self._compensate_gravity()
         self._issue_command(targets, (0.0,) * 9)
         if self.reference_target_diagnostic is not None:
@@ -1736,3 +1880,17 @@ class IsaacWorkcell:
             self.paused_driver.stop()
         if self.policy_executor is not None:
             self.policy_executor.stop()
+        try:
+            self._restore_paused_gripper_servo()
+        except (ValueError, RuntimeError, TypeError, OSError) as exc:
+            logging.getLogger(__name__).exception(
+                "Owned paused gripper restoration failed; scene remains stopped"
+            )
+            if self.control_core is None:
+                raise
+            if self.paused_driver is not None:
+                self.paused_driver.fail(str(exc))
+            self.control_core.fail_scene(
+                self.paused_driver.episode.failure if self.paused_driver is not None else str(exc),
+                epoch=self.scene_epoch,
+            )

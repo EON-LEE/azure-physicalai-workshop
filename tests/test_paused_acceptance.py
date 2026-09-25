@@ -1,15 +1,23 @@
 """CPU report gate tests, never an actual demonstration or model-quality proof."""
 
 from copy import deepcopy
+from dataclasses import asdict, replace
 
 import pytest
+from test_paused_control import state
 from test_paused_dispatch import paused_core as paused_core
+from test_paused_gripper_servo import AUTHORED, ORIGINAL
 
 from simulation.paused_acceptance import validate_attempt
+from simulation.paused_gripper_servo import CALIBRATION_ID
 
 
 def report(paused_core):
     core, record, request = paused_core
+    frozen = {
+        **asdict(replace(state(), epoch=core.epoch, physics_step=60, world_time=1.0)),
+        "epoch": str(core.epoch),
+    }
     return record, {
         "schema": "physicalai.paused-reference-attempt/v1",
         "execution_timing": "paused_simulation",
@@ -21,6 +29,7 @@ def report(paused_core):
         "task": request.task.model_dump(),
         "source_kind": "reference_controller",
         "source_revision": "a" * 40,
+        "command_id": str(request.command_id),
         "simulator_image_digest": "sha256:" + "b" * 64,
         "control_profile_sha256": core.paused_profile.sha256,
         "criteria_sha256": "c" * 64,
@@ -34,6 +43,26 @@ def report(paused_core):
         "initial_state": {
             "observed_initial_pose_m": list(core.spec.part_position),
             "scene_builder_sha256": core.spec.scene_builder_sha256,
+        },
+        "gripper_servo": {
+            "calibration_id": CALIBRATION_ID,
+            "status": "restored",
+            "contact_forces_measured": False,
+            "owner": {
+                "owner": core.owner,
+                "command_id": str(request.command_id),
+                "environment_id": record.environment_id,
+                "revision": record.revision,
+                "epoch": str(core.epoch),
+            },
+            "authored": AUTHORED,
+            "before": asdict(ORIGINAL),
+            "after": asdict(replace(ORIGINAL, stiffness=ORIGINAL.stiffness[:7] + (2000.0, 0.0))),
+            "restored": asdict(ORIGINAL),
+            "frozen_state": {
+                "before": frozen,
+                "after": deepcopy(frozen),
+            },
         },
         "capture": {"status": "ready", "receipt": {"status": "uploaded", "frame_count": 2}},
         "metrics": {
@@ -93,3 +122,30 @@ def test_new_mode_still_rejects_an_over_budget_or_omitted_actual_interval(paused
     altered["metrics"]["simulation_steps"] = 13
     with pytest.raises(ValueError):
         validate_attempt(altered, environment=environment, mode="reference-task")
+
+
+@pytest.mark.parametrize(
+    "tamper", ["missing", "ignored", "force", "arm", "restore", "owner", "physics"]
+)
+def test_paused_gate_requires_actual_owned_gain_readback_not_just_a_success_flag(
+    paused_core, tamper
+):
+    environment, value = report(paused_core)
+    servo = deepcopy(value["gripper_servo"])
+    value["gripper_servo"] = servo
+    if tamper == "missing":
+        value.pop("gripper_servo")
+    elif tamper == "ignored":
+        servo["after"] = servo["before"]
+    elif tamper == "force":
+        servo["after"]["max_effort"] = ORIGINAL.max_effort[:7] + (8.0, 0.0)
+    elif tamper == "arm":
+        servo["after"]["stiffness"] = (10.0,) + ORIGINAL.stiffness[1:7] + (2000.0, 0.0)
+    elif tamper == "restore":
+        servo["restore_error"] = "Foreign drive change"
+    elif tamper == "owner":
+        servo["owner"]["command_id"] = "different"
+    else:
+        servo["frozen_state"]["after"]["physics_step"] += 1
+    with pytest.raises(ValueError, match="servo|gain|calibration|stiffness"):
+        validate_attempt(value, environment=environment, mode="reference-task")

@@ -78,6 +78,19 @@ def _oriented_pad_offset(orientation) -> tuple[float, float, float]:
 def verify_grasp_calibration_asset(
     root: Path, asset: Path, archive_sha256: str, variants: dict[str, str]
 ) -> dict:
+    return {
+        **verify_paused_franka_asset(root, asset, archive_sha256, variants),
+        "calibration_id": GRASP_FRAME_VERSION,
+        "tcp_frame": "right_gripper",
+        "contact_frame": "inner_pad_centroid",
+        "tcp_to_pad_centroid_m": TCP_TO_PAD_CENTROID_M,
+        "source_calibration_sha256": GRASP_SOURCE_CALIBRATION_SHA256,
+    }
+
+
+def verify_paused_franka_asset(
+    root: Path, asset: Path, archive_sha256: str, variants: dict[str, str]
+) -> dict:
     require(
         archive_sha256 == GRASP_ASSET_SHA256, "Reference grasp calibration asset archive mismatch"
     )
@@ -120,14 +133,9 @@ def verify_grasp_calibration_asset(
         )
         observed[relative] = checksum
     return {
-        "calibration_id": GRASP_FRAME_VERSION,
         "archive_sha256": GRASP_ASSET_SHA256,
         "variants": dict(variants),
         "verified_geometry_sha256": observed,
-        "tcp_frame": "right_gripper",
-        "contact_frame": "inner_pad_centroid",
-        "tcp_to_pad_centroid_m": TCP_TO_PAD_CENTROID_M,
-        "source_calibration_sha256": GRASP_SOURCE_CALIBRATION_SHA256,
     }
 
 

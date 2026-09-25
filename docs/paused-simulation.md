@@ -233,6 +233,43 @@ geometry calculations, **not** cooked contact manifolds or force measurements.
 The small frame correction is verified calibration, but is not claimed to cure
 the slip or to establish successful grasp, placement or 30-second completion.
 
+### Explicit paused gripper stiffness candidate
+
+`franka-paused-finger1-stiffness/v1` intentionally changes only the live
+`panda_finger_joint1` stiffness from 400 to 2,000 in the new paused source profile.
+It preserves damping 80, the authored force cap 7.2 (the actual float readback
+7.199999809265137 is compared within 0.000001), all seven arm gain/cap values,
+and the passive mimic finger's zero gains/cap. No material, mass, collision,
+joint target limit, velocity target, gravity mode, or task criterion changes.
+At the conservative 0.0036 m target error this can request the existing force
+cap through the spring term; it is **not** a measured normal/contact force.
+Actual attempt 05 still failed grasp after the small frame correction, so this
+is a separately reviewed engineering candidate, not a validated grasp result.
+
+The same helper is called by reference and learned paused SDK preparation.
+It first verifies the approved asset identity, actual joint order, authored
+force drive and mimic coupling, and the original live finger values. Only
+the current command's known override is idempotent; an unowned already-2,000
+drive is rejected. The SDK call uses the existing initialized articulation
+view, `indices=[0]`, `joint_indices=[7]`, `kps=[[2000]]` and
+`save_to_usd=False`, never a force-limit or damping setter. A non-stopped
+timeline, live SimulationManager physics view and valid articulation handle
+are mandatory because the SDK otherwise falls back to USD authoring even
+when `save_to_usd=False`.
+
+Application is command-owned, after the original unarmed camera publication
+but before recorded actuation. Complete frozen joint/object state, epoch,
+physics index and simulation time must remain identical through the change.
+The original publication is not retimestamped or claimed to have used 2,000
+during warm-up. Every recorded tick verifies the owned full drive readback.
+Stop/failure, reset/view replacement, and transitions to legacy or real-time
+control restore only the known original baseline while the physics view is
+still valid. Unexpected values fail closed without repairing unrelated state.
+The private `gripper_servo` receipt retains authored metadata, complete
+before/after/restored arrays and the frozen-state comparison. The separate
+acceptance gate requires that evidence; a success flag or ignored SDK setter
+cannot substitute for the actual readback and restoration.
+
 ## Reference capture vertical slice
 
 `SimulatorRuntime` dispatches only a separately authorized

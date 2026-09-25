@@ -207,6 +207,7 @@ def run(args) -> dict:
             if hardware is not None:
                 report["reference_target_evidence"] = hardware.reference_target_evidence()
                 report["camera_publication_evidence"] = hardware.paused_camera_evidence()
+                report["gripper_servo"] = hardware.paused_gripper_servo_evidence()
             _persist_receipt(args.output, report)
         finally:
             try:

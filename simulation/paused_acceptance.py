@@ -13,6 +13,7 @@ from learning.common import canonical, digest, finite, integer, read_json, requi
 from learning.contract import Scope
 from learning.paused.capture import validate_dataset
 from simulation.extensions import SceneRegistry
+from simulation.paused_gripper_servo import validate_servo_receipt
 
 
 def validate_attempt(report: dict, *, environment: EnvironmentRecord, mode: str) -> dict:
@@ -56,6 +57,17 @@ def validate_attempt(report: dict, *, environment: EnvironmentRecord, mode: str)
     intervals = metrics.get("intervals")
     require(isinstance(intervals, list) and len(intervals) * 6 == steps, "Missing actual intervals")
     require(receipt.get("frame_count") == len(intervals), "Capture omitted an actual interval")
+    validate_servo_receipt(
+        report.get("gripper_servo"),
+        command_id=report.get("command_id"),
+        environment_id=environment.environment_id,
+        revision=environment.revision,
+    )
+    require(
+        report["gripper_servo"]["frozen_state"]["before"]["physics_step"]
+        == intervals[0]["observation_physics_step"],
+        "Gripper servo calibration was not bound to the initial recorded physical frame",
+    )
     prior = None
     for interval in intervals:
         start = integer(interval.get("observation_physics_step"), "interval start step")
