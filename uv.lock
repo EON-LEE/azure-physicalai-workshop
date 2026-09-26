@@ -73,6 +73,20 @@ wheels = [
 ]
 
 [[package]]
+name = "azure-batch"
+version = "15.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "azure-core" },
+    { name = "isodate" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/e9/ec/9c38379dea2a4817a5c5b44282eff56476326cefa09da9e804809b397656/azure_batch-15.1.0.tar.gz", hash = "sha256:2f684d176b457b7213535e145180a914ed6844b2d1066fcc22ac88c3ac9e3fa5", size = 298104, upload-time = "2026-05-01T23:30:12.731Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/9b/35/358a421ebbb0d6fa929333dd71b94922d34445aa02d9d2fa7c0a277dcf53/azure_batch-15.1.0-py3-none-any.whl", hash = "sha256:6001232ba67a4051f4f1b35d434232757b78baa14e4964ec3bfb91afa1d10ed4", size = 260933, upload-time = "2026-05-01T23:30:14.604Z" },
+]
+
+[[package]]
 name = "azure-core"
 version = "1.41.0"
 source = { registry = "https://pypi.org/simple" }
@@ -204,6 +218,11 @@ dependencies = [
     { name = "uvicorn", extra = ["standard"] },
 ]
 
+[package.optional-dependencies]
+batch = [
+    { name = "azure-batch" },
+]
+
 [package.dev-dependencies]
 dev = [
     { name = "pytest" },
@@ -213,6 +232,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "azure-ai-projects", specifier = ">=2.3,<3" },
+    { name = "azure-batch", marker = "extra == 'batch'", specifier = "==15.1.0" },
     { name = "azure-cosmos", specifier = ">=4.9,<5" },
     { name = "azure-identity", specifier = ">=1.23,<2" },
     { name = "azure-keyvault-secrets", specifier = ">=4.10,<5" },
@@ -227,6 +247,7 @@ requires-dist = [
     { name = "pyjwt", extras = ["crypto"], specifier = ">=2.10,<3" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.34,<1" },
 ]
+provides-extras = ["batch"]
 
 [package.metadata.requires-dev]
 dev = [

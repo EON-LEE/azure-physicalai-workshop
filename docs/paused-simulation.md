@@ -1,5 +1,9 @@
 # Paused simulation learning (source work in progress)
 
+For bounded, noninteractive Azure Batch execution without a live bridge, see
+[Managed simulator jobs](managed-simulation.md). Managed scheduling does not change
+the runtime criteria or establish GPU/model quality.
+
 `NON_REALTIME_SIMULATION` is a separate simulation-only mode. It does not pass
 or replace the existing real-time 100 ms control / 80 ms inference gate.
 Real-time reference behavior, raw v1/v2 semantics and real-time policy
