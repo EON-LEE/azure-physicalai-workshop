@@ -343,6 +343,28 @@ def test_pool_preflight_consumes_actual_lowercase_sdk_enum_and_startup_file(spec
     assert platform_client.downloads[0][2] == "startup/wd/preflight.json"
 
 
+def test_pool_preflight_accepts_actual_arm_created_service_enum_casing(spec, platform_client):
+    from simulation.batch import inspect_platform
+
+    platform_client.pool.network_configuration.public_ip_address_configuration["provision"] = (
+        "NoPublicIPAddresses"
+    )
+    assert inspect_platform(platform_client.client, spec.platform)["ready"] is True
+
+
+@pytest.mark.parametrize("provision", ["batchmanaged", "UserManaged", "", None])
+def test_pool_preflight_still_rejects_public_or_missing_ip_configuration(
+    spec, platform_client, provision
+):
+    from simulation.batch import inspect_platform
+
+    platform_client.pool.network_configuration.public_ip_address_configuration["provision"] = (
+        provision
+    )
+    with pytest.raises(ValueError, match="public IPs"):
+        inspect_platform(platform_client.client, spec.platform)
+
+
 def test_autoscale_that_can_later_allocate_more_nodes_is_rejected_before_warmup(
     spec, platform_client
 ):

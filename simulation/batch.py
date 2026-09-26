@@ -441,7 +441,7 @@ def validate_pool(pool, platform: BatchPlatform) -> None:
         and bool(network.subnet_id)
         and network.public_ip_address_configuration is not None
         and network.public_ip_address_configuration.ip_address_provisioning_type
-        == "nopublicipaddresses",
+        in ("nopublicipaddresses", "NoPublicIPAddresses"),
         "Managed simulator nodes must not have public IPs.",
     )
     start = pool.start_task

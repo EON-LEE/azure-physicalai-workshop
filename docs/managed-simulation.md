@@ -137,6 +137,9 @@ Read-only preflight checks the actual pool/image/identity/autoscale/StartTask,
 idle single LowPriority node, successful exact driver extension and fresh
 `startup/wd/preflight.json`. It never starts another job. A node that is absent,
 busy, expiring, misconfigured or lacks graphics fails closed.
+The actual service returns `NoPublicIPAddresses` for an ARM-created pool, while
+SDK-created payloads use `nopublicipaddresses`. Both explicit no-public-IP values
+are accepted; missing, Batch-managed and user-managed public addressing are not.
 
 Only after readiness should the trusted operator mint a **new original grant**
 with at most 600 seconds lifetime, binding the exact owner, tenant, saved case,
