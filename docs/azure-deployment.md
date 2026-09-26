@@ -18,6 +18,32 @@ Container Apps Job is an alternative).
 The API and simulator authenticate with managed identities. The web client
 uses real Microsoft Entra MSAL login and delegated API tokens.
 
+## Managed execution transition
+
+The managed path replaces direct GPU VM start/stop and remote-command operations
+with Azure Batch tasks for Isaac Sim and Azure Machine Learning jobs for policy
+training. Both services still need supported GPU capacity; an allocated node or
+successful CUDA check is not proof that Isaac's RTX renderer works.
+
+`infra/simulation-batch-foundation.bicep` is an opt-in foundation, disabled by
+default. It creates an Entra-only Batch account with public access disabled,
+separate `batchAccount` and `nodeManagement` private endpoints, and private DNS.
+Supply an existing approved VNet, endpoint subnet and NAT gateway. The explicitly
+named new node subnet disables implicit outbound access and denies inbound node
+connections. Deploy it in the VNet's resource group and region; choose an unused
+node subnet name and address range. It does not create a pool, start a node or
+task, assign roles, or change tenant governance controls.
+
+Pool admission additionally requires a pinned supported container-host image,
+the GPU family's correct graphics driver, private managed-identity access to
+inputs/outputs, a bounded task deadline and actual Vulkan/RTX readiness. Managed
+preemption is an interrupted attempt, not permission to replay a physical
+episode silently. Durable checkpoint markers must follow verification of all
+uploaded bytes; incomplete checkpoint folders are not resumable artifacts.
+This foundation alone does not establish a working managed renderer, completed
+training, or learned-policy quality. The older direct-VM instructions below
+describe the existing reference deployment, not the new managed execution path.
+
 ## Current verification boundary (2026-09-20/21)
 
 The code, CPU tests, frontend build/browser harness and Bicep compilation can be

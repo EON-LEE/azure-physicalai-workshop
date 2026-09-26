@@ -31,6 +31,7 @@ def validate() -> None:
             "learning-worker",
             "learning-reconciler",
             "gpu-capacity-probe",
+            "simulation-batch-foundation",
         ):
             output = Path(temporary) / f"{name}.json"
             subprocess.run(
@@ -118,6 +119,13 @@ def validate() -> None:
     assert scheduled["replicaRetryLimit"] == 0
     assert scheduled["replicaTimeout"] == 120
     assert scheduled["scheduleTriggerConfig"]["parallelism"] == 1
+    managed_simulation = templates["simulation-batch-foundation"]
+    batch = resources(managed_simulation, "Microsoft.Batch/batchAccounts")[0]
+    assert managed_simulation["parameters"]["enabled"]["defaultValue"] is False
+    assert batch["properties"]["publicNetworkAccess"] == "Disabled"
+    assert batch["properties"]["allowedAuthenticationModes"] == ["AAD"]
+    assert not resources(managed_simulation, "Microsoft.Compute/virtualMachines")
+    assert not resources(managed_simulation, "Microsoft.Batch/batchAccounts/pools")
     for script in (
         ROOT / "infra" / "start-simulator.sh",
         ROOT / "scripts" / "start-live-simulator.sh",
