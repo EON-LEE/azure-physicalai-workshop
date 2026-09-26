@@ -14,6 +14,7 @@ COPY apps/api /srv/apps/api
 COPY apps/learning_worker /srv/apps/learning_worker
 COPY learning /srv/learning
 COPY contracts /srv/contracts
+COPY simulation /srv/simulation
 ENV PATH="/srv/apps/learning_worker/.venv/bin:$PATH" \
     PYTHONPATH="/srv" \
     PYTHONDONTWRITEBYTECODE="1"

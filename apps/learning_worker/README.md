@@ -52,6 +52,33 @@ The build intentionally has no mutable image defaults. `uv.lock` pins worker
 dependencies separately; no Torch/Isaac packages are mixed into the API runtime.
 This repository change does not deploy the service or assign identities.
 
+### Managed Batch controller packaging
+
+The worker image includes the `simulation` source and pins `azure-batch==15.1.0`
+for the lightweight `python -m simulation.batch` controller. This is an
+operator-invoked managed-job CLI, **not an always-live simulator bridge**.
+Isaac runs in the separately approved GPU task image through
+`simulation.batch_task`; copying its source does not install or start Isaac,
+CUDA, Torch or a model in this CPU worker.
+
+The existing non-root HTTP entrypoint, routes and default-OFF admission flags
+are unchanged. Packaging the SDK grants no Batch authority and creates no pool,
+node or job. Review `python -m simulation.batch --help` and the approved
+platform/job specification before use; `warmup` and `submit` require explicit
+`--confirm-submission`. Image build/deployment and any actual submission remain
+the deployment operator's responsibility.
+
+Build this packaging together with the runtime-owner's committed
+`simulation.batch` and `simulation.batch_task` sources. The following SDK smoke
+check uses the real locked package and rejects network/process attempts during
+import; it does not replace a no-GPU/no-network controller import check on the
+combined image:
+
+```bash
+python -m pytest tests/test_learning_worker_packaging.py -q
+uv run --project apps/learning_worker --locked --no-dev python tests/check_worker_batch_sdk.py
+```
+
 ### Internal ACA deployment source
 
 [`infra/learning-worker.bicep`](../../infra/learning-worker.bicep) deploys only
