@@ -51,6 +51,9 @@ alone; adding Reader enabled the read. Neither role is a reason to grant
 Data Contributor or resize permission. The caller also needs read access to the
 private output artifacts for integrity-checked status. Input publication is a
 separately authorized operator operation, not an implicit CLI upload.
+The private worker deployment sets `AZURE_CLIENT_ID` to its existing worker
+identity so `DefaultAzureCredential` selects that caller, not the separate node
+identity. No client secret or interactive login is configured.
 
 The **node UAMI** needs AcrPull on the selected registry, Blob Data Reader for the
 approved inputs/assets, and Blob Data Contributor for the private `demonstrations`

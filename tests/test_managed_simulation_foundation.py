@@ -121,3 +121,13 @@ def test_batch_node_identity_has_no_legacy_tls_or_control_permissions(tmp_path):
         assert matching[0]["properties"]["principalType"] == "ServicePrincipal"
     assert "Microsoft.KeyVault" not in json.dumps(template)
     assert not resources(template, "Microsoft.Compute/virtualMachines")
+
+
+def test_private_controller_selects_the_existing_worker_identity(tmp_path):
+    template = compile_template(ROOT / "infra" / "learning-worker.bicep", tmp_path / "worker.json")
+    worker = resources(template, "Microsoft.App/containerApps")[0]
+    env = {
+        item["name"]: item["value"]
+        for item in worker["properties"]["template"]["containers"][0]["env"]
+    }
+    assert env["AZURE_CLIENT_ID"] == env["LEARNING_WORKER_MANAGED_IDENTITY_CLIENT_ID"]

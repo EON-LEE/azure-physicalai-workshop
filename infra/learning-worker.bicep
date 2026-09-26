@@ -123,6 +123,7 @@ resource worker 'Microsoft.App/containerApps@2025-07-01' = {
           { name: 'LEARNING_WORKER_TENANT_ID', value: entraTenantId }
           { name: 'LEARNING_WORKER_AUDIENCE', value: workerAudience }
           { name: 'LEARNING_WORKER_MANAGED_IDENTITY_CLIENT_ID', value: workerIdentity.properties.clientId }
+          { name: 'AZURE_CLIENT_ID', value: workerIdentity.properties.clientId }
           { name: 'LEARNING_WORKER_ALLOWED_API_PRINCIPALS', value: string([apiPrincipalId]) }
           { name: 'LEARNING_WORKER_REGISTRY_ACCOUNT_URL', value: registryAccountUrl }
           { name: 'LEARNING_WORKER_REGISTRY_CONTAINER', value: registryContainer }
