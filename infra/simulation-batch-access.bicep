@@ -21,3 +21,13 @@ resource submitter 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (en
     principalType: 'ServicePrincipal'
   }
 }
+
+resource reader 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (enabled) {
+  name: guid(account.id, submitterPrincipalId, '11076f67-66f6-4be0-8f6b-f0609fd05cc9')
+  scope: account
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '11076f67-66f6-4be0-8f6b-f0609fd05cc9')
+    principalId: submitterPrincipalId
+    principalType: 'ServicePrincipal'
+  }
+}

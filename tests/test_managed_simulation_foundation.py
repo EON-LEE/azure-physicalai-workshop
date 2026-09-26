@@ -84,11 +84,18 @@ def test_job_submission_access_cannot_resize_pools_or_grant_broader_access(tmp_p
     )
     assert template["parameters"]["enabled"]["defaultValue"] is False
     grants = resources(template, "Microsoft.Authorization/roleAssignments")
-    assert len(grants) == 1
-    grant = grants[0]
-    assert grant["condition"] == "[parameters('enabled')]"
-    assert "Microsoft.Batch/batchAccounts" in grant["scope"]
-    assert "batchAccountName" in grant["scope"]
-    assert "48e5e92e-a480-4e71-aa9c-2778f4c13781" in grant["properties"]["roleDefinitionId"]
-    assert grant["properties"]["principalType"] == "ServicePrincipal"
-    assert grant["properties"]["principalId"] == "[parameters('submitterPrincipalId')]"
+    assert len(grants) == 2
+    expected_roles = {
+        "48e5e92e-a480-4e71-aa9c-2778f4c13781",
+        "11076f67-66f6-4be0-8f6b-f0609fd05cc9",
+    }
+    for grant in grants:
+        assert grant["condition"] == "[parameters('enabled')]"
+        assert "Microsoft.Batch/batchAccounts" in grant["scope"]
+        assert "batchAccountName" in grant["scope"]
+        assert grant["properties"]["principalType"] == "ServicePrincipal"
+        assert grant["properties"]["principalId"] == "[parameters('submitterPrincipalId')]"
+    assert all(
+        any(role in grant["properties"]["roleDefinitionId"] for grant in grants)
+        for role in expected_roles
+    )

@@ -35,8 +35,10 @@ node subnet name and address range. It does not create a pool, start a node or
 task, assign roles, or change tenant governance controls.
 
 `infra/simulation-batch-access.bicep` separately grants the existing private
-worker **Azure Batch Job Submitter** on that account only. It is also disabled
-by default. This role can submit jobs and tasks and read pools, but cannot
+worker **Azure Batch Job Submitter** and **Azure Batch Account Reader** on that
+account only. It is also disabled by default. Job Submitter does not include
+`Microsoft.Batch/batchAccounts/read`: an actual private supported-image request
+returned `PermissionDenied` without the separate reader role. Neither role can
 create or resize pools. Pool scaling must remain within the separately reviewed
 zero-to-one autoscale configuration and its fixed expiry.
 
