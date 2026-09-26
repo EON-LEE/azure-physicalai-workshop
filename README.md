@@ -119,9 +119,27 @@ qualifies real-time control. Old recordings are not relabeled for the new
 budget. The latest physical-verification attempt was interrupted by an
 external administrative VM deallocation before a result could be verified.
 Its physical outcome is unknown, not a pass. Further GPU execution requires
-an approved uninterrupted execution window. A successful full-task
-demonstration, actual policy training and paired physical acceptance remain
-unverified, and learning admission remains disabled.
+a bounded, approved managed-job attempt rather than repeated manual VM starts.
+A successful full-task demonstration, actual policy training and paired physical
+acceptance remain unverified, and learning admission remains disabled.
+
+**Managed execution transition:** a private, Entra-only Azure Batch account,
+both service private endpoints, explicit NAT-backed node subnet and
+account-scoped submitter/reader permissions have now been deployed. The private
+worker has actually read the Batch image catalog through its managed identity.
+This creates no GPU pool or node and does not establish renderer compatibility.
+The intended split is Batch for Isaac rendering/physics and Azure ML for
+training; managed jobs still require supported GPU hardware underneath.
+
+**Intermediate weights:** the native training path can publish periodic
+checkpoints directly to private Blob, verify every file's bytes and ETag, then
+write the complete manifest last. Partial newer checkpoints cannot supersede a
+verified complete checkpoint. The pinned LeRobot CPU check has actually saved
+intermediate model/optimizer/scheduler/RNG files and restored identical model
+weights on a fresh local path. That result is explicitly **weights-only**
+recovery, not exact optimizer continuation, Azure training, or physical quality.
+The option must be included in a newly reviewed training plan; old plans are
+not silently relabeled as interruption-safe.
 
 See [policy learning](docs/policy-learning.md),
 [the learning API](docs/learning-api.md), and
