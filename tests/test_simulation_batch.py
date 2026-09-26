@@ -169,6 +169,42 @@ def test_repeated_submission_reconciles_without_duplicate_job_or_episode(spec, b
     ]
 
 
+def test_service_duration_format_does_not_change_existing_job_authority(spec, batch_sdk):
+    from azure.batch import models
+
+    from simulation.batch import build_warmup, submit_requests_once
+
+    class ServiceDurationClient(Client):
+        def get_job(self, job_id):
+            result = super().get_job(job_id).as_dict()
+            result["constraints"]["maxWallClockTime"] = "PT15M"
+            return models.BatchJob(result)
+
+        def get_task(self, job_id, task_id):
+            result = super().get_task(job_id, task_id).as_dict()
+            result["constraints"]["maxWallClockTime"] = "PT1M"
+            return models.BatchTask(result)
+
+    client = ServiceDurationClient()
+    job, task = build_warmup(spec.platform, spec.attempt_id)
+    submit_requests_once(client, job, task)
+    submit_requests_once(client, job, task)
+    assert [item[0] for item in client.writes] == ["job", "task", "arm-termination"]
+
+
+@pytest.mark.parametrize("duration", ["PT16M", "PT14M", None])
+def test_reconciliation_rejects_changed_or_missing_duration(spec, batch_sdk, duration):
+    from azure.batch import models
+
+    from simulation.batch import _same_request
+
+    job, _ = build_job_task(spec, spec_url(spec), spec.sha256)
+    wire = job.as_dict()
+    wire["constraints"]["maxWallClockTime"] = duration
+    with pytest.raises(ValueError, match="binding|duration"):
+        _same_request(models.BatchJob(wire), job, job=True)
+
+
 def test_reused_attempt_id_cannot_change_the_source_or_physical_input(spec, batch_sdk):
     client = Client()
     submit_once(client, spec, spec_url(spec), spec.sha256)

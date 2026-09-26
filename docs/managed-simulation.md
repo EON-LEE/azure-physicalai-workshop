@@ -165,6 +165,9 @@ Jobs are created with `onAllTasksComplete=noaction`, the single task is added,
 then an ETag-conditional patch sets **only** `onAllTasksComplete=terminatejob`.
 Otherwise Azure treats an empty job as already complete. Reconciliation refuses
 changed bindings and never resets job constraints or deadlines. Status is GET-only.
+Duration comparison uses the SDK's typed values: the service canonicalizes
+`PT15M00S` to `PT15M` and `PT01M00S` to `PT1M`. That formatting difference does
+not authorize a new deadline; unequal or missing durations are rejected.
 The account rejected the optional job-level `maxParallelTasks` feature with
 `Forbidden`, so jobs omit it and the related optional task-preemption setting.
 Concurrency remains bounded by the verified pool's maximum one node, one task

@@ -309,6 +309,18 @@ def build_warmup(platform: BatchPlatform, warmup_id: UUID):
 
 def _same_request(observed, expected, *, job: bool = False) -> None:
     actual, requested = observed.as_dict(), expected.as_dict()
+    for wire_name, property_name in (
+        ("maxWallClockTime", "max_wall_clock_time"),
+        ("retentionTime", "retention_time"),
+    ):
+        if wire_name in requested.get("constraints", {}):
+            require(
+                observed.constraints is not None
+                and getattr(observed.constraints, property_name)
+                == getattr(expected.constraints, property_name),
+                "Existing managed job/task has a different immutable duration binding.",
+            )
+            actual["constraints"][wire_name] = requested["constraints"][wire_name]
     if job:
         require(
             actual.get("onAllTasksComplete") in {"noaction", "terminatejob"},
