@@ -32,6 +32,7 @@ def validate() -> None:
             "learning-reconciler",
             "gpu-capacity-probe",
             "simulation-batch-foundation",
+            "simulation-batch-access",
         ):
             output = Path(temporary) / f"{name}.json"
             subprocess.run(

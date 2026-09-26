@@ -34,6 +34,12 @@ connections. Deploy it in the VNet's resource group and region; choose an unused
 node subnet name and address range. It does not create a pool, start a node or
 task, assign roles, or change tenant governance controls.
 
+`infra/simulation-batch-access.bicep` separately grants the existing private
+worker **Azure Batch Job Submitter** on that account only. It is also disabled
+by default. This role can submit jobs and tasks and read pools, but cannot
+create or resize pools. Pool scaling must remain within the separately reviewed
+zero-to-one autoscale configuration and its fixed expiry.
+
 Pool admission additionally requires a pinned supported container-host image,
 the GPU family's correct graphics driver, private managed-identity access to
 inputs/outputs, a bounded task deadline and actual Vulkan/RTX readiness. Managed
