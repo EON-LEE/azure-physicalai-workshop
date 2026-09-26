@@ -123,13 +123,16 @@ a bounded, approved managed-job attempt rather than repeated manual VM starts.
 A successful full-task demonstration, actual policy training and paired physical
 acceptance remain unverified, and learning admission remains disabled.
 
-**Managed execution transition:** a private, Entra-only Azure Batch account,
-both service private endpoints, explicit NAT-backed node subnet and
-account-scoped submitter/reader permissions have now been deployed. The private
-worker has actually read the Batch image catalog through its managed identity.
-This creates no GPU pool or node and does not establish renderer compatibility.
-The intended split is Batch for Isaac rendering/physics and Azure ML for
-training; managed jobs still require supported GPU hardware underneath.
+**Managed execution transition:** private, Entra-only Azure Batch accounts,
+service private endpoints, NAT-backed node subnets, dedicated node identity and
+account-scoped submitter/reader permissions have been deployed. The private
+worker and Isaac task images have verified immutable source bytes. A real
+single-node LowPriority warm-up was submitted in East US 2, but Batch returned
+`AllocationFailed` because the requested GPU size lacked regional capacity.
+No GPU node ran; the unchanged allocation cutoff returned the target to zero.
+The checked West US 2 alternative has zero Batch LowPriority-core quota, so no
+GPU pool or task was started there. The split remains Batch for Isaac
+rendering/physics and Azure ML for training, not a manual VM restart workflow.
 
 **Intermediate weights:** the native training path can publish periodic
 checkpoints directly to private Blob, verify every file's bytes and ETag, then
@@ -140,10 +143,13 @@ weights on a fresh local path. A separate **full-state** path now preserves the
 optimizer, scheduler, exact random state and consumed data position. Actual
 native CPU runs interrupted mid-epoch and at an epoch boundary matched
 uninterrupted training, including the native resume CLI and next batch.
-Weights-only recovery remains explicitly distinct. CPU equivalence is not
-Azure Blob durability, cross-device GPU determinism or physical quality.
-Either option must be included in a newly reviewed training plan; old plans
-are not silently relabeled as interruption-safe.
+Weights-only recovery remains explicitly distinct. An actual private Blob
+diagnostic also restored all 12 complete checkpoint files in a separate
+managed CPU job after the publisher ended, ignoring a torn newer checkpoint.
+That diagnostic used a tiny CPU fixture: it does not establish real SmolVLA
+training, cross-device GPU determinism or physical quality. Either mode requires
+a newly reviewed job with its own deadline and approval for the remaining
+updates; old plans are not silently relabeled as interruption-safe.
 
 See [policy learning](docs/policy-learning.md),
 [the learning API](docs/learning-api.md), and

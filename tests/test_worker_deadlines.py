@@ -88,6 +88,37 @@ def test_operator_expiry_is_the_earliest_deadline_not_a_renewable_duration():
     assert worker._configuration(ACTOR, spec) == approval["config"]
 
 
+def test_full_state_approval_counts_only_remaining_optimizer_updates():
+    spec, approval = reviewed()
+    approval["config"]["parameters"].update(
+        max_steps=spec.run.optimizer_steps + 4, resume_mode="full_state"
+    )
+    approval["config"]["checkpointing"] = {"resume": {"step": 4}}
+    worker = PolicyLearningWorker(SimpleNamespace(approved_plan=lambda *_: approval), None, uuid4())
+    assert worker._configuration(ACTOR, spec) == approval["config"]
+
+
+def test_full_state_global_horizon_cannot_be_misreported_as_new_updates():
+    spec, approval = reviewed()
+    approval["config"]["parameters"]["resume_mode"] = "full_state"
+    approval["config"]["checkpointing"] = {"resume": {"step": 4}}
+    worker = PolicyLearningWorker(SimpleNamespace(approved_plan=lambda *_: approval), None, uuid4())
+    with pytest.raises(Problem) as failure:
+        worker._configuration(ACTOR, spec)
+    assert failure.value.code == "worker_plan_mismatch"
+
+
+@pytest.mark.parametrize("step", [None, True, "4", 0, -1, 100000])
+def test_full_state_remaining_update_budget_requires_a_real_checkpoint_step(step):
+    spec, approval = reviewed()
+    approval["config"]["parameters"]["resume_mode"] = "full_state"
+    approval["config"]["checkpointing"] = {"resume": {"step": step}}
+    worker = PolicyLearningWorker(SimpleNamespace(approved_plan=lambda *_: approval), None, uuid4())
+    with pytest.raises(Problem) as failure:
+        worker._configuration(ACTOR, spec)
+    assert failure.value.code == "worker_resume_budget"
+
+
 def test_missing_monitor_enrollment_blocks_before_paid_backend_access():
     spec, approval = reviewed()
 

@@ -202,6 +202,13 @@ but cannot start new paid work. Before submission the worker freezes the exact
 configuration alongside its original job claim; subsequent status/cancel never
 adopt a changed project-level approval.
 
+For an explicitly reviewed `full_state` restart, the public request's
+`optimizer_steps` counts **new remaining updates**. It must equal the native
+configuration's unchanged global `max_steps` minus the exact approved source
+checkpoint step. Missing, invalid or exhausted steps are rejected before
+submission. New and weights-only jobs retain their original step-count semantics;
+none of these modes silently retries a paid job.
+
 The API's conditional Cosmos claim and the worker's create-only Blob claim
 precede paid submission. An ambiguous request is reconciled by the existing
 job name/tags. It is never retried with a new job name or an upsert of old work.

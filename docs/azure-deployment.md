@@ -52,6 +52,15 @@ This foundation alone does not establish a working managed renderer, completed
 training, or learned-policy quality. The older direct-VM instructions below
 describe the existing reference deployment, not the new managed execution path.
 
+The managed foundation and worker/task images have subsequently been deployed.
+The first real one-node Batch warm-up was accepted, but East US 2 allocation
+failed for insufficient GPU capacity and returned to zero at its original
+cutoff. The checked West US 2 account has zero LowPriority-core quota. No managed
+Isaac execution or trained-policy success is claimed. Separate managed CPU
+jobs did verify native complete-checkpoint publication to private Blob and
+fresh-compute restoration, including rejection of a torn newer checkpoint.
+Those durability records are explicitly tiny CPU fixtures, not robot training.
+
 ## Current verification boundary (2026-09-20/21)
 
 The code, CPU tests, frontend build/browser harness and Bicep compilation can be

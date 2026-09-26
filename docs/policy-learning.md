@@ -591,10 +591,19 @@ and use a **new reviewed image/snapshot fingerprint**; original images/proofs
 remain immutable. The API/worker must propagate the exact operator-approved
 `checkpointing` object and both immutable resume inputs, install the updated
 native model-provenance validator, and retain fresh deadline enrollment and
-new-job mutation claims. The public API's existing step-limit field is an upper
-bound; full-state callers must not confuse the original global target with the
-smaller number of updates remaining. This native slice adds no API route,
+new-job mutation claims. For full-state jobs, the worker requires the public
+request's `optimizer_steps` to equal `max_steps - checkpointing.resume.step`:
+the approval covers new updates, not work already completed by the source job.
+The original global horizon remains unchanged in the native configuration.
+The same approval/deadline binding remains mandatory. This native slice adds no API route,
 deployment, cloud resource or automatic paid retry.
+
+An actual private Azure Blob diagnostic subsequently published all 12 safe
+checkpoint files, verified ETags and hashes before the completion manifest, then
+restored them in a separate Container Apps Job after the publisher terminated.
+The restorer selected completed step 3 and rejected a deliberately torn newer
+step 4. This proves the external checkpoint transport using a **tiny native CPU
+fixture**; it is not SmolVLA robot training, CUDA continuation or physical quality.
 
 ### Paused evaluation evidence and release boundaries
 

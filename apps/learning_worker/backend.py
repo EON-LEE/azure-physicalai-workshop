@@ -197,9 +197,28 @@ class PolicyLearningWorker:
                     "worker_input_mismatch",
                     "Dataset and parent model must match approved content digests.",
                 )
-            if config.get("parameters", {}).get("max_steps") != specification.run.optimizer_steps:
+            parameters = config["parameters"]
+            new_updates = parameters.get("max_steps")
+            if parameters.get("resume_mode") == "full_state":
+                checkpointing = config.get("checkpointing")
+                resume = checkpointing.get("resume") if isinstance(checkpointing, dict) else None
+                completed_steps = resume.get("step") if isinstance(resume, dict) else None
+                if (
+                    type(new_updates) is not int
+                    or type(completed_steps) is not int
+                    or not 0 < completed_steps < new_updates <= 100000
+                ):
+                    raise Problem(
+                        422,
+                        "worker_resume_budget",
+                        "Full-state approval requires the original target and completed step.",
+                    )
+                new_updates -= completed_steps
+            if new_updates != specification.run.optimizer_steps:
                 raise Problem(
-                    409, "worker_plan_mismatch", "Optimizer count differs from explicit approval."
+                    409,
+                    "worker_plan_mismatch",
+                    "New optimizer updates differ from explicit approval.",
                 )
         elif (
             specification.run.evaluation_plan_sha256 != specification.project.evaluation_plan.sha256

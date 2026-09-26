@@ -12,6 +12,26 @@ No manual VM start/stop, SSH, runCommand or public simulator endpoint is require
 Organizational shutdown, allocation and cost policies still apply. A100/H100
 training compute is not a substitute for an RTX-capable Isaac renderer.
 
+## Actual managed execution boundary
+
+The private foundation, caller/node permissions and immutable worker/simulator
+images were deployed and checked on 2026-09-27 KST. The actual Batch service
+exposed two differences from synthetic SDK payloads: ARM-created no-public-IP
+enum casing, and canonical duration strings. It also rejected the optional
+`maxParallelTasks` account feature. These cases now have regressions; the adapter
+preserves the same one-node/one-slot limits and original job deadlines without
+enabling account features.
+
+The East US 2 warm-up job and its single task were accepted. Batch then returned
+`AllocationFailed`: insufficient regional capacity for the requested LowPriority
+GPU size. No GPU node or `SimulationApp` ran. The original fixed allocation
+window ended with current and target nodes both zero. A private West US 2
+alternative was prepared using the existing connected network, but its Batch
+account has zero LowPriority-core quota; no GPU pool or job was submitted there.
+Both renderer compatibility and the full physical learning gates remain
+unverified. A supported available GPU allocation, or approved quota in the
+alternative region, is still required; source/image/CPU success cannot replace it.
+
 ## Explicit platform and permission prerequisites
 
 The pool-only `infra/simulation-batch.bicep` references an existing private Batch
