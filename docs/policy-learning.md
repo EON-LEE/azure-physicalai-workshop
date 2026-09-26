@@ -505,16 +505,39 @@ directory and writes its local completion marker only after all readbacks pass.
 Neither operation submits jobs, follows arbitrary URLs or creates a mutable
 `latest` pointer.
 
-The first publisher milestone advertises `resume_capability="weights_only"`.
-Although native safe optimizer/scheduler/RNG files are preserved, native 0.4.4
+The first publisher milestone (`3511e6d`) advertises
+`resume_capability="weights_only"`. Although native safe optimizer/scheduler/RNG
+files are preserved, native 0.4.4
 does not persist a sampler cursor, discards Python's Gaussian cache and truncates
 NumPy's cached Gaussian precision. Loading its `--resume` state alone is not
 verified full-state continuation. A weights-only restart restores actual saved
 model weights but initializes a **new optimizer/scheduler/RNG/data iterator**;
 `optimizer_state_restored` and `bitwise_continuation_claimed` stay false.
 
+The full-state runner adds `training_state/continuation.json` and
+`continuation.safetensors`. These preserve Python and NumPy Gaussian caches at
+full precision, Torch/CUDA RNG state, the exact shuffled sample permutation,
+consumed cursor, epoch, batch count, independent sampler/loader generators and
+the actual precision flags. Such checkpoints advertise
+`resume_capability="full_state"` only after the complete native save and sidecar finish. Historical
+weights-only checkpoints are not upgraded or backfilled into full-state proof.
+Nonfinite model or optimizer tensors cannot be published as completed state.
+
+Exact data continuation is explicitly restricted to the pinned single-process
+Smol loop, one visible CUDA device, no AMP, zero data workers, no augmentation
+and an immutable map-style dataset of at most 1,000,000 frames. The integration
+wraps the native trainer's data-iteration boundary, rather than replacing its
+optimizer loop. It retains the approved episode-aware eligible indices but uses
+a dedicated, checkpointed permutation generator. A native `DataLoader` supplies
+batches without Accelerate's one-batch read-ahead; this prevents saving a cursor
+past the last completed update. On restart, native optimizer/scheduler state
+loads through LeRobot's safetensors/JSON APIs, and the supplemental exact RNG
+and data state restores **after** loader initialization. Checkpoint I/O restores
+its entry RNG snapshot so storage-client bookkeeping cannot perturb training.
+
 A restart is a distinct new v2 job with its own reviewed wall/cost approval.
-Set `parameters.resume_mode="weights_only"` and `checkpointing.resume` to the
+Set `parameters.resume_mode` explicitly to `weights_only` or `full_state`, and
+`checkpointing.resume` to the
 exact `checkpoint_sha256`, `source_azure_job_id`, `source_azure_pipeline_job_id`
 and `step`. Add immutable `resume_checkpoint` and `converted_dataset` folder
 inputs in the same approved datastore. The latter is the original pipeline
@@ -526,10 +549,52 @@ checkpoint expiry is retained as provenance, never renewed or substituted for
 the new job's approval. New weights, cumulative updates and source checkpoint
 links remain auditable; saved weights do not establish learned task quality.
 
+For `full_state`, every original binding must match, including the approved
+image digest, Python/package/driver/CUDA/device identity, reviewed code, batch,
+seed, optimizer configuration, save interval and total native training horizon.
+The CLI uses the original local `--config_path=.../pretrained_model/train_config.json`
+with `--resume=true`; it does **not** use `--policy.path`, which takes a different
+native parser branch. Only the new output location, unchanged dataset's mount
+path and approved local backbone path are relocated. `max_steps` remains the
+original global target, and it must exceed the source checkpoint step. This
+is not an opportunity to silently lengthen a scheduler or renew an old job's
+authority. The source expiry remains provenance; the new job has its own
+approved absolute expiry and cost ceiling.
+
+Final full-state model provenance records the exact source checkpoint manifest,
+source component/pipeline, source step and source cumulative count. It requires
+positive new updates, `checkpoint_step = source_step + new_updates`, and
+`cumulative_optimizer_steps = source_cumulative + new_updates`. Only the verified
+full-state branch sets `optimizer_state_restored=true`. Changes to data,
+configuration, code, image, device or precision reject full-state continuation;
+a separately approved weights-only restart is available but never presented as
+identical training. CPU bitwise equivalence does not imply cross-device GPU
+determinism or physical learning quality.
+
 `python -m learning.checks.checkpoint_resume_check --output <new-local-dir>`
 performs the separated actual native CPU serializer/optimizer/weight-roundtrip
 check. Its storage transport is explicitly in-memory, not Azure durability
 proof, and its tiny model is a test fixture, not a trained physical policy.
+Add `--full-state` to compare uninterrupted training with interruptions at both
+mid-epoch and epoch boundaries. The check uses actual native `update_policy`,
+AdamW, LR scheduling, safe save/load and the decorated native `train` CLI entry,
+including `--resume`. It compares model/optimizer/scheduler tensors, exact RNG
+caches, every sample index and the next batch; `torch.load` is prohibited during
+the check. The actual CPU result is a determinism test, not a GPU or cloud claim.
+
+Deployment remains separate: build the pinned dependency image from
+`learning/smolvla/Dockerfile` and the code layer from
+`learning/smolvla/Dockerfile.runtime` with an approved `DEPENDENCY_IMAGE` digest.
+The code-layer check verifies actual installed native source hashes without
+loading model weights or contacting Azure. Generate the matching code manifest
+and use a **new reviewed image/snapshot fingerprint**; original images/proofs
+remain immutable. The API/worker must propagate the exact operator-approved
+`checkpointing` object and both immutable resume inputs, install the updated
+native model-provenance validator, and retain fresh deadline enrollment and
+new-job mutation claims. The public API's existing step-limit field is an upper
+bound; full-state callers must not confuse the original global target with the
+smaller number of updates remaining. This native slice adds no API route,
+deployment, cloud resource or automatic paid retry.
 
 ### Paused evaluation evidence and release boundaries
 

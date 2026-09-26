@@ -4,7 +4,7 @@ import os
 import shutil
 import subprocess
 import sys
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from learning.common import (
@@ -19,15 +19,24 @@ from learning.common import (
     write_json,
 )
 from learning.contract import ControlProfile, DemonstrationSource, Scope
-from learning.gr00t.train import Gr00tTrainOptions as TrainOptions
+from learning.gr00t.train import Gr00tTrainOptions
 from learning.offline import OFFLINE_ENV, require_lerobot
 from learning.smolvla.adaptation import adapted_config
 from learning.smolvla.artifacts import model_contract, validate_backbone, validate_model
 from learning.train import validate_conversion
 
 
+@dataclass(frozen=True)
+class TrainOptions(Gr00tTrainOptions):
+    def validate(self) -> None:
+        super().validate(allowed_resume_modes=("new", "weights_only", "full_state"))
+
+
 def training_command(dataset: Path, seed: Path, output: Path, options: TrainOptions) -> list[str]:
     options.validate()
+    require(
+        options.resume_mode != "full_state", "Full-state uses the native saved config resume entry"
+    )
     warmup = min(100, options.max_steps // 10)
     return [
         sys.executable,
@@ -55,6 +64,21 @@ def training_command(dataset: Path, seed: Path, output: Path, options: TrainOpti
         f"--policy.optimizer_lr={options.learning_rate}",
         f"--policy.scheduler_warmup_steps={warmup}",
         f"--policy.scheduler_decay_steps={max(options.max_steps, warmup + 1)}",
+    ]
+
+
+def full_state_training_command(
+    checkpoint: Path, dataset: Path, backbone: Path, output: Path
+) -> list[str]:
+    return [
+        sys.executable,
+        "-m",
+        "learning.smolvla.checkpoint_runner",
+        f"--config_path={(checkpoint / 'pretrained_model' / 'train_config.json').resolve()}",
+        "--resume=true",
+        f"--output_dir={output.resolve()}",
+        f"--dataset.root={dataset.resolve()}",
+        f"--policy.vlm_model_name={backbone.resolve()}",
     ]
 
 
@@ -248,7 +272,11 @@ def _run_training(
 
         limits = validate_policy(config["checkpointing"], parameters=asdict(options))
         checkpoint_binding = make_binding(
-            config, parent, converted, conversion_sha256, native_runtime()
+            config,
+            parent,
+            converted,
+            conversion_sha256,
+            native_runtime(environment_image=config["environment_image"]),
         )
         origin = {
             "azure_job_id": binding["azure_component_job_id"],
@@ -271,6 +299,7 @@ def _run_training(
             "origin": origin,
             "limits": asdict(limits),
             "storage_account_name": config["storage_account_name"],
+            "environment_image": config["environment_image"],
             "blob_container": config["blob_container"],
             "managed_identity_client_id": config["managed_identity_client_id"],
             "blob_prefix": config["output_prefix"]
@@ -281,14 +310,21 @@ def _run_training(
                 config["checkpointing"]["resume"]["checkpoint_sha256"] if resumed else None
             ),
             "prior_optimizer_steps": resumed["cumulative_optimizer_steps"]
+            - (resumed["step"] if options.resume_mode == "full_state" else 0)
             if resumed
             else (parent["training"]["cumulative_optimizer_steps"] if parent["training"] else 0),
+            "training_parameters": asdict(options),
+            "resume_checkpoint_root": str(resume_checkpoint.resolve()) if resumed else None,
         }
     require(not output.exists() or not any(output.iterdir()), "Output folder is not empty")
     output.mkdir(parents=True, exist_ok=True)
     seed = output / "initialization"
-    prepare_seed(parent_root, backbone, dataset, seed)
-    if resumed is not None:
+    full_resume = resumed is not None and options.resume_mode == "full_state"
+    if full_resume:
+        seed = resume_checkpoint / "pretrained_model"
+    else:
+        prepare_seed(parent_root, backbone, dataset, seed)
+    if resumed is not None and not full_resume:
         shutil.copyfile(
             resume_checkpoint / "pretrained_model" / "model.safetensors", seed / "model.safetensors"
         )
@@ -318,7 +354,7 @@ def _run_training(
                 "checkpoint_sha256": config["checkpointing"]["resume"]["checkpoint_sha256"],
                 "step": resumed["step"],
                 "source_origin": resumed["origin"],
-                "optimizer_state_restored": False,
+                "optimizer_state_restore_requested": full_resume,
                 "bitwise_continuation_claimed": False,
             },
             "note": (
@@ -327,7 +363,11 @@ def _run_training(
             ),
         },
     )
-    command = training_command(dataset, seed, output / "training", options)
+    command = (
+        full_state_training_command(resume_checkpoint, dataset, backbone, output / "training")
+        if full_resume
+        else training_command(dataset, seed, output / "training", options)
+    )
     if checkpoint_context is not None:
         context_path = output / "checkpoint-run.json"
         write_json(context_path, checkpoint_context)
@@ -430,6 +470,9 @@ def _seal_checkpoint(
         )
         episodes[item["episode_id"]] = item
     previous_steps = parent["training"]["cumulative_optimizer_steps"] if parent["training"] else 0
+    full_resume = resumed is not None and options.resume_mode == "full_state"
+    actual_updates = step - resumed["step"] if full_resume else step
+    require(actual_updates > 0, "Resumed job did not complete new optimizer updates")
     if resumed is not None:
         previous_steps = resumed["cumulative_optimizer_steps"]
     training_metadata = {}
@@ -461,20 +504,26 @@ def _seal_checkpoint(
             "specification_sha256": binding["specification_sha256"],
             "azure_job_id": binding["azure_component_job_id"],
             "azure_pipeline_job_id": binding["azure_job_id"],
-            "optimizer_steps": step,
+            "optimizer_steps": actual_updates,
             "checkpoint_step": step,
-            "cumulative_optimizer_steps": previous_steps + step,
+            "cumulative_optimizer_steps": previous_steps + actual_updates,
             "test_only": False,
             "resume_mode": options.resume_mode,
             "resume_from_checkpoint_sha256": resume_manifest_sha256,
             "resume_from_checkpoint_step": resumed["step"] if resumed else None,
-            "optimizer_state_restored": False,
+            "resume_from_cumulative_optimizer_steps": (
+                resumed["cumulative_optimizer_steps"] if resumed else None
+            ),
+            "optimizer_state_restored": full_resume,
             "bitwise_continuation_claimed": False,
             "resume_from_job_id": resumed["origin"]["azure_job_id"]
             if resumed
             else parent["training"]["azure_job_id"]
             if options.resume_mode == "weights_only"
             else None,
+            "resume_from_pipeline_job_id": (
+                resumed["origin"]["azure_pipeline_job_id"] if resumed else None
+            ),
             "ancestor_model_sha256s": [
                 *(parent["training"]["ancestor_model_sha256s"] if parent["training"] else []),
                 parent_model_sha256,
@@ -494,7 +543,7 @@ def _seal_checkpoint(
         {
             **binding,
             **(mode_metadata or {}),
-            "optimizer_steps": step,
+            "optimizer_steps": actual_updates,
             "candidate": destination.relative_to(output).as_posix(),
             "model_manifest_sha256": model_sha,
             "learning_quality_verified": False,

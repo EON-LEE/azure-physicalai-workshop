@@ -38,7 +38,7 @@ class Gr00tTrainOptions:
     compute_tier: str = "Dedicated"
     resume_mode: str = "new"
 
-    def validate(self) -> None:
+    def validate(self, *, allowed_resume_modes: tuple[str, ...] = ("new", "weights_only")) -> None:
         integer(self.max_steps, "optimizer step budget", 1, 100000)
         integer(self.checkpoint_steps, "checkpoint interval", 1, self.max_steps)
         integer(self.batch_size, "GPU batch size", 1, 64)
@@ -47,7 +47,7 @@ class Gr00tTrainOptions:
         integer(self.timeout_seconds, "job time budget", 1, 86400)
         require(0 < finite(self.learning_rate, "learning rate") <= 0.001, "Invalid learning rate")
         require(self.compute_tier in ("Dedicated", "LowPriority"), "Explicit compute tier required")
-        require(self.resume_mode in ("new", "weights_only"), "No pickle/optimizer-state resume")
+        require(self.resume_mode in allowed_resume_modes, "Unsupported or unsafe resume mode")
         if self.compute_tier == "LowPriority":
             require(
                 self.checkpoint_steps < self.max_steps and self.checkpoint_steps <= 100,

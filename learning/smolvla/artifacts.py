@@ -254,10 +254,37 @@ def _validate_model(
     )
     steps = integer(training.get("optimizer_steps"), "actual optimizer steps", 1)
     integer(training.get("cumulative_optimizer_steps"), "cumulative optimizer steps", steps)
-    integer(training.get("checkpoint_step"), "checkpoint marker", steps, steps)
-    require(
-        training.get("resume_mode") in ("new", "weights_only"), "Unapproved optimizer/pickle resume"
+    restored_step = (
+        integer(training.get("resume_from_checkpoint_step"), "resumed source step", 1)
+        if training.get("resume_mode") == "full_state"
+        else 0
     )
+    integer(
+        training.get("checkpoint_step"),
+        "checkpoint marker",
+        steps + restored_step,
+        steps + restored_step,
+    )
+    require(
+        training.get("resume_mode") in ("new", "weights_only", "full_state"),
+        "Unapproved optimizer/pickle resume",
+    )
+    if restored_step:
+        sha256(training.get("resume_from_checkpoint_sha256"), "complete resumed checkpoint")
+        restored_cumulative = integer(
+            training.get("resume_from_cumulative_optimizer_steps"),
+            "source cumulative optimizer steps",
+            restored_step,
+        )
+        require(
+            training.get("optimizer_state_restored") is True
+            and training.get("bitwise_continuation_claimed") is False,
+            "Full-state provenance must not claim cross-device bitwise identity",
+        )
+        require(
+            training["cumulative_optimizer_steps"] == restored_cumulative + steps,
+            "Full-state cumulative count differs from source checkpoint plus new updates",
+        )
     require(
         isinstance(training.get("episodes"), list) and bool(training["episodes"]),
         "Missing training episode lineage",
@@ -277,6 +304,20 @@ def _validate_model(
         == training["azure_pipeline_job_id"].rsplit("/jobs/", 1)[0],
         "Cross-workspace job lineage",
     )
+    if restored_step:
+        workspace = training["azure_job_id"].rsplit("/jobs/", 1)[0] + "/jobs/"
+        for name, current in (
+            ("resume_from_job_id", "azure_job_id"),
+            ("resume_from_pipeline_job_id", "azure_pipeline_job_id"),
+        ):
+            source = training.get(name)
+            require(
+                isinstance(source, str)
+                and source.startswith(workspace)
+                and re.fullmatch(r"[A-Za-z0-9_.-]+", source[len(workspace) :])
+                and source != training[current],
+                "Full-state source job must be explicit, distinct and in the approved workspace",
+            )
     require(training.get("gpu", {}).get("cuda") is True, "Missing actual CUDA training provenance")
     if training.get("loss") is not None:
         finite(training["loss"], "measured training loss")

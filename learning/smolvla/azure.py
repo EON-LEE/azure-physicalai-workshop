@@ -53,6 +53,7 @@ PAUSED_CODE_FILES = CODE_FILES + (
 CHECKPOINT_CODE_FILES = (
     "learning/smolvla/checkpoints.py",
     "learning/smolvla/checkpoint_runner.py",
+    "learning/smolvla/checkpoint_state.py",
 )
 
 
@@ -109,7 +110,20 @@ def validate_config(config: dict) -> None:
         }
         if checkpointing is not None and checkpointing["resume"] is not None:
             inputs.update(resume_checkpoint="uri_folder", converted_dataset="uri_folder")
-    shared.validate_config(base, schema=config["schema"], upstream=UPSTREAM, input_types=inputs)
+    from learning.smolvla.train import TrainOptions
+
+    shared.validate_config(
+        base,
+        schema=config["schema"],
+        upstream=UPSTREAM,
+        input_types=inputs,
+        train_options_type=TrainOptions,
+    )
+    if config.get("parameters", {}).get("resume_mode") == "full_state":
+        require(
+            checkpointing is not None and checkpointing["resume"] is not None,
+            "Full-state requires an explicit complete checkpoint and new job approval",
+        )
     if checkpointing is not None and checkpointing["resume"] is not None:
         require(
             config["inputs"]["resume_checkpoint"]["sha256"]

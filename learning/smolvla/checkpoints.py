@@ -210,10 +210,15 @@ def _safe_tensor(path: Path, limits: CheckpointLimits) -> None:
 def _files(root: Path, limits: CheckpointLimits) -> dict:
     require(root.is_dir() and not root.is_symlink(), "Checkpoint root must be a real directory")
     files, total = {}, 0
-    for path in sorted(root.rglob("*")):
+    for path in root.rglob("*"):
         require(not path.is_symlink(), "Checkpoint symlinks are not accepted")
-        if not path.is_file():
+        if path.is_dir():
+            require(
+                path.parent == root and path.name in ("pretrained_model", "training_state"),
+                "Unexpected checkpoint subdirectory",
+            )
             continue
+        require(path.is_file(), "Checkpoint entries must be regular files or approved directories")
         name = path.relative_to(root).as_posix()
         if name == MANIFEST:
             continue
@@ -630,6 +635,8 @@ def latest_remote_checkpoint(
         results_per_page=64,
         retry_total=0,
         timeout=max(1, math.ceil(remaining())),
+        connection_timeout=min(10, remaining()),
+        read_timeout=min(30, remaining()),
     ):
         remaining()
         inspected += 1
@@ -643,7 +650,11 @@ def latest_remote_checkpoint(
         )
         relative = item.name[len(prefix) + 1 :]
         relative_path(relative)
-        if re.fullmatch(r"step-\d{6}/checkpoint\.json", relative):
+        if relative.endswith("/checkpoint.json"):
+            require(
+                re.fullmatch(r"step-\d{6}/checkpoint\.json", relative),
+                "Malformed checkpoint completion marker path",
+            )
             names.append(item.name)
     require(len(names) <= limits.max_checkpoints, "Remote checkpoint marker count exceeded budget")
     require(bool(names), "No complete remote checkpoint; newer partial files are not resumable")

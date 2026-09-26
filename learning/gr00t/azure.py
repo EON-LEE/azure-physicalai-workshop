@@ -83,6 +83,7 @@ def validate_config(
     schema: str = CONFIG_SCHEMA,
     upstream: dict = UPSTREAM,
     input_types: dict | None = None,
+    train_options_type=Gr00tTrainOptions,
 ) -> None:
     keys(
         config,
@@ -176,10 +177,10 @@ def validate_config(
         relative_path(path)
         require(path.startswith(prefix), "Input escapes tenant/owner scope")
     if config["kind"] == "train":
-        options = Gr00tTrainOptions(
+        options = train_options_type(
             **keys(
                 config["parameters"],
-                set(Gr00tTrainOptions.__dataclass_fields__),
+                set(train_options_type.__dataclass_fields__),
                 "GR00T parameters",
             )
         )
