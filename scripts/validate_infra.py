@@ -34,6 +34,7 @@ def validate() -> None:
             "simulation-batch-foundation",
             "simulation-batch-access",
             "simulation-batch",
+            "simulation-batch-node",
         ):
             output = Path(temporary) / f"{name}.json"
             subprocess.run(

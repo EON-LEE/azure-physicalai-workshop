@@ -149,5 +149,5 @@ resource nodeDns 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-0
 }
 
 output batchAccountId string = enabled ? account.id : ''
-output batchAccountEndpoint string = enabled ? account.properties.accountEndpoint : ''
+output batchAccountEndpoint string = enabled ? account!.properties.accountEndpoint : ''
 output batchNodeSubnetId string = enabled ? nodeSubnet.id : ''

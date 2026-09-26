@@ -99,3 +99,25 @@ def test_job_submission_access_cannot_resize_pools_or_grant_broader_access(tmp_p
         any(role in grant["properties"]["roleDefinitionId"] for grant in grants)
         for role in expected_roles
     )
+
+
+def test_batch_node_identity_has_no_legacy_tls_or_control_permissions(tmp_path):
+    template = compile_template(
+        ROOT / "infra" / "simulation-batch-node.bicep", tmp_path / "node.json"
+    )
+    assert template["parameters"]["enabled"]["defaultValue"] is False
+    assert len(resources(template, "Microsoft.ManagedIdentity/userAssignedIdentities")) == 1
+    grants = resources(template, "Microsoft.Authorization/roleAssignments")
+    expected = {
+        "7f951dda-4ed3-4680-a7ca-43fe172d538d": "Microsoft.ContainerRegistry/registries",
+        "2a2b9908-6ea1-4ae2-8e65-a410df84e7d1": "'artifacts'",
+        "ba92f5b4-2d11-453d-a403-e96b0029c9fe": "'demonstrations'",
+    }
+    assert len(grants) == len(expected)
+    for role, scope in expected.items():
+        matching = [g for g in grants if role in g["properties"]["roleDefinitionId"]]
+        assert len(matching) == 1 and scope in matching[0]["scope"]
+        assert matching[0]["condition"] == "[parameters('enabled')]"
+        assert matching[0]["properties"]["principalType"] == "ServicePrincipal"
+    assert "Microsoft.KeyVault" not in json.dumps(template)
+    assert not resources(template, "Microsoft.Compute/virtualMachines")

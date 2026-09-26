@@ -54,7 +54,11 @@ separately authorized operator operation, not an implicit CLI upload.
 
 The **node UAMI** needs AcrPull on the selected registry, Blob Data Reader for the
 approved inputs/assets, and Blob Data Contributor for the private `demonstrations`
-output container. No shared keys or SAS appear in the task. Provisioning, RBAC,
+output container. The opt-in `infra/simulation-batch-node.bicep` creates a dedicated
+identity with precisely those three resource/container-scoped grants. It does not
+reuse the legacy simulator identity's Key Vault TLS-secret access, and it grants
+no Batch submission or control-plane permissions. No shared keys or SAS appear
+in the task. Provisioning, RBAC,
 image/platform admission and actual GPU execution remain operator-owned.
 
 ## Images and lightweight dependencies
