@@ -125,6 +125,7 @@ def run_training(
     config: dict,
     client,
     options: TrainOptions,
+    resume_checkpoint: Path | None = None,
 ) -> dict:
     require("execution_timing" not in config, "Use the explicitly selected paused training entry")
     return _run_training(
@@ -139,6 +140,7 @@ def run_training(
         config=config,
         client=client,
         options=options,
+        resume_checkpoint=resume_checkpoint,
     )
 
 
@@ -160,6 +162,7 @@ def _run_training(
     profile_type=ControlProfile,
     model_builder=model_contract,
     mode_metadata: dict | None = None,
+    resume_checkpoint: Path | None = None,
 ) -> dict:
     from learning.smolvla.azure import job_deadline
 
@@ -187,7 +190,17 @@ def _run_training(
         for_inference=False,
     )
     deadline.check()
-    validate_resume(parent, mode=options.resume_mode)
+    if resume_checkpoint is None:
+        require(
+            config.get("checkpointing", {}).get("resume") is None,
+            "Approved resume checkpoint was not mounted",
+        )
+        validate_resume(parent, mode=options.resume_mode)
+    else:
+        require(
+            config.get("checkpointing", {}).get("resume") is not None,
+            "Unapproved checkpoint resume input",
+        )
     profile = profile_type(**converted["control_profile"])
     require(
         profile.sha256 == profile_type(**parent["control_profile"]).sha256,
@@ -223,10 +236,62 @@ def _run_training(
 
     binding = running_job_binding(client, config)
     deadline.check()
+    checkpoint_context, resumed = None, None
+    if "checkpointing" in config:
+        from learning.smolvla.checkpoint_runner import (
+            CONTEXT_SCHEMA,
+            make_binding,
+            native_runtime,
+            validate_policy,
+            validate_resume_checkpoint,
+        )
+
+        limits = validate_policy(config["checkpointing"], parameters=asdict(options))
+        checkpoint_binding = make_binding(
+            config, parent, converted, conversion_sha256, native_runtime()
+        )
+        origin = {
+            "azure_job_id": binding["azure_component_job_id"],
+            "azure_pipeline_job_id": binding["azure_job_id"],
+            "specification_sha256": binding["specification_sha256"],
+            "code_snapshot_sha256": code_snapshot_sha256,
+            "job_deadline_utc": config["job_deadline_utc"],
+            "test_only": False,
+        }
+        if resume_checkpoint is not None:
+            resumed = validate_resume_checkpoint(
+                resume_checkpoint,
+                config=config,
+                expected_binding=checkpoint_binding,
+                current_origin=origin,
+            )
+        checkpoint_context = {
+            "schema": CONTEXT_SCHEMA,
+            "binding": checkpoint_binding,
+            "origin": origin,
+            "limits": asdict(limits),
+            "storage_account_name": config["storage_account_name"],
+            "blob_container": config["blob_container"],
+            "managed_identity_client_id": config["managed_identity_client_id"],
+            "blob_prefix": config["output_prefix"]
+            + "/"
+            + binding["azure_job_id"].rsplit("/", 1)[-1]
+            + "/checkpoints",
+            "resume_from_checkpoint_sha256": (
+                config["checkpointing"]["resume"]["checkpoint_sha256"] if resumed else None
+            ),
+            "prior_optimizer_steps": resumed["cumulative_optimizer_steps"]
+            if resumed
+            else (parent["training"]["cumulative_optimizer_steps"] if parent["training"] else 0),
+        }
     require(not output.exists() or not any(output.iterdir()), "Output folder is not empty")
     output.mkdir(parents=True, exist_ok=True)
     seed = output / "initialization"
     prepare_seed(parent_root, backbone, dataset, seed)
+    if resumed is not None:
+        shutil.copyfile(
+            resume_checkpoint / "pretrained_model" / "model.safetensors", seed / "model.safetensors"
+        )
     deadline.check()
     before = parameter_fingerprint(seed / "model.safetensors")
     deadline.check()
@@ -246,15 +311,36 @@ def _run_training(
             "parameters": asdict(options),
             "gpu": gpu,
             "updated_parameter_sample_before": before,
+            "resume": None
+            if resumed is None
+            else {
+                "mode": options.resume_mode,
+                "checkpoint_sha256": config["checkpointing"]["resume"]["checkpoint_sha256"],
+                "step": resumed["step"],
+                "source_origin": resumed["origin"],
+                "optimizer_state_restored": False,
+                "bitwise_continuation_claimed": False,
+            },
             "note": (
-                "Incremental checkpoints persist on rw_mount. "
-                "Resume requires a NEW authorized weights-only job."
+                "Only a readback-verified checkpoint manifest proves Blob publication; "
+                "rw_mount alone does not."
             ),
         },
     )
+    command = training_command(dataset, seed, output / "training", options)
+    if checkpoint_context is not None:
+        context_path = output / "checkpoint-run.json"
+        write_json(context_path, checkpoint_context)
+        command[2] = "learning.smolvla.checkpoint_runner"
+        command.extend(
+            (
+                f"--checkpoint-context={context_path.resolve()}",
+                f"--checkpoint-context-sha256={file_digest(context_path)}",
+            )
+        )
     with (output / "training.log").open("xb") as log:
         subprocess.run(
-            training_command(dataset, seed, output / "training", options),
+            command,
             check=True,
             timeout=min(options.timeout_seconds, deadline.check()),
             env={**os.environ, **OFFLINE_ENV},
@@ -280,6 +366,10 @@ def _run_training(
         model_builder=model_builder,
         model_validator=model_validator,
         mode_metadata=mode_metadata,
+        resumed=resumed,
+        resume_manifest_sha256=None
+        if resumed is None
+        else config["checkpointing"]["resume"]["checkpoint_sha256"],
     )
     deadline.check()
     return result
@@ -304,6 +394,8 @@ def _seal_checkpoint(
     model_builder=model_contract,
     model_validator=validate_model,
     mode_metadata: dict | None = None,
+    resumed: dict | None = None,
+    resume_manifest_sha256: str | None = None,
 ) -> dict:
     marker = read_json(step_dir / "training_state" / "training_step.json")
     require(
@@ -338,6 +430,8 @@ def _seal_checkpoint(
         )
         episodes[item["episode_id"]] = item
     previous_steps = parent["training"]["cumulative_optimizer_steps"] if parent["training"] else 0
+    if resumed is not None:
+        previous_steps = resumed["cumulative_optimizer_steps"]
     training_metadata = {}
     if mode_metadata is not None:
         training_metadata = {
@@ -355,7 +449,11 @@ def _seal_checkpoint(
         training={
             **training_metadata,
             "parent_model_sha256": parent_model_sha256,
-            "parent_weights_sha256": parent["weights_sha256"],
+            "parent_weights_sha256": (
+                resumed["files"]["pretrained_model/model.safetensors"]["sha256"]
+                if resumed
+                else parent["weights_sha256"]
+            ),
             "raw_manifest_sha256": converted["raw_manifest_sha256"],
             "conversion_sha256": conversion_sha256,
             "config_sha256": digest(canonical(asdict(options))),
@@ -368,7 +466,13 @@ def _seal_checkpoint(
             "cumulative_optimizer_steps": previous_steps + step,
             "test_only": False,
             "resume_mode": options.resume_mode,
-            "resume_from_job_id": parent["training"]["azure_job_id"]
+            "resume_from_checkpoint_sha256": resume_manifest_sha256,
+            "resume_from_checkpoint_step": resumed["step"] if resumed else None,
+            "optimizer_state_restored": False,
+            "bitwise_continuation_claimed": False,
+            "resume_from_job_id": resumed["origin"]["azure_job_id"]
+            if resumed
+            else parent["training"]["azure_job_id"]
             if options.resume_mode == "weights_only"
             else None,
             "ancestor_model_sha256s": [

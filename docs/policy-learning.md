@@ -462,6 +462,75 @@ The paused comparison commands use the distinct recording/evaluation producer
 below; its presence does not waive worker enrollment, actual data or operator
 submission approval.
 
+### Managed-job intermediate checkpoints and explicit restart
+
+The optional, reviewed `checkpointing` object on a v2 Smol training configuration
+enables the native checkpoint publisher. It contains
+`schema: "physicalai.smolvla-checkpointing/v1"`, `limits` (the exact fields of
+`learning.smolvla.checkpoints.CheckpointLimits`), and `resume: null` for an initial
+run. The defaults are 64 files, 4 GiB per file, 8 GiB per complete checkpoint,
+1 MiB per JSON file, a 4 MiB safetensors header, at most 32 checkpoints and
+180 seconds per publication. Tighter reviewed limits are supported. Checkpoint
+frequency must fit the count budget and the entire operation remains inside
+the original absolute job deadline; this does not authorize extra time or cost.
+Existing plans without this object do not acquire a durable-publication claim.
+
+The runner calls the actual, source-hash-pinned LeRobot 0.4.4 training entry and
+wraps its `save_checkpoint` boundary. It never implements a substitute optimizer
+loop. At each configured save interval, native
+`pretrained_model/model.safetensors`, policy/train configuration, processors,
+optimizer safetensors, optimizer parameter-group JSON, scheduler JSON, RNG
+safetensors and the actual step marker are verified together. The native step
+file is written **before** the other state files and is not a complete marker;
+the native `last` symlink is not restart authority.
+
+Only after the native save returns and the complete allowlisted inventory passes
+validation is `checkpoint.json` published locally. Checkpoints bind owner,
+original data/conversion/model/profile/task/criteria/conditions, training
+configuration, pinned code/runtime, actual source Azure component/pipeline,
+original expiry, optimizer step and cumulative-step lineage. Pickle, executable,
+unexpected and symlinked files are rejected without `torch.load`. Publication
+uses the approved compute MI and storage/container beneath the existing
+owner-scoped job output prefix. Every create-only Blob upload is reread with
+its ETag and checked against exact byte count and SHA before the complete
+manifest is uploaded last; the receipt records readback ETags. Mounted-output
+existence or `rw_mount` alone does not prove that a completed checkpoint reached
+Blob. A failed/torn publication has no usable complete marker.
+
+`latest_remote_checkpoint` scans only a bounded, known owner/job prefix and
+verifies the last complete bundle; newer unmarked files are not selected.
+Corrupt marked checkpoints produce an explicit error, not a silent fallback.
+`restore_checkpoint` downloads a named manifest-SHA-bound bundle into a new
+directory and writes its local completion marker only after all readbacks pass.
+Neither operation submits jobs, follows arbitrary URLs or creates a mutable
+`latest` pointer.
+
+The first publisher milestone advertises `resume_capability="weights_only"`.
+Although native safe optimizer/scheduler/RNG files are preserved, native 0.4.4
+does not persist a sampler cursor, discards Python's Gaussian cache and truncates
+NumPy's cached Gaussian precision. Loading its `--resume` state alone is not
+verified full-state continuation. A weights-only restart restores actual saved
+model weights but initializes a **new optimizer/scheduler/RNG/data iterator**;
+`optimizer_state_restored` and `bitwise_continuation_claimed` stay false.
+
+A restart is a distinct new v2 job with its own reviewed wall/cost approval.
+Set `parameters.resume_mode="weights_only"` and `checkpointing.resume` to the
+exact `checkpoint_sha256`, `source_azure_job_id`, `source_azure_pipeline_job_id`
+and `step`. Add immutable `resume_checkpoint` and `converted_dataset` folder
+inputs in the same approved datastore. The latter is the original pipeline
+dataset output containing `dataset/conversion.json`, not a new conversion of
+the same raw data. Its manifest SHA and the checkpoint's original dataset
+binding must match. The restart graph omits conversion, uses the explicit
+checkpoint input and refuses the old source job/approval identity. The original
+checkpoint expiry is retained as provenance, never renewed or substituted for
+the new job's approval. New weights, cumulative updates and source checkpoint
+links remain auditable; saved weights do not establish learned task quality.
+
+`python -m learning.checks.checkpoint_resume_check --output <new-local-dir>`
+performs the separated actual native CPU serializer/optimizer/weight-roundtrip
+check. Its storage transport is explicitly in-memory, not Azure durability
+proof, and its tiny model is a test fixture, not a trained physical policy.
+
 ### Paused evaluation evidence and release boundaries
 
 `learning.paused.evaluation` uses paired/bootstrap **plan v2, results v3 and

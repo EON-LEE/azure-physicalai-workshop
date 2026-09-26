@@ -25,6 +25,7 @@ def run_training(
     config: dict,
     client,
     options: TrainOptions,
+    resume_checkpoint: Path | None = None,
 ) -> dict:
     job_deadline(config).check()
     validate_config(config)
@@ -61,4 +62,5 @@ def run_training(
             frozen_plan_sha256=config["frozen_plan_sha256"],
         ),
         mode_metadata=mode,
+        resume_checkpoint=resume_checkpoint,
     )

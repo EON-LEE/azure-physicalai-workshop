@@ -29,7 +29,7 @@ def main() -> None:
     for name in ("input", "output", "runtime-config"):
         parser.add_argument(f"--{name}", required=True, type=Path)
     parser.add_argument("--snapshot-sha256", required=True)
-    for name in ("parent", "backbone", "after", "plan"):
+    for name in ("parent", "backbone", "after", "plan", "resume-checkpoint"):
         parser.add_argument(f"--{name}", type=Path)
     parser.add_argument("--run-component", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
@@ -103,6 +103,12 @@ def _execute(args: argparse.Namespace, config: dict, deadline: JobDeadline) -> N
         dataset = args.input / "dataset"
         conversion_sha = file_digest(dataset / "conversion.json")
         conversion = validate_conversion(dataset, scope)
+        if args.resume_checkpoint is not None:
+            require(
+                file_digest(dataset / "conversion.json")
+                == config["inputs"]["converted_dataset"]["sha256"],
+                "Resume converted dataset checksum mismatch",
+            )
         deadline.check()
         require(
             conversion["raw_manifest_sha256"] == config["inputs"]["demonstrations"]["sha256"],
@@ -120,6 +126,7 @@ def _execute(args: argparse.Namespace, config: dict, deadline: JobDeadline) -> N
             config=config,
             client=client,
             options=TrainOptions(**config["parameters"]),
+            resume_checkpoint=args.resume_checkpoint,
         )
         deadline.check()
         return

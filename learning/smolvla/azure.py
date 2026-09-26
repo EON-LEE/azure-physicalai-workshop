@@ -50,6 +50,10 @@ PAUSED_CODE_FILES = CODE_FILES + (
     "learning/paused/rollout.py",
     "learning/paused/task.py",
 )
+CHECKPOINT_CODE_FILES = (
+    "learning/smolvla/checkpoints.py",
+    "learning/smolvla/checkpoint_runner.py",
+)
 
 
 def is_paused(config: dict) -> bool:
@@ -57,9 +61,12 @@ def is_paused(config: dict) -> bool:
 
 
 def code_files(config: dict) -> tuple[str, ...]:
-    if is_paused(config):
-        return PAUSED_CODE_FILES
-    return CODE_FILES if config["schema"] == CONFIG_SCHEMA else LEGACY_CODE_FILES
+    files = (
+        PAUSED_CODE_FILES
+        if is_paused(config)
+        else (CODE_FILES if config["schema"] == CONFIG_SCHEMA else LEGACY_CODE_FILES)
+    )
+    return files + CHECKPOINT_CODE_FILES if "checkpointing" in config else files
 
 
 def validate_config(config: dict) -> None:
@@ -68,6 +75,15 @@ def validate_config(config: dict) -> None:
         "Unsupported SmolVLA Azure configuration schema",
     )
     base = dict(config)
+    checkpointing = base.pop("checkpointing", None)
+    if "checkpointing" in config:
+        from learning.smolvla.checkpoint_runner import validate_policy
+
+        require(
+            config["schema"] == CONFIG_SCHEMA and config.get("kind") == "train",
+            "Checkpoint publication requires a newly reviewed v2 training plan",
+        )
+        validate_policy(checkpointing, parameters=config["parameters"])
     if PAUSED_FIELDS & set(config):
         from learning.common import sha256
 
@@ -91,7 +107,15 @@ def validate_config(config: dict) -> None:
             "parent_model": "uri_folder",
             "backbone": "uri_folder",
         }
+        if checkpointing is not None and checkpointing["resume"] is not None:
+            inputs.update(resume_checkpoint="uri_folder", converted_dataset="uri_folder")
     shared.validate_config(base, schema=config["schema"], upstream=UPSTREAM, input_types=inputs)
+    if checkpointing is not None and checkpointing["resume"] is not None:
+        require(
+            config["inputs"]["resume_checkpoint"]["sha256"]
+            == checkpointing["resume"]["checkpoint_sha256"],
+            "Resume input does not bind the approved complete checkpoint manifest",
+        )
     if config["kind"] == "train":
         require(
             config["parameters"]["gradient_accumulation_steps"] == 1,
@@ -108,7 +132,7 @@ def job_deadline(config: dict) -> JobDeadline:
 
 
 def build_job(config: dict, snapshot_sha256: str, job_name: str) -> dict:
-    return shared.build_job(
+    job = shared.build_job(
         config,
         snapshot_sha256,
         job_name,
@@ -119,6 +143,15 @@ def build_job(config: dict, snapshot_sha256: str, job_name: str) -> dict:
         else "learning.smolvla.components",
         include_backbone=True,
     )
+    if config.get("checkpointing", {}).get("resume") is not None:
+        train = job["jobs"]["train"]
+        train["inputs"]["dataset"] = "${{parent.inputs.converted_dataset}}"
+        train["inputs"]["resume"] = "${{parent.inputs.resume_checkpoint}}"
+        train["command"] += " --resume-checkpoint '${{inputs.resume}}'"
+        train["limits"]["timeout"] = config["parameters"]["timeout_seconds"]
+        job["jobs"] = {"train": train}
+        del job["outputs"]["dataset"]
+    return job
 
 
 def create_plan(
