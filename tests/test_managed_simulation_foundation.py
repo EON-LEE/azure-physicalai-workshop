@@ -131,3 +131,22 @@ def test_private_controller_selects_the_existing_worker_identity(tmp_path):
         for item in worker["properties"]["template"]["containers"][0]["env"]
     }
     assert env["AZURE_CLIENT_ID"] == env["LEARNING_WORKER_MANAGED_IDENTITY_CLIENT_ID"]
+
+
+def test_managed_warmup_controller_is_bounded_and_cannot_dispatch_physics(tmp_path):
+    template = compile_template(
+        ROOT / "infra" / "simulation-batch-warmup.bicep", tmp_path / "warmup.json"
+    )
+    assert template["parameters"]["enabled"]["defaultValue"] is False
+    job = resources(template, "Microsoft.App/jobs")[0]
+    assert job["condition"] == "[parameters('enabled')]"
+    config = job["properties"]["configuration"]
+    assert config["triggerType"] == "Manual"
+    assert config["replicaTimeout"] == 180 and config["replicaRetryLimit"] == 0
+    assert config["manualTriggerConfig"] == {"parallelism": 1, "replicaCompletionCount": 1}
+    assert "'warmup'" in template["variables"]["invocation"]
+    assert "'submit'" not in template["variables"]["invocation"]
+    container = job["properties"]["template"]["containers"][0]
+    assert "@sha256:" in container["image"]
+    assert container["command"][:2] == ["/srv/apps/learning_worker/.venv/bin/python", "-c"]
+    assert not resources(template, "Microsoft.Authorization/roleAssignments")

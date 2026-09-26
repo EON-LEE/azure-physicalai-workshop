@@ -125,6 +125,14 @@ wall-clock constraint. It requires actual nvidia-smi evidence of exactly one
 `NVIDIA A10-24Q` / `570.237`, and an actual NVIDIA A10 Vulkan device advertising
 acceleration-structure and ray-tracing-pipeline extensions.
 
+For private deployments, `infra/simulation-batch-warmup.bicep` provides a
+default-off, manually started **Container Apps Job** to submit that same
+deterministic warm-up through the existing worker identity. Its CPU controller
+has one replica, zero retries and a 180-second timeout. It cannot dispatch a
+physics episode. This avoids depending on an interactive exec connection to a
+scale-to-zero web replica; an ambiguous submission still reconciles the original
+warm-up UUID and never renews its constraints.
+
 Read-only preflight checks the actual pool/image/identity/autoscale/StartTask,
 idle single LowPriority node, successful exact driver extension and fresh
 `startup/wd/preflight.json`. It never starts another job. A node that is absent,
