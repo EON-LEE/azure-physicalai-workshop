@@ -70,7 +70,8 @@ def test_sdk_payload_is_one_digest_pinned_job_task_with_no_retries(spec, batch_s
     job, task = job.as_dict(), task.as_dict()
     assert job["id"] == spec.job_id and task["id"] == "episode"
     assert job["poolInfo"] == {"poolId": spec.platform.pool_id}
-    assert job["maxParallelTasks"] == 1
+    assert "maxParallelTasks" not in job
+    assert "allowTaskPreemption" not in job
     assert job["constraints"]["maxTaskRetryCount"] == 0
     assert task["constraints"]["maxTaskRetryCount"] == 0
     assert job["constraints"]["maxWallClockTime"].startswith("PT15M")
@@ -88,6 +89,16 @@ def test_sdk_payload_is_one_digest_pinned_job_task_with_no_retries(spec, batch_s
     assert resource["identityReference"]["resourceId"] == spec.platform.node_identity_resource_id
     assert task["userIdentity"] == {"autoUser": {"scope": "task", "elevationLevel": "nonadmin"}}
     assert all("sig=" not in json.dumps(value) for value in (job, task))
+
+
+def test_warmup_uses_single_task_pool_bounds_without_account_gated_job_properties(spec, batch_sdk):
+    from simulation.batch import build_warmup
+
+    job, task = build_warmup(spec.platform, UUID("11111111-1111-4111-8111-111111111111"))
+    assert "maxParallelTasks" not in job.as_dict()
+    assert "allowTaskPreemption" not in job.as_dict()
+    assert task.required_slots == 1
+    assert job.pool_info.pool_id == spec.platform.pool_id
 
 
 @pytest.mark.parametrize(

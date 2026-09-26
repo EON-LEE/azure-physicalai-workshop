@@ -165,6 +165,11 @@ Jobs are created with `onAllTasksComplete=noaction`, the single task is added,
 then an ETag-conditional patch sets **only** `onAllTasksComplete=terminatejob`.
 Otherwise Azure treats an empty job as already complete. Reconciliation refuses
 changed bindings and never resets job constraints or deadlines. Status is GET-only.
+The account rejected the optional job-level `maxParallelTasks` feature with
+`Forbidden`, so jobs omit it and the related optional task-preemption setting.
+Concurrency remains bounded by the verified pool's maximum one node, one task
+slot, and exactly one deterministic task per submitted job. This does not disable
+LowPriority node preemption or imply an account feature was enabled.
 
 ## Immutable task and completion contracts
 

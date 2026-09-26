@@ -216,8 +216,6 @@ def build_job_task(spec: BatchSimulationSpec, spec_url: str, spec_sha256: str):
         id=spec.job_id,
         display_name="One approved Physical AI episode",
         pool_info=models.BatchPoolInfo(pool_id=spec.platform.pool_id),
-        max_parallel_tasks=1,
-        allow_task_preemption=False,
         constraints=models.BatchJobConstraints(
             max_wall_clock_time=timedelta(seconds=TASK_WALL_SECONDS), max_task_retry_count=0
         ),
@@ -278,8 +276,6 @@ def build_warmup(platform: BatchPlatform, warmup_id: UUID):
         id="warm-" + warmup_id.hex,
         display_name="GPU readiness only; no physics episode",
         pool_info=models.BatchPoolInfo(pool_id=platform.pool_id),
-        max_parallel_tasks=1,
-        allow_task_preemption=False,
         constraints=models.BatchJobConstraints(
             max_wall_clock_time=timedelta(seconds=TASK_WALL_SECONDS), max_task_retry_count=0
         ),
