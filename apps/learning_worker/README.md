@@ -69,14 +69,14 @@ platform/job specification before use; `warmup` and `submit` require explicit
 the deployment operator's responsibility.
 
 Build this packaging together with the runtime-owner's committed
-`simulation.batch` and `simulation.batch_task` sources. The following SDK smoke
-check uses the real locked package and rejects network/process attempts during
-import; it does not replace a no-GPU/no-network controller import check on the
-combined image:
+`simulation.batch` and `simulation.batch_task` sources. The following smoke
+check imports the real locked SDK and both controller modules, rejects
+network/process attempts, and checks that GPU/model modules remain unloaded.
+Run the same import boundary in the resulting immutable image before deployment:
 
 ```bash
 python -m pytest tests/test_learning_worker_packaging.py -q
-uv run --project apps/learning_worker --locked --no-dev python tests/check_worker_batch_sdk.py
+PYTHONPATH="$PWD" uv run --project apps/learning_worker --locked --no-dev python tests/check_worker_batch_sdk.py
 ```
 
 ### Internal ACA deployment source

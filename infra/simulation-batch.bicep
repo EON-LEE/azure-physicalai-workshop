@@ -14,7 +14,7 @@ param nodeIdentityId string
 param simulatorImage string
 param registryServer string
 @description('Immutable deployment-window start, in UTC; redeploying a new window requires explicit approval.')
-param allocationStartUtc string = utcNow('yyyy-MM-ddTHH:mm:ssZ')
+param allocationStartUtc string
 @minValue(1)
 @maxValue(60)
 param allocationMinutes int = 60

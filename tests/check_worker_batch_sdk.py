@@ -1,4 +1,4 @@
-"""Run with the locked worker Python; no pytest, credentials or Azure calls required."""
+"""Run with locked worker Python and the repository on PYTHONPATH; no Azure calls required."""
 
 import json
 import sys
@@ -22,6 +22,8 @@ def main():
     sys.addaudithook(offline_only)
     from azure.batch import BatchClient
 
+    from simulation import batch, batch_task
+
     assert version("azure-batch") == "15.1.0"
     assert BatchClient.__name__ == "BatchClient"
     assert not {"isaacsim", "omni", "torch", "carb", "pxr", "lerobot", "transformers"} & set(
@@ -33,6 +35,7 @@ def main():
             {
                 "azure_batch": version("azure-batch"),
                 "batch_client": f"{BatchClient.__module__}.{BatchClient.__name__}",
+                "controller_modules": [batch.__name__, batch_task.__name__],
                 "network_or_process_attempts": attempts,
                 "gpu_modules_loaded": [],
             },

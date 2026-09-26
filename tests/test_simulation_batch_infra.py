@@ -26,6 +26,7 @@ def test_managed_simulator_pool_is_zero_default_single_low_priority_and_private(
     template = json.loads(output.read_text())
     assert template["parameters"]["provisionPool"]["defaultValue"] is False
     assert template["parameters"]["allocationMinutes"]["maxValue"] == 60
+    assert "defaultValue" not in template["parameters"]["allocationStartUtc"]
     assert len(template["resources"]) == 1
     pool = template["resources"][0]
     assert pool["type"].lower() == "microsoft.batch/batchaccounts/pools"

@@ -16,8 +16,6 @@ from pathlib import Path
 from uuid import UUID
 
 from azure.core.exceptions import AzureError, ResourceExistsError, ResourceNotFoundError
-from azure.identity import ManagedIdentityCredential
-from azure.storage.blob import BlobServiceClient, ContentSettings
 
 from learning.common import canonical, digest, file_digest, parse_json, read_json, require
 from simulation.batch import (
@@ -215,6 +213,8 @@ def gpu_preflight() -> dict:
 
 class PrivateArtifacts:
     def __init__(self, spec: BatchSimulationSpec, credential) -> None:
+        from azure.storage.blob import BlobServiceClient
+
         self.spec = spec
         self.client = BlobServiceClient(
             spec.storage_account_url,
@@ -289,6 +289,8 @@ class PrivateArtifacts:
         )
 
     def publish(self, name: str, path: Path) -> dict:
+        from azure.storage.blob import ContentSettings
+
         size = path.stat().st_size
         require(
             name in PROOF_LIMITS and size <= PROOF_LIMITS[name],
@@ -305,6 +307,8 @@ class PrivateArtifacts:
         return {"path": name, "bytes": size, "sha256": file_digest(path)}
 
     def finish(self, value: dict) -> None:
+        from azure.storage.blob import ContentSettings
+
         self._output("completion.json").upload_blob(
             canonical(value),
             overwrite=False,
@@ -724,6 +728,8 @@ def main() -> None:
         "The actual Batch task identity differs from the approved attempt.",
     )
     directory = Path("/data/managed-simulation") / str(spec.attempt_id)
+    from azure.identity import ManagedIdentityCredential
+
     with ManagedIdentityCredential(
         client_id=str(spec.platform.node_identity_client_id)
     ) as credential:

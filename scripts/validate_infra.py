@@ -33,6 +33,7 @@ def validate() -> None:
             "gpu-capacity-probe",
             "simulation-batch-foundation",
             "simulation-batch-access",
+            "simulation-batch",
         ):
             output = Path(temporary) / f"{name}.json"
             subprocess.run(
@@ -127,6 +128,9 @@ def validate() -> None:
     assert batch["properties"]["allowedAuthenticationModes"] == ["AAD"]
     assert not resources(managed_simulation, "Microsoft.Compute/virtualMachines")
     assert not resources(managed_simulation, "Microsoft.Batch/batchAccounts/pools")
+    managed_pool = templates["simulation-batch"]
+    assert managed_pool["parameters"]["provisionPool"]["defaultValue"] is False
+    assert "defaultValue" not in managed_pool["parameters"]["allocationStartUtc"]
     for script in (
         ROOT / "infra" / "start-simulator.sh",
         ROOT / "scripts" / "start-live-simulator.sh",

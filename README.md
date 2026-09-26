@@ -136,10 +136,14 @@ checkpoints directly to private Blob, verify every file's bytes and ETag, then
 write the complete manifest last. Partial newer checkpoints cannot supersede a
 verified complete checkpoint. The pinned LeRobot CPU check has actually saved
 intermediate model/optimizer/scheduler/RNG files and restored identical model
-weights on a fresh local path. That result is explicitly **weights-only**
-recovery, not exact optimizer continuation, Azure training, or physical quality.
-The option must be included in a newly reviewed training plan; old plans are
-not silently relabeled as interruption-safe.
+weights on a fresh local path. A separate **full-state** path now preserves the
+optimizer, scheduler, exact random state and consumed data position. Actual
+native CPU runs interrupted mid-epoch and at an epoch boundary matched
+uninterrupted training, including the native resume CLI and next batch.
+Weights-only recovery remains explicitly distinct. CPU equivalence is not
+Azure Blob durability, cross-device GPU determinism or physical quality.
+Either option must be included in a newly reviewed training plan; old plans
+are not silently relabeled as interruption-safe.
 
 See [policy learning](docs/policy-learning.md),
 [the learning API](docs/learning-api.md), and
