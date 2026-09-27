@@ -14,6 +14,25 @@ training compute is not a substitute for an RTX-capable Isaac renderer.
 
 ## Actual managed execution boundary
 
+The managed reference integration episode has now passed its full native
+acceptance under the original paused-v2 criteria. It recorded 424 intervals,
+2,544 physics ticks (42.4 simulation seconds), actual grasp/release/settling,
+and a measured peak TCP speed of 0.065776 m/s, below the 0.2 m/s limit. Final
+part position was approximately `(0.2170475, -0.3937463, 0.2000000)` metres.
+Both terminal evidence and the original private raw manifest were independently
+revalidated. This is a scripted reference on integration seed 900002, not a
+human demonstration, training data or learned-policy quality result.
+
+The accepted episode ID is `eb3b0543-ce34-42ed-986c-3021ec1d58ce`;
+its raw manifest SHA256 is
+`f13f1904ec00b4dc2ed78bc7a33335be29061285e762031f6ed83dbbdd15c8fd`.
+The runtime source is `39f53053c90cae1c0369a21a79c0fb2794122244`,
+image digest `sha256:98ff14e606f7cdd0b21512506de6ba9de25ee8ac0ab50b4deb551d763d83d337`,
+and control profile
+`851df47a362e4f62fcf0cbfa1b2761339ed5e346d1575123629c20355acb77dc`.
+Earlier failed attempts remain preserved. Real TRAIN collection and subsequent
+native training/learned physical evaluation are separate gates.
+
 The private foundation, caller/node permissions and immutable worker/simulator
 images were deployed and checked on 2026-09-27 KST. The actual Batch service
 exposed two differences from synthetic SDK payloads: ARM-created no-public-IP

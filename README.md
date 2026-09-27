@@ -116,12 +116,17 @@ integration/test evidence, not training data.
 The separate, explicitly selected paused v2 profile permits 60 simulation
 seconds; the original paused v1 remains limited to 30 seconds, and neither
 qualifies real-time control. Old recordings are not relabeled for the new
-budget. The latest physical-verification attempt was interrupted by an
+budget. An earlier physical-verification attempt was interrupted by an
 external administrative VM deallocation before a result could be verified.
 Its physical outcome is unknown, not a pass. Further GPU execution requires
 a bounded, approved managed-job attempt rather than repeated manual VM starts.
-A successful full-task demonstration, actual policy training and paired physical
-acceptance remain unverified, and learning admission remains disabled.
+The subsequent managed integration run completed the full reference task under
+the unchanged paused-v2 criteria: actual grasp, transport, release and settling,
+424 recorded control intervals and 2,544 physics ticks. Its raw manifest and
+native acceptance were independently revalidated from private Blob. The
+integration seed is excluded from training. Actual policy training and paired
+learned-policy physical acceptance remain unverified; learning admission stays
+disabled.
 
 **Managed execution transition:** private, Entra-only Azure Batch accounts,
 service private endpoints, NAT-backed node subnets, dedicated node identity and
@@ -135,8 +140,10 @@ account quota before submission. An official account-only quota request raised
 West US 2 from zero to 36 Spot cores, and one managed A10 was actually allocated
 there without subscription-wide role grants. Its Ubuntu 24.04 Batch bootstrap
 then failed before NVIDIA or Isaac startup due to temporary-disk mount recovery.
-The explicit Ubuntu 22.04 host alternative remains under live qualification.
-These allocation and bootstrap results are not physical-task success. The split
+The Ubuntu 22.04 path was then qualified with a hash-pinned GRID bootstrap that
+removes conflicting package-managed drivers, bounded non-admin Kit/Warp caches,
+and a verified NVIDIA container runtime. It produced the complete reference
+episode described above; allocation alone was not counted as success. The split
 remains Batch for Isaac rendering/physics and Azure ML for training, not a manual
 VM restart workflow.
 
