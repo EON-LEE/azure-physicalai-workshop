@@ -1,5 +1,6 @@
 """Operator-bound imports of complete managed evaluations; never an Azure job submitter."""
 
+import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -171,14 +172,25 @@ def input_locations(registry, actor, value: ImportContext):
     )
 
 
-def _version():
-    root = Path(__file__).resolve().parents[2]
-    paths = [
-        path
-        for folder in ("apps/api", "apps/learning_worker", "learning", "simulation", "contracts")
-        for path in (root / folder).rglob("*")
-        if path.is_file() and path.suffix in (".py", ".json")
-    ]
+def _version(root=None):
+    root = Path(__file__).resolve().parents[2] if root is None else root
+    paths = []
+    for folder in ("apps/api", "apps/learning_worker", "learning", "simulation", "contracts"):
+        for directory, folders, filenames in os.walk(root / folder, followlinks=False):
+            folders[:] = [
+                name
+                for name in folders
+                if not name.startswith(".") and name not in {"__pycache__", "node_modules"}
+            ]
+            if any((Path(directory) / name).is_symlink() for name in folders):
+                raise Problem(503, "managed_verifier_source", "Verifier source is linked.")
+            for name in filenames:
+                path = Path(directory) / name
+                if path.suffix in (".py", ".json"):
+                    if path.is_symlink():
+                        raise Problem(503, "managed_verifier_source", "Verifier source is linked.")
+                    paths.append(path)
+    paths.append(root / "apps" / "learning_worker" / "uv.lock")
     return fingerprint(
         {path.relative_to(root).as_posix(): file_digest(path) for path in sorted(paths)}
     )

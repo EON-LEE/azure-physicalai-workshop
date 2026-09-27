@@ -54,6 +54,12 @@ This repository change does not deploy the service or assign identities.
 
 ### Managed Batch controller packaging
 
+Managed report certificates hash the verifier source and the production
+dependency lock, not generated `.venv`, bytecode, package caches or
+`node_modules` contents. Source or lock changes invalidate certificates; linked
+source paths are rejected. This keeps repeated certificate checks bounded to
+the verifier rather than recursively scanning its installed SDK environment.
+
 The worker image includes the `simulation` source and pins `azure-batch==15.1.0`
 for the lightweight `python -m simulation.batch` controller. This is an
 operator-invoked managed-job CLI, **not an always-live simulator bridge**.

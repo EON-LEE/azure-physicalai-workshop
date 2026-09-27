@@ -213,8 +213,10 @@ def test_real_native_evaluator_entry_is_used_and_missing_source_never_passes(mon
         )
 
 
+@pytest.mark.parametrize("folder_suffix", ["", "/"])
 def test_historical_metadata_check_is_read_only_and_rechecks_datastore_assets_parent_and_child(
     monkeypatch,
+    folder_suffix,
 ):
     verifier, spec, config, _, output, _, _, _, _ = setup(monkeypatch, stub_metadata=False)
     from learning.gr00t.azure import workspace_id
@@ -246,11 +248,17 @@ def test_historical_metadata_check_is_read_only_and_rechecks_datastore_assets_pa
     child = SimpleNamespace(
         id=child_id, parent_job_name=spec.run.backend_job_name, status="Failed", tags=tags
     )
+    registered_paths = {}
 
     def asset(name, *, version):
         calls.append(("asset", name, version))
         value = next(item for item in config["inputs"].values() if item["name"] == name)
-        return SimpleNamespace(type=value["type"], path=value["uri"])
+        return SimpleNamespace(
+            type=value["type"],
+            path=registered_paths.get(
+                name, value["uri"] + (folder_suffix if value["type"] == "uri_folder" else "")
+            ),
+        )
 
     def job(name):
         calls.append(("job", name))
@@ -263,6 +271,11 @@ def test_historical_metadata_check_is_read_only_and_rechecks_datastore_assets_pa
     )
     check(verifier, config, spec, output)
     assert len(calls) == 6
+    registered_paths["evidence"] = config["inputs"]["evidence"]["uri"] + "/foreign"
+    with pytest.raises(Problem) as failure:
+        check(verifier, config, spec, output)
+    assert failure.value.code == "paused_asset_changed"
+    registered_paths.clear()
     datastore.container_name = "wrong-container"
     with pytest.raises(Problem) as failure:
         check(verifier, config, spec, output)

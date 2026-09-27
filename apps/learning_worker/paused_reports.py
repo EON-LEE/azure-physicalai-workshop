@@ -73,6 +73,7 @@ def verifier_version(config):
 
 
 def _read_metadata(verifier, config, specification, output):
+    from learning.azure import registered_input_matches
     from learning.gr00t.azure import workspace_id
     from learning.smolvla.azure import validate_config
 
@@ -90,7 +91,7 @@ def _read_metadata(verifier, config, specification, output):
             raise Problem(503, "paused_datastore_changed", "Reviewed datastore mapping changed.")
         for value in config["inputs"].values():
             asset = client.data.get(value["name"], version=value["version"])
-            if asset.type != value["type"] or asset.path != value["uri"]:
+            if not registered_input_matches(asset.type, asset.path, value):
                 raise Problem(503, "paused_asset_changed", "Registered input version/path changed.")
         parent = client.jobs.get(specification.run.backend_job_name)
         child_id = output.get("azure_component_job_id")
