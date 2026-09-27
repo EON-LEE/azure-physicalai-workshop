@@ -13,6 +13,16 @@ model runs **`/opt/smolvla-venv/bin/python`**, Python **3.11**, with native sour
 at **`/work/learning`**. Do not import LeRobot/Torch into Isaac Python or point
 the model venv at Isaac's interpreter.
 
+`simulation/Dockerfile.policy` assembles these separately from two immutable
+base images. It copies the entire Python 3.11 installation into
+`/opt/lerobot-python`, relocates the native venv's interpreter/base prefix,
+and exposes the distinct libpython3.11 SONAME without replacing Isaac Python.
+An actual ACR build verified Python 3.11.14, LeRobot 0.4.4, Torch 2.7.1+cu126
+and the exact native source pins, followed by an independent Isaac Python 3.12
+import. This is CPU/ABI qualification; it is not CUDA policy execution or
+physical learned quality. New learned wrappers still need their own final
+image-source verification and actual model-bound GPU trial.
+
 The operator must assemble and independently qualify an immutable mixed image.
 The model runtime needs its real interpreter, base prefix, standard library,
 libpython and native ELF/CUDA dependencies, not merely a copied venv from

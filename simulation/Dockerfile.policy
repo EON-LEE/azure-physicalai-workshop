@@ -1,0 +1,24 @@
+ARG NATIVE_POLICY_IMAGE
+ARG SIMULATOR_IMAGE
+FROM ${NATIVE_POLICY_IMAGE} AS policy
+FROM ${SIMULATOR_IMAGE}
+
+ARG NATIVE_POLICY_IMAGE
+ARG SIMULATOR_IMAGE
+USER root
+RUN case "$NATIVE_POLICY_IMAGE" in *@sha256:*) ;; *) exit 1;; esac \
+    && case "$SIMULATOR_IMAGE" in *@sha256:*) ;; *) exit 1;; esac
+COPY --from=policy /usr/local /opt/lerobot-python
+COPY --from=policy /opt/smolvla-venv /opt/smolvla-venv
+COPY --from=policy /work /work
+RUN ln -sf /opt/lerobot-python/lib/libpython3.11.so.1.0 /usr/local/lib/libpython3.11.so.1.0 \
+    && ldconfig \
+    && for executable in python python3 python3.11; do \
+         ln -sf /opt/lerobot-python/bin/python3.11 "/opt/smolvla-venv/bin/$executable"; \
+       done \
+    && sed -i 's|/usr/local/bin|/opt/lerobot-python/bin|g' /opt/smolvla-venv/pyvenv.cfg
+RUN PYTHONPATH=/work /opt/smolvla-venv/bin/python -c \
+    "import sys; assert sys.version_info[:2] == (3, 11); from learning.smolvla.checkpoint_runner import native_runtime; print(native_runtime())"
+RUN /isaac-sim/python.sh -c \
+    "import sys; assert sys.version_info[:2] == (3, 12); from simulation import batch_task; print('Isaac interpreter remains Python 3.12; no SimulationApp started')"
+USER 1234:1234
