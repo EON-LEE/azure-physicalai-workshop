@@ -45,13 +45,20 @@ account, private node subnet and dedicated node UAMI. It creates no account,
 private endpoint, DNS zone, identity or role assignment. Its default
 `provisionPool=false` creates **no pool or node**.
 
-The reviewed host candidate is
-`microsoft-dsvm:ubuntu-hpc:2404:24.04.2026092501`, x64/Gen2, with
-`batch.node.ubuntu 24.04`. The parent independently observed this SKU as
-`verified` and `DockerCompatible` in the authenticated Batch catalog. Those
-catalog labels (including `SupportsRDMAOnly`) do not establish an installed NVIDIA
-runtime, GRID compatibility, Vulkan rendering or Isaac task success. The earlier
-Ubuntu-HPC 2204 candidate was unverified and is not selected.
+The current explicit host candidate is
+`microsoft-dsvm:ubuntu-hpc:2204:22.04.2026082801`, x64/Gen2, with
+`batch.node.ubuntu 22.04`. Its Batch catalog status is `unverified`, not a
+claim of current regular validation. It must pass actual managed-node startup
+and graphics checks.
+
+The earlier `2404:24.04.2026092501` candidate was listed as `verified`, but its
+actual reserved Batch bootstrap failed on the A10 node with
+`Ephemeral mount detection and recovery failed, device=/dev/sdb1 mp=`.
+NVIDIA installation and native tasks had not run. `hostImageSku` is therefore
+explicit with no default; each permitted host version is bound to its matching
+node agent. Historical 24.04 records remain readable and are not relabeled.
+Catalog labels (including `SupportsRDMAOnly`) do not establish installed
+NVIDIA runtime, GRID compatibility, Vulkan rendering or Isaac task success.
 
 The pool pins one `Standard_NV36ads_A10_v5` LowPriority node at most, one task slot,
 no dedicated nodes, no public IP or configured inbound login endpoint, and no
@@ -173,6 +180,11 @@ busy, expiring, misconfigured or lacks graphics fails closed.
 The actual service returns `NoPublicIPAddresses` for an ARM-created pool, while
 SDK-created payloads use `nopublicipaddresses`. Both explicit no-public-IP values
 are accepted; missing, Batch-managed and user-managed public addressing are not.
+The node-extension endpoint summarizes private settings as a byte length. Full
+settings are therefore required and checked on the pool endpoint first; only
+that explicit redaction shape is accepted on the node endpoint afterward.
+The node must independently report successful extension provisioning and the
+actual pinned driver plus Vulkan ray-tracing capabilities.
 
 Only after readiness should the trusted operator mint a **new original grant**
 with at most 600 seconds lifetime, binding the exact owner, tenant, saved case,

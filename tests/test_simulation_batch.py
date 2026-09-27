@@ -109,6 +109,7 @@ def test_warmup_uses_single_task_pool_bounds_without_account_gated_job_propertie
         {"container_image": "unit.azurecr.io/physicalai-simulator:latest"},
         {"driver_version": "latest"},
         {"driver_handler_version": "1.14.0.6"},
+        {"image_sku": "2204"},
     ],
 )
 def test_unreviewed_renderer_platforms_and_mutable_images_are_rejected(spec, change):
@@ -389,6 +390,37 @@ def test_pool_preflight_consumes_actual_lowercase_sdk_enum_and_startup_file(spec
 
     assert inspect_platform(platform_client.client, spec.platform)["ready"] is True
     assert platform_client.downloads[0][2] == "startup/wd/preflight.json"
+
+
+def test_explicit_ubuntu22_host_requires_its_matching_agent(spec, platform_client):
+    from simulation.batch import BatchPlatform, inspect_platform
+
+    platform = BatchPlatform.model_validate(
+        {
+            **spec.platform.model_dump(mode="json"),
+            "image_sku": "2204",
+            "image_version": "22.04.2026082801",
+        }
+    )
+    vm = platform_client.pool.virtual_machine_configuration
+    vm.image_reference.sku = platform.image_sku
+    vm.image_reference.version = platform.image_version
+    with pytest.raises(ValueError, match="image"):
+        inspect_platform(platform_client.client, platform)
+    vm.node_agent_sku_id = "batch.node.ubuntu 22.04"
+    assert inspect_platform(platform_client.client, platform)["ready"] is True
+
+
+def test_node_settings_redaction_requires_full_pool_settings_and_actual_gpu_proof(
+    spec, platform_client
+):
+    from simulation.batch import inspect_platform
+
+    platform_client.extension.vm_extension["settings"] = {"length": 64}
+    assert inspect_platform(platform_client.client, spec.platform)["ready"] is True
+    platform_client.pool.virtual_machine_configuration.extensions[0]["settings"] = {"length": 64}
+    with pytest.raises(ValueError, match="GRID extension"):
+        inspect_platform(platform_client.client, spec.platform)
 
 
 def test_pool_preflight_accepts_actual_arm_created_service_enum_casing(spec, platform_client):

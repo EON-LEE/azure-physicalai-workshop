@@ -41,12 +41,24 @@ def test_managed_simulator_pool_is_zero_default_single_low_priority_and_private(
     )
     assert "userAccounts" not in properties
     vm = properties["deploymentConfiguration"]["virtualMachineConfiguration"]
-    assert vm["nodeAgentSkuId"] == "batch.node.ubuntu 24.04"
+    assert "defaultValue" not in template["parameters"]["hostImageSku"]
+    assert set(template["parameters"]["hostImageSku"]["allowedValues"]) == {"2204", "2404"}
+    assert vm["nodeAgentSkuId"] == "[variables('hostImage').nodeAgentSkuId]"
+    assert template["variables"]["hostImages"] == {
+        "2204": {
+            "version": "22.04.2026082801",
+            "nodeAgentSkuId": "batch.node.ubuntu 22.04",
+        },
+        "2404": {
+            "version": "24.04.2026092501",
+            "nodeAgentSkuId": "batch.node.ubuntu 24.04",
+        },
+    }
     assert vm["imageReference"] == {
         "publisher": "microsoft-dsvm",
         "offer": "ubuntu-hpc",
-        "sku": "2404",
-        "version": "24.04.2026092501",
+        "sku": "[parameters('hostImageSku')]",
+        "version": "[variables('hostImage').version]",
     }
     extension = vm["extensions"][0]
     assert extension["publisher"] == "Microsoft.HpcCompute"

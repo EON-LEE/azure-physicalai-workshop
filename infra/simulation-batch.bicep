@@ -13,6 +13,9 @@ param nodeIdentityId string
 @description('Digest-pinned reviewed simulator image containing simulation.batch_task; never a mutable tag.')
 param simulatorImage string
 param registryServer string
+@description('Explicit host candidate; the Ubuntu 24.04 Batch bootstrap failed on the tested A10 node.')
+@allowed(['2204', '2404'])
+param hostImageSku string
 @description('Immutable deployment-window start, in UTC; redeploying a new window requires explicit approval.')
 param allocationStartUtc string
 @minValue(1)
@@ -21,6 +24,17 @@ param allocationMinutes int = 60
 param tags object = {}
 
 var allocationDeadlineUtc = dateTimeAdd(allocationStartUtc, 'PT${allocationMinutes}M')
+var hostImages = {
+  '2204': {
+    version: '22.04.2026082801'
+    nodeAgentSkuId: 'batch.node.ubuntu 22.04'
+  }
+  '2404': {
+    version: '24.04.2026092501'
+    nodeAgentSkuId: 'batch.node.ubuntu 24.04'
+  }
+}
+var hostImage = hostImages[hostImageSku]
 var autoscale = format('''
 $TargetDedicatedNodes = 0;
 $samples = $PendingTasks.GetSamplePercent(TimeInterval_Minute * 5);
@@ -60,10 +74,10 @@ resource pool 'Microsoft.Batch/batchAccounts/pools@2025-06-01' = if (provisionPo
         imageReference: {
           publisher: 'microsoft-dsvm'
           offer: 'ubuntu-hpc'
-          sku: '2404'
-          version: '24.04.2026092501'
+          sku: hostImageSku
+          version: hostImage.version
         }
-        nodeAgentSkuId: 'batch.node.ubuntu 24.04'
+        nodeAgentSkuId: hostImage.nodeAgentSkuId
         osDisk: {
           diskSizeGB: 128
         }

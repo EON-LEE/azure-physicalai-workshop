@@ -22,7 +22,10 @@ BATCH_SDK_VERSION = "15.1.0"
 BATCH_TOKEN_SCOPE = "https://batch.core.windows.net/.default"
 GRID_DRIVER = "570.237"
 GPU_NAME = "NVIDIA A10-24Q"
-NODE_AGENT_SKU = "batch.node.ubuntu 24.04"
+HOST_IMAGES = {
+    "2204": ("22.04.2026082801", "batch.node.ubuntu 22.04"),
+    "2404": ("24.04.2026092501", "batch.node.ubuntu 24.04"),
+}
 TASK_WALL_SECONDS = 900
 PROOF_LIMITS = {
     "inputs/spec.json": 1024**2,
@@ -77,14 +80,24 @@ class BatchPlatform(Model):
     vm_size: Literal["Standard_NV36ads_A10_v5"]
     image_publisher: Literal["microsoft-dsvm"]
     image_offer: Literal["ubuntu-hpc"]
-    image_sku: Literal["2404"]
-    image_version: Literal["24.04.2026092501"]
+    image_sku: Literal["2204", "2404"]
+    image_version: Literal["22.04.2026082801", "24.04.2026092501"]
     driver_handler_version: Literal["1.14"]
     driver_version: Literal["570.237"] = GRID_DRIVER
     gpu_name: Literal["NVIDIA A10-24Q"] = GPU_NAME
     container_image: str = Field(
         pattern=r"^[a-z0-9]+\.azurecr\.io/[a-z0-9_./-]+@sha256:[a-f0-9]{64}$"
     )
+
+    @model_validator(mode="after")
+    def exact_host_image(self):
+        if self.image_version != HOST_IMAGES[self.image_sku][0]:
+            raise ValueError("Host SKU and exact reviewed image version do not match.")
+        return self
+
+    @property
+    def node_agent_sku(self) -> str:
+        return HOST_IMAGES[self.image_sku][1]
 
 
 class BatchSimulationSpec(Model):
@@ -525,7 +538,7 @@ def validate_pool(pool, platform: BatchPlatform) -> None:
             platform.image_sku,
             platform.image_version,
         )
-        and pool.virtual_machine_configuration.node_agent_sku_id == NODE_AGENT_SKU,
+        and pool.virtual_machine_configuration.node_agent_sku_id == platform.node_agent_sku,
         "The actual managed pool image differs from the approved exact version.",
     )
     identity_ids = (
@@ -580,7 +593,15 @@ def validate_pool(pool, platform: BatchPlatform) -> None:
     validate_driver_extension(extensions[0], platform)
 
 
-def validate_driver_extension(extension, platform: BatchPlatform) -> None:
+def validate_driver_extension(
+    extension, platform: BatchPlatform, *, allow_redacted_settings: bool = False
+) -> None:
+    expected_settings = {
+        "driverVersion": platform.driver_version,
+        "installCUDA": False,
+        "updateOS": False,
+    }
+    settings = extension.as_dict().get("settings")
     require(
         extension.name == "nvidia-grid"
         and extension.publisher == "Microsoft.HpcCompute"
@@ -588,13 +609,13 @@ def validate_driver_extension(extension, platform: BatchPlatform) -> None:
         and extension.type_handler_version == platform.driver_handler_version
         and extension.auto_upgrade_minor_version is False
         and extension.enable_automatic_upgrade is False
-        # SDK 15.1 coerces settings booleans to strings; its wire model preserves JSON types.
-        and extension.as_dict().get("settings")
-        == {
-            "driverVersion": platform.driver_version,
-            "installCUDA": False,
-            "updateOS": False,
-        },
+        and (
+            settings == expected_settings
+            or (
+                allow_redacted_settings
+                and settings == {"length": len(canonical(expected_settings))}
+            )
+        ),
         "The actual GRID extension differs from the approved fixed driver/handler configuration.",
     )
 
@@ -625,7 +646,8 @@ def inspect_platform(client, platform: BatchPlatform) -> dict:
         str(extension.provisioning_state).lower() == "succeeded",
         "The actual GRID extension has not succeeded at the approved handler version.",
     )
-    validate_driver_extension(extension.vm_extension, platform)
+    # The node endpoint redacts settings; validate_pool already checked the full configuration.
+    validate_driver_extension(extension.vm_extension, platform, allow_redacted_settings=True)
     payload = bytearray()
     for chunk in client.download_node_file(
         platform.pool_id, node.id, "startup/wd/preflight.json", ocp_range="bytes=0-65536"
