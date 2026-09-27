@@ -605,6 +605,120 @@ The restorer selected completed step 3 and rejected a deliberately torn newer
 step 4. This proves the external checkpoint transport using a **tiny native CPU
 fixture**; it is not SmolVLA robot training, CUDA continuation or physical quality.
 
+### Offline bootstrap operator package
+
+`learning.paused.bootstrap` prepares metadata and the existing native job graph
+without credentials, Blob calls, model imports or job submission. It is an
+operator-side helper, not a new training loop or a reason to rebuild the already
+qualified training image. Its output explicitly says **manifest metadata checked,
+payloads not verified, submission still gated**. The existing managed conversion
+and training components perform full payload validation.
+
+First pin the operator-supplied successful reference qualification, then extract
+its exact profile/task identity into a **new** train-only preparation binding:
+
+```bash
+python -m learning.paused.bootstrap binding \
+  --qualification "$G0_BINDING_JSON" --qualification-sha256 "$G0_BINDING_FILE_SHA256" \
+  --tenant-id "$TENANT_ID" --owner-id "$OWNER_HASH" \
+  --profile-sha256 "$ACCEPTED_PROFILE_SHA256" \
+  --criteria-sha256 "$CRITERIA_SHA256" --frozen-plan-sha256 "$CONDITIONS_SHA256" \
+  --output /approved/new-preparation-binding.json
+```
+
+This copies neither episodes nor seeds into the binding. The successful
+integration seed **900002 must not enter TRAIN**, even though it supplied
+profile qualification. The first bootstrap package requires exactly one
+train-split episode for each seed 10001–10020, with matching owner, new profile,
+task and frozen criteria/conditions. Adaptation seeds 11001–11020 and held-out
+seeds are not silently included in this first cohort.
+
+The already staged pinned vendor model/backbone bytes may be reused after exact
+hash verification. A validated `physicalai.smolvla-backbone/v1` bundle is
+profile-independent and reusable only with the same owner, upstream pins and
+inventory. An old **parent `model.json` is not reusable** when its profile,
+task or conditions differ. In an explicitly authorized managed preparation
+environment running the Python 3.11 native image, run the existing command:
+
+```bash
+/opt/smolvla-venv/bin/python -m learning.paused.prepare \
+  --model-source "$LOCAL_VERIFIED_VENDOR_MODEL" \
+  --backbone-source "$LOCAL_VERIFIED_VENDOR_BACKBONE" \
+  --binding /approved/new-preparation-binding.json \
+  --output "$NEW_LOCAL_PREPARED_BUNDLE"
+```
+
+The result contains `model/model.json` with `role="pretrained", training=null`
+and `model/checkpoint/*`, plus `backbone/backbone.json` and `backbone/assets/*`.
+Publish to a **new** approved private prefix with manifest-last/hash readback.
+Never edit an old parent manifest, change its checksum in place, or call the
+six-dimensional vendor normalizers nine-dimensional training statistics.
+The native `prepare_seed` derives new state/action statistics from actual TRAIN.
+
+Native configurations deliberately use one explicit datastore. Captures currently
+uploaded under the `demonstrations` container must be downloaded by the approved
+private reader, validated with `learning.paused.capture.validate_dataset`, and
+assembled using `assemble_dataset(..., require_live=True)` without changing any
+episode/frame/image bytes. Stage the assembled cohort in the owner-scoped
+**artifacts** container before registration with `learningartifacts`; a URI naming
+that datastore is not an alias for the separate demonstrations container.
+
+| Native input | Registered folder root | Required checksum |
+|---|---|---|
+| `demonstrations` | `manifest.json` and complete `episodes/<id>/...` tree | Exact assembled `manifest.json` file SHA |
+| `parent_model` | New `model.json` and `checkpoint/*` | Exact new `model.json` file SHA |
+| `backbone` | `backbone.json`, `assets/*`, license inventory | Exact `backbone.json` file SHA |
+
+Supply a complete native `physicalai.smolvla-azure/v2` configuration with explicit
+subscription/resource group/workspace/datastore/account/container, managed identity,
+compute name/SKU/tier, digest-pinned image, run/specification/model version, scoped
+output prefix/retention, full profile/task/criteria/conditions hashes and all three
+named/versioned inputs. Add the reviewed checkpointing policy with `resume:null`
+and keep `parameters.resume_mode="new"`. No missing SHA, image, version, deadline
+or authority field is invented by this helper:
+
+```bash
+python -m learning.paused.bootstrap plan \
+  --config "$REVIEWED_NATIVE_CONFIG" --binding /approved/new-preparation-binding.json \
+  --raw-manifest "$ASSEMBLED_TRAIN_MANIFEST" --parent-manifest "$NEW_PARENT_MODEL_JSON" \
+  --backbone-manifest "$BACKBONE_JSON" --job-name "$NEW_JOB_NAME" \
+  --output "$NEW_OFFLINE_PACKAGE"
+```
+
+The package contains native `plan/job.json`, the exact code snapshot and plan SHA,
+three SDK-compatible `registrations/*.json`, the binding/config, and an
+`operator-sequence.json`. Registration commands include explicit subscription,
+resource group and workspace but are **not executed**. Parent authorization,
+private staged-payload readback, current datastore mapping/identity/compute
+preflight, fresh deadline enrollment and the existing durable paid-job claim
+remain mandatory. Do not bypass that path using `az ml job create`. Outputs are
+the original converted dataset, candidate/checkpoint files and owner-scoped
+manifest-last checkpoint publications; they are not a policy release.
+
+A practical **proposal for operator review**, not a performance or quality
+promise, is `max_steps=1000`, `checkpoint_steps=100`, `batch_size=1`,
+`gradient_accumulation_steps=1`, `learning_rate=0.0001`, `seed=42`, and a
+3,600-second total sequential execution ceiling. This schedules ten checkpoint
+boundaries, within the default 32-checkpoint policy. The existing graph gives
+conversion at most 600 seconds and training the remaining 3,000; publication
+and model loading consume that budget too. Actual dataset size, conversion
+runtime, training throughput, checkpoint upload cost and reviewed GPU price
+must determine the final approved values. No training throughput or ability
+to finish 1,000 updates within that time has been measured. A smaller 100-step
+run is only an optimizer/checkpoint diagnostic, not evidence of 18/20 task
+success. Select checkpoints using validation only; the frozen final twenty
+cases and every physical/latency gate remain unchanged.
+
+The simulator/native process boundary is intentional: Isaac uses its own
+Python 3.12; LeRobot stays in a separately qualified Python 3.11 environment.
+The native training image provides `/opt/smolvla-venv/bin/python` and `/work/learning`.
+For inference use the unchanged `learning.paused.model` CLI above, with a clean
+native Python environment and protected shared-kernel Unix socket/explicit peer
+UIDs. Copying a venv alone into an Isaac image does not qualify it: its interpreter
+symlinks, real Python 3.11 stdlib/libpython and all native libraries must work in
+the final OS/driver image. Image assembly/import/ABI qualification and actual
+GPU inference are runtime-owner tasks, not implied by this offline package.
+
 ### Paused evaluation evidence and release boundaries
 
 `learning.paused.evaluation` uses paired/bootstrap **plan v2, results v3 and
