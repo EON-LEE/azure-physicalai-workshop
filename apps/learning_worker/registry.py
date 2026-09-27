@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import re
+from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Literal
 from uuid import UUID
@@ -149,6 +150,37 @@ class BlobRegistry:
                 503, "worker_configuration_corrupted", "Frozen job configuration differs."
             )
         return value["configuration"]
+
+    def import_document(self, actor, suffix, *, max_bytes=2 * 1024**2):
+        """Read exact private bytes and the same download's server modification timestamp."""
+        try:
+            download = self.container.download_blob(self.key(actor, suffix))
+            content = bytearray()
+            budget = getattr(self, "budget", None)
+            if budget:
+                budget.consume(0, files=1)
+            for chunk in download.chunks():
+                if len(content) + len(chunk) > max_bytes:
+                    raise Problem(503, "managed_import_size", "Import document exceeds its bound.")
+                if budget:
+                    budget.consume(len(chunk))
+                content.extend(chunk)
+            modified = getattr(download.properties, "last_modified", None)
+            if (
+                not isinstance(modified, datetime)
+                or modified.tzinfo is None
+                or modified.utcoffset() is None
+            ):
+                raise Problem(
+                    503, "managed_import_timestamp", "Blob-observed UTC modification is required."
+                )
+            return bytes(content), modified
+        except ResourceNotFoundError as exc:
+            raise Problem(
+                404, "managed_import_missing", "The original private import record is missing."
+            ) from exc
+        except AzureError as exc:
+            raise unavailable("Private managed evaluation import") from exc
 
     def _read_record(self, actor, suffix, model: type[Model]) -> Stored | None:
         try:

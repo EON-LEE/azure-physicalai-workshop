@@ -217,6 +217,19 @@ def install_learning_routes(app, actor):
     def job(job_id: UUID, user: Actor, backend: Service, response: Response):
         return learning_response(backend.get_job(user, job_id), response)
 
+    @app.post("/api/learning/jobs/{job_id}/managed-import", status_code=202)
+    def managed_import(
+        job_id: UUID,
+        body: Approval,
+        user: Actor,
+        backend: Service,
+        response: Response,
+        if_match: Match = None,
+    ):
+        return learning_response(
+            backend.import_managed_evaluation(user, job_id, body, if_match), response
+        )
+
     @app.get("/api/learning/jobs/{job_id}/report")
     def report_document(job_id: UUID, user: Actor, backend: Service):
         report, content = backend.report_document(user, job_id)

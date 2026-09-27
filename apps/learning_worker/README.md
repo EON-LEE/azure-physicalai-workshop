@@ -133,6 +133,94 @@ python -m pytest tests/test_learning_worker_infra.py -q
 
 ## Durable claims and SDK adapter
 
+### Operator-bound managed paired evaluation imports
+
+Managed Batch results use a separate artifact import, not an Azure ML job
+receipt. There is no Batch submitter, scheduler, cancellation proxy or automatic
+publication in this path. Both the API's existing paused-evaluation stage and
+the worker's `PAUSED_EVALUATION_ENABLED` must be admitted; resident artifact
+processing and its exact actor allowlist must also be enabled. Defaults remain
+off. Adding `azure-batch` or a model allowlist grants none of these permissions.
+
+Before **any** scored physical claim, the trusted registration operator must
+already have an owned project, `EvaluationRun`, both real trained candidate
+records (or an actual reviewed baseline release), and the complete original
+`JobSpecification`. The managed run declares `provider=managed_batch`,
+`status=awaiting_import`, and no `azure_job_id`, `azure_status` or backend status.
+Its `before_candidate_id`/specification `baseline_candidate` is mutually
+exclusive with a real `baseline_release_id`/`baseline`; a candidate pair never
+creates provisional release authority. Native model validation still requires
+P1's training-parent hash to match P0 and excludes held-out training data.
+This does not change the training API's parent-selection contract.
+
+Register the original specification at the existing
+`jobs/<backend_job_name>/specification.json` path. That name is only the
+existing local correlation key, **not** a fabricated cloud job ID. Under the
+normal `tenants/<tenant>/owners/<owner>/learning/` registry prefix, create:
+
+| Fixed path | Immutable contents |
+| --- | --- |
+| `projects/<project>/managed-evaluations/<run>/binding.json` | `physicalai.managed-evaluation-binding/v1`, `provider: managed_batch`, `created_at`, explicit `study_max_wall_seconds` and `study_approved_cost_usd`, exact `mapping_sha256`, and the original full `specification` |
+| `projects/<project>/managed-evaluations/<run>/files/mapping.json` | Native `physicalai.managed-paired-plan/v1`, including all forty predeclared logical/physical assignments |
+| `projects/<project>/managed-evaluations/<run>/completion.json` | Later create-only `physicalai.managed-evaluation-import/v1`: `created_at`, `operation_id`, `binding_sha256`, `evidence_sha256`, `report_sha256` |
+| `projects/<project>/managed-evaluations/<run>/files/` | Exact later `evidence.json`, `report.json`, and `attempts/<physical UUID>/...` export described in [managed paired evaluation](../../docs/managed-paired-evaluation.md) |
+
+The browser cannot write these records or choose Blob URLs. Binding and
+completion digests cover exact UTF-8 file bytes, including whitespace.
+Serialize typed records with `model_dump(mode="json", by_alias=True)` before
+writing and hashing them; preserve those original bytes.
+Duplicate keys/non-finite JSON are rejected. The same Blob download's
+server-observed `last_modified` must put registration before **every** original
+claim. The verifier conservatively uses the end of its one-second HTTP timestamp
+interval; a same-second claim is not proven later. Backdating `created_at`
+cannot authorize an old physical attempt.
+The later completion does not renew grants or physical/ML time budgets.
+
+Managed study time is separate from the offline scorer/import timeout. The
+operator must explicitly declare `study_max_wall_seconds` (1..28800, at most
+eight hours **including queue, preparation and gaps**) before the study.
+There is no eight-hour default. The original `EvaluationRun.deadline` must fit
+its original `created_at` plus this window. Explicit `study_approved_cost_usd`
+must equal the original run approval and be no more than USD 20 or the project's
+lower cost ceiling; fresh price review remains the operator's responsibility.
+These are source admission ceilings, not authorization to start or spend.
+All forty physical claims and final times must fit that original deadline,
+with no renewal or restamping. Per-episode 600 seconds, the legacy project's
+21600-second evaluation ceiling, Azure ML/HTTP timeouts and the separate
+1800-second artifact CPU budget are unchanged.
+
+`GET /v1/learning/projects/<project>/managed-evaluations/<run>` exposes only
+the protected typed import reference to the API identity. The API's
+`POST /api/learning/jobs/<run>/managed-import` takes only `request_id`, which
+must equal that completion's `operation_id`, plus the original `If-Match`.
+HTTP 202 is an existing `ArtifactOperation`, not a completed evaluation.
+
+The existing single-process artifact runner inventories the fixed input and
+registered model prefixes, checks aggregate transfer and available temporary
+disk, downloads original files, and invokes
+`simulation.paired_evaluation.aggregate`. It verifies full raw captures,
+per-tick task/heartbeat evidence, all file hashes and native model lineage,
+then compares the entire regenerated report with the supplied report.
+Thirty-nine trials, preemption, missing terminal files or a rehashed green
+summary cannot become a scorable report. Fully verified failed physical trials
+remain in each twenty-case denominator.
+
+Only a complete forty-trial result becomes `report_committed` and a typed
+`ManagedEvaluationReceipt`. The compact API report explicitly keeps the managed
+schema, mapping/evidence hashes and both logical/physical IDs. It does not
+invent native `results.json`. The original managed report bytes are published
+as a private report artifact; certificate reads recheck the original binding,
+completion, verifier source and input inventories before API acceptance,
+download or release. Changed/uncertain verification needs operator review,
+not automatic heavy replay.
+
+The unchanged artifact ceilings (20 GiB aggregate transfer, 100,000 files,
+1,800 seconds including queue time) and actual smaller free disk remain
+authoritative; they do **not** promise sufficient capacity for forty captures
+and two checkpoints. Resource-budget failures remain explicit. A completed
+import is not a passing quality result, release, current LIVE motion, or
+evidence that the production import has been exercised.
+
 ### Reference authority catalog
 
 The protected lookup

@@ -31,11 +31,16 @@ from apps.api.models import (
     Revision,
     utcnow,
 )
-from apps.api.simulation_reports import SimulationReport
+from apps.api.simulation_reports import (
+    MANAGED_REPORT_SCHEMA,
+    ManagedEvaluationReceipt,
+    SimulationReport,
+)
 
 PolicyType = Literal["gr00t_n1_5", "gr00t_n1_7", "smolvla", "act_auxiliary"]
 SourceKind = Literal["human_teleop", "reference_controller", "learned"]
 JobStatus = Literal[
+    "awaiting_import",
     "submitting",
     "submission_unknown",
     "submitted",
@@ -836,6 +841,8 @@ class TrainingRun(LearningJob):
 
     @model_validator(mode="after")
     def succeeded_requires_artifact(self):
+        if self.status == "awaiting_import":
+            raise ValueError("Only managed evaluations can await an artifact import.")
         if self.status == "succeeded" and (not self.azure_job_id or not self.candidate_id):
             raise ValueError("A completed training run must reference a verified new candidate.")
         return self
@@ -843,6 +850,14 @@ class TrainingRun(LearningJob):
 
 class EvaluationRun(LearningJob):
     kind: Literal["evaluation"] = "evaluation"
+    provider: Literal["azure_ml", "managed_batch"] = Field(
+        default="azure_ml", exclude_if=lambda value: value == "azure_ml"
+    )
+    import_operation_id: UUID | None = Field(default=None, exclude_if=lambda value: value is None)
+    import_receipt: ManagedEvaluationReceipt | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    before_candidate_id: UUID | None = Field(default=None, exclude_if=lambda value: value is None)
     candidate_id: UUID
     baseline_release_id: UUID | None
     comparison_kind: Literal["paired_policy", "reference_bootstrap"] = "paired_policy"
@@ -851,7 +866,41 @@ class EvaluationRun(LearningJob):
 
     @model_validator(mode="after")
     def succeeded_requires_report(self):
-        if self.status == "succeeded" and (not self.azure_job_id or not self.report):
+        if self.provider == "managed_batch":
+            if (
+                self.execution_timing != "paused_simulation"
+                or self.comparison_kind != "paired_policy"
+                or self.azure_job_id is not None
+                or self.azure_status is not None
+                or self.backend_status is not None
+                or self.cancellation is not None
+                or self.status not in ("awaiting_import", "succeeded")
+                or (self.report is not None) != (self.status == "succeeded")
+                or (self.baseline_release_id is None) == (self.before_candidate_id is None)
+                or (self.status == "awaiting_import" and self.import_receipt is not None)
+            ):
+                raise ValueError("Managed import is not an Azure ML submission or job status.")
+            if self.status == "succeeded" and (
+                self.import_receipt is None
+                or self.import_operation_id is None
+                or self.import_receipt.operation_id != self.import_operation_id
+                or self.import_receipt.evaluation_run_id != self.id
+                or self.import_receipt.project_id != self.project_id
+                or self.import_receipt.owner_key != self.owner_key
+                or self.import_receipt.specification_sha256 != self.specification_sha256
+                or self.import_receipt.report != self.report
+            ):
+                raise ValueError(
+                    "Managed completion requires its verified original import receipt."
+                )
+        elif (
+            self.status == "awaiting_import"
+            or self.import_operation_id is not None
+            or self.import_receipt is not None
+            or self.before_candidate_id is not None
+        ):
+            raise ValueError("Azure ML evaluations cannot acquire managed-import authority.")
+        elif self.status == "succeeded" and (not self.azure_job_id or not self.report):
             raise ValueError("A completed evaluation requires the entire paired trial report.")
         return self
 
@@ -863,6 +912,11 @@ class EvaluationRun(LearningJob):
             or self.report.comparison_kind != self.comparison_kind
         ):
             raise ValueError("A paused physical report cannot become a real-time evaluation.")
+        if isinstance(self.report, SimulationReport) and (
+            (self.report.native_schema == MANAGED_REPORT_SCHEMA)
+            != (self.provider == "managed_batch")
+        ):
+            raise ValueError("Report provider differs from the original evaluation.")
         return self
 
 

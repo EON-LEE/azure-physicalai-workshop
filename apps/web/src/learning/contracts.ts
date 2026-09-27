@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { simulationReportSchema } from './simulationReports';
+import { MANAGED_REPORT_SCHEMA, managedImportReceiptSchema, simulationReportSchema } from './simulationReports';
 import { PAUSED_PROFILE_V1, PAUSED_PROFILE_V2, isPausedProfile, pausedProfileSchema, pausedProfileSteps } from './pausedProfiles';
 
 const id = z.uuid();
@@ -108,13 +108,23 @@ export const datasetSchema = z.object({
 }).superRefine(consistentTiming);
 export const artifactOperationSchema = z.object({
   ...base, kind: z.literal('artifact_operation'), project_id: id, target_id: id,
-  operation: z.enum(['capture', 'dataset']), work_sha256: sha,
+  operation: z.enum(['capture', 'dataset', 'managed_evaluation']), work_sha256: sha,
   deadline: date, max_bytes: count, max_files: count,
   status: z.enum(['queued', 'running', 'ready', 'failed', 'timed_out', 'uncertain']),
-  phase: z.enum(['queued', 'processing', 'manifest_committed', 'stopped']),
-  result: z.object({ artifact_id: id, manifest_sha256: sha, capture: captureSchema.nullable() }).nullable(),
+  phase: z.enum(['queued', 'processing', 'manifest_committed', 'report_committed', 'stopped']),
+  result: z.object({
+    artifact_id: id, manifest_sha256: sha, capture: captureSchema.nullable(),
+    managed_evaluation: managedImportReceiptSchema.optional(),
+  }).nullable(),
   error_code: z.string().nullable(), message: z.string().nullable(),
-}).refine((value) => (value.status === 'ready') === (value.result !== null));
+}).refine((value) => (value.status === 'ready') === (value.result !== null))
+  .refine((value) => !value.result || (value.operation === 'managed_evaluation'
+    ? value.result.managed_evaluation?.evaluation_run_id === value.target_id &&
+      value.result.managed_evaluation.operation_id === value.id &&
+      value.result.managed_evaluation.report.report_sha256 === value.result.manifest_sha256 &&
+      value.result.managed_evaluation.report.artifact_id === value.result.artifact_id &&
+      value.result.capture === null
+    : value.result.managed_evaluation === undefined));
 export type ArtifactOperation = z.infer<typeof artifactOperationSchema>;
 export const teachingSchema = z.object({
   ...timingMetadata,
@@ -171,7 +181,7 @@ export const referenceCollectionSchema = z.object({
   }
 });
 export type ReferenceCollection = z.infer<typeof referenceCollectionSchema>;
-const jobStatus = z.enum(['submitting', 'submission_unknown', 'submitted', 'running', 'cancelling', 'succeeded', 'failed', 'cancelled', 'timed_out', 'blocked']);
+const jobStatus = z.enum(['awaiting_import', 'submitting', 'submission_unknown', 'submitted', 'running', 'cancelling', 'succeeded', 'failed', 'cancelled', 'timed_out', 'blocked']);
 const jobBase = {
   ...timingMetadata,
   ...base, project_id: id, status: jobStatus, backend_job_name: z.string(),
@@ -193,7 +203,7 @@ export const trainingSchema = z.object({
   ...jobBase, kind: z.literal('training'), dataset_id: id, parent_release_id: id.nullable(),
   pretrained_artifact_id: id.nullable(),
   optimizer_steps: count, candidate_id: id.nullable(),
-}).superRefine(consistentTiming);
+}).superRefine(consistentTiming).refine((value) => value.status !== 'awaiting_import');
 export const trialSchema = z.object({
   seed: count, attempt: z.number().int().positive(), policy: z.enum(['before', 'after']),
   environment_id: z.string(), revision: sha,
@@ -222,10 +232,35 @@ export const bootstrapReportSchema = z.object({
 });
 export const evaluationSchema = z.object({
   ...jobBase, kind: z.literal('evaluation'), candidate_id: id, baseline_release_id: id.nullable(),
+  provider: z.enum(['azure_ml', 'managed_batch']).optional(),
+  import_operation_id: id.optional(), import_receipt: managedImportReceiptSchema.optional(),
+  before_candidate_id: id.optional(),
   comparison_kind: z.enum(['paired_policy', 'reference_bootstrap']),
   evaluation_plan_sha256: sha, report: z.union([simulationReportSchema, reportSchema, bootstrapReportSchema]).nullable(),
 }).superRefine((value, context) => {
   consistentTiming(value, context);
+  const managed = value.provider === 'managed_batch';
+  if (managed ? (
+    value.execution_timing !== 'paused_simulation' || value.comparison_kind !== 'paired_policy' ||
+    value.azure_job_id !== null || value.azure_status != null || value.backend_status != null || value.cancellation != null ||
+    !['awaiting_import', 'succeeded'].includes(value.status) ||
+    (value.baseline_release_id === null) === (value.before_candidate_id === undefined) ||
+    (value.status === 'succeeded' ? (
+      !value.import_receipt || !value.import_operation_id || !value.report ||
+      value.import_receipt.operation_id !== value.import_operation_id ||
+      value.import_receipt.evaluation_run_id !== value.id ||
+      value.import_receipt.project_id !== value.project_id ||
+      value.import_receipt.specification_sha256 !== value.specification_sha256 ||
+      JSON.stringify(value.import_receipt.report) !== JSON.stringify(value.report)
+    ) : (value.report !== null || value.import_receipt !== undefined))
+  ) : (value.status === 'awaiting_import' || value.import_operation_id !== undefined ||
+    value.import_receipt !== undefined || value.before_candidate_id !== undefined)) {
+    context.addIssue({ code: 'custom', message: 'Managed artifact imports must not claim an Azure ML identity or unverified completion.' });
+  }
+  if (value.report && 'native_schema' in value.report &&
+    (value.report.native_schema === MANAGED_REPORT_SCHEMA) !== managed) {
+    context.addIssue({ code: 'custom', message: 'Report and original provider must match.' });
+  }
   if (value.report && ('execution_timing' in value.report) !== (value.execution_timing === 'paused_simulation')) {
     context.addIssue({ code: 'custom', message: 'Report and evaluation job timing must match.' });
   }

@@ -14,6 +14,7 @@ from apps.api.learning_models import (
 )
 from apps.api.models import DemonstrationResult, Principal, Revision
 from apps.api.reference_models import ReferenceCollection
+from apps.api.simulation_reports import ManagedEvaluationReceipt, ManagedImportReference
 
 
 class ArtifactPolicy(Frozen):
@@ -26,7 +27,7 @@ class ArtifactPolicy(Frozen):
 class ArtifactWork(Frozen):
     id: UUID
     actor: Principal
-    operation: Literal["capture", "dataset"]
+    operation: Literal["capture", "dataset", "managed_evaluation"]
     project: LearningProject
     target_id: UUID
     created_at: AwareDatetime
@@ -36,6 +37,9 @@ class ArtifactWork(Frozen):
     session: TeachingSession | ReferenceCollection | None = None
     receipt: DemonstrationResult | None = None
     captures: tuple[CaptureReceipt, ...] = Field(default=(), max_length=1000)
+    managed_import: ManagedImportReference | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
     @model_validator(mode="after")
     def exact_inputs(self):
@@ -46,7 +50,23 @@ class ArtifactWork(Frozen):
             or not timedelta() < self.deadline - self.created_at <= timedelta(seconds=1800)
         ):
             raise ValueError("Artifact operation owner and original wall authority must match.")
-        if self.operation == "capture":
+        if self.operation == "managed_evaluation":
+            if (
+                self.managed_import is None
+                or self.project.execution_timing != "paused_simulation"
+                or self.project.policy_type != "smolvla"
+                or self.managed_import.operation_id != self.id
+                or self.managed_import.owner_key != self.actor.owner_key
+                or self.managed_import.project_id != self.project.id
+                or self.managed_import.evaluation_run_id != self.target_id
+                or self.session is not None
+                or self.receipt is not None
+                or self.captures
+            ):
+                raise ValueError("Managed verification requires its original scoped import pins.")
+        elif self.managed_import is not None:
+            raise ValueError("Capture/dataset work cannot acquire managed evaluation authority.")
+        elif self.operation == "capture":
             if (
                 self.session is None
                 or self.receipt is None
@@ -72,9 +92,18 @@ class ArtifactResult(Frozen):
     artifact_id: UUID
     manifest_sha256: Revision
     capture: CaptureReceipt | None = None
+    managed_evaluation: ManagedEvaluationReceipt | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
     @model_validator(mode="after")
     def matching_capture(self):
+        if self.managed_evaluation is not None and (
+            self.capture is not None
+            or self.managed_evaluation.report.artifact_id != self.artifact_id
+            or self.managed_evaluation.report.report_sha256 != self.manifest_sha256
+        ):
+            raise ValueError("Managed receipt and original report artifact must match.")
         if self.capture is not None and (
             self.capture.artifact_id != self.artifact_id
             or self.capture.manifest_sha256 != self.manifest_sha256
@@ -89,7 +118,7 @@ class ArtifactStatus(Frozen):
     owner_key: Revision
     project_id: UUID
     target_id: UUID
-    operation: Literal["capture", "dataset"]
+    operation: Literal["capture", "dataset", "managed_evaluation"]
     work_sha256: Revision
     created_at: AwareDatetime
     updated_at: AwareDatetime
@@ -97,7 +126,9 @@ class ArtifactStatus(Frozen):
     max_bytes: int
     max_files: int
     status: Literal["queued", "running", "ready", "failed", "timed_out", "uncertain"]
-    phase: Literal["queued", "processing", "manifest_committed", "stopped"] = "queued"
+    phase: Literal["queued", "processing", "manifest_committed", "report_committed", "stopped"] = (
+        "queued"
+    )
     claim_id: UUID | None = None
     heartbeat_at: AwareDatetime | None = None
     result: ArtifactResult | None = None
@@ -108,6 +139,10 @@ class ArtifactStatus(Frozen):
     def ready_requires_result(self):
         if (self.status == "ready") != (self.result is not None):
             raise ValueError("Only a committed verified manifest can be ready.")
+        if self.result is not None and (
+            (self.operation == "managed_evaluation") != (self.result.managed_evaluation is not None)
+        ):
+            raise ValueError("Artifact result must match its declared operation.")
         return self
 
     def public(self):

@@ -13,6 +13,7 @@ from apps.api.errors import Problem, unavailable
 from apps.api.learning_models import CaptureReceipt, PolicyRelease, TrainingParent
 from apps.api.learning_ports import BackendJob, JobSpecification
 from apps.api.models import Principal
+from apps.api.simulation_reports import ManagedImportReference
 
 log = logging.getLogger(__name__)
 
@@ -173,6 +174,16 @@ class ManagedLearningGateway:
     def artifact_policy(self, actor):
         return self._parse(
             ArtifactPolicy, self._request(actor, "GET", "/v1/learning/artifact-policy")
+        )
+
+    def managed_import_reference(self, actor, project_id, evaluation_id):
+        return self._parse(
+            ManagedImportReference,
+            self._request(
+                actor,
+                "GET",
+                f"/v1/learning/projects/{project_id}/managed-evaluations/{evaluation_id}",
+            ),
         )
 
     def artifact_status(self, actor, operation_id):

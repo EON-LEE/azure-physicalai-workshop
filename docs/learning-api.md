@@ -241,6 +241,61 @@ are bounded to 300 or 600 six-tick frames respectively; the native whole-profile
 hash binds data, checkpoint, command and report even when their outer schema
 version remains unchanged.
 
+### Managed Batch paired imports
+
+The operator may predeclare an evaluation with `provider: managed_batch` and
+`status: awaiting_import`; no Azure ML job ID/status is assigned. Original
+operator-only registry binding, mapping and later completion records are
+documented in [the worker import contract](../apps/learning_worker/README.md#operator-bound-managed-paired-evaluation-imports).
+There is no browser registration, direct Blob URL, paid-job submission or
+automatic release in this seam.
+
+The managed-only operator binding requires an explicit study window no greater
+than 28800 seconds (eight hours including queue/preparation/gaps), plus explicit
+study cost approval matching the original run and bounded by USD 20 and the
+project's lower approved ceiling. It does not default or extend any run.
+The project/legacy Azure ML `evaluation_seconds` ceiling remains 21600; managed
+physical-study time is not that offline-scorer budget. Every original physical
+claim/final timestamp must fit the predeclared run deadline. Per-episode 600
+seconds and queued artifact-import CPU work's 1800-second cap are unchanged.
+
+`POST /api/learning/jobs/{evaluation_run_id}/managed-import` requires Entra
+authentication, the loaded `If-Match`, and an `Approval` body containing only
+`request_id`. That ID must equal the already registered completion's immutable
+`operation_id`. Existing paused-evaluation admission and worker artifact
+allowlists still apply. It returns HTTP 202 with an `ArtifactOperation` whose
+operation is `managed_evaluation`; poll the existing artifact-operation route.
+No receipt means no invented completion. Errors/partial inputs leave the
+evaluation awaiting a complete verified import and expose the artifact error.
+
+A ready operation has `phase: report_committed` and a discriminated
+`result.managed_evaluation` receipt: `provider`, `operation_id`, owner/project/
+evaluation IDs, original specification hash, binding/completion hashes and
+the complete compact `report`. `EvaluationRun.import_operation_id` correlates
+the work; `import_receipt` is retained only after verified completion.
+The managed run's `succeeded` state means **artifact verification completed**,
+not that either model succeeded physically or passed quality.
+
+Managed compact reports use
+`native_schema: physicalai.managed-paired-report/v1`, with explicit
+`mapping_sha256` and `evidence_sha256`; `results_sha256` is absent because no
+old recorder file was manufactured. Each of the forty trial rows retains its
+original physical UUID as `episode_id` and `physical_attempt_id`, plus the
+predeclared `logical_case_id`. The private report-download endpoint returns
+the unchanged original managed report bytes, not this compact projection.
+Incomplete/preempted slots cannot enter this complete-only DTO. Verified
+failed trials remain present, and unchanged native safety/quality gates
+control eligibility for a separately reviewed release.
+
+The managed-only `before_candidate_id` and private specification
+`baseline_candidate` permit evaluation of two actual learned candidates
+before either is published. They are mutually exclusive with an existing
+released baseline, and do not authorize model execution, manufacture a P0
+release, or alter the training API. Legacy Azure ML/native report
+serialization and lifecycle remain unchanged. The console explicitly labels
+managed imports and does not offer an Azure ML cancel action for them;
+physical Batch cancellation remains operator-owned.
+
 Verification uses a durable content-bound claim and completed certificate.
 Owner/job/spec/config/report SHA, pinned verifier code and exact Blob ETag/size
 inventories are rechecked; changes invalidate the cache. Failed/incomplete

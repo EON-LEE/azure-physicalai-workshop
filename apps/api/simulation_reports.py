@@ -19,6 +19,7 @@ from apps.api.models import (
 
 Role = Literal["before", "after", "reference", "candidate"]
 Duration = Annotated[float, Field(ge=0)]
+MANAGED_REPORT_SCHEMA = "physicalai.managed-paired-report/v1"
 
 
 class FrozenReport(Model):
@@ -68,6 +69,10 @@ class MeasuredTaskEvidence(FrozenReport):
 
 class SimulationTrial(FrozenReport):
     episode_id: str = Field(min_length=1, max_length=128)
+    logical_case_id: str | None = Field(
+        default=None, min_length=1, max_length=128, exclude_if=lambda value: value is None
+    )
+    physical_attempt_id: UUID | None = Field(default=None, exclude_if=lambda value: value is None)
     seed: int = Field(strict=True, ge=0)
     attempt: Literal[0]
     policy: Role
@@ -123,7 +128,9 @@ class SimulationReport(FrozenReport):
     execution_timing: Literal["paused_simulation"]
     real_time_admission: Literal[False]
     native_schema: Literal[
-        "physicalai.smolvla-paired-report/v2", "physicalai.smolvla-bootstrap-report/v2"
+        "physicalai.smolvla-paired-report/v2",
+        "physicalai.smolvla-bootstrap-report/v2",
+        "physicalai.managed-paired-report/v1",
     ]
     comparison_kind: Literal["paired_policy", "reference_bootstrap"]
     control_profile_id: PausedProfileId
@@ -132,7 +139,9 @@ class SimulationReport(FrozenReport):
     frozen_plan_sha256: Revision
     evaluation_plan_sha256: Revision
     native_plan_sha256: Revision
-    results_sha256: Revision
+    results_sha256: Revision | None = Field(default=None, exclude_if=lambda value: value is None)
+    mapping_sha256: Revision | None = Field(default=None, exclude_if=lambda value: value is None)
+    evidence_sha256: Revision | None = Field(default=None, exclude_if=lambda value: value is None)
     runtime_sha256: Revision
     report_sha256: Revision
     artifact_id: UUID
@@ -166,6 +175,34 @@ class SimulationReport(FrozenReport):
 
     @model_validator(mode="after")
     def complete_role_pair(self):
+        managed = self.native_schema == MANAGED_REPORT_SCHEMA
+        if managed:
+            if (
+                self.comparison_kind != "paired_policy"
+                or self.mapping_sha256 is None
+                or self.evidence_sha256 is None
+                or self.results_sha256 is not None
+                or len({row.physical_attempt_id for row in self.trials}) != 40
+                or len({(row.logical_case_id, row.policy) for row in self.trials}) != 40
+                or len({row.logical_case_id for row in self.trials}) != 20
+                or any(
+                    row.physical_attempt_id is None
+                    or row.logical_case_id is None
+                    or row.episode_id != str(row.physical_attempt_id)
+                    for row in self.trials
+                )
+            ):
+                raise ValueError("Managed reports retain forty distinct physical/logical slots.")
+        elif (
+            self.results_sha256 is None
+            or self.mapping_sha256 is not None
+            or self.evidence_sha256 is not None
+            or any(
+                row.logical_case_id is not None or row.physical_attempt_id is not None
+                for row in self.trials
+            )
+        ):
+            raise ValueError("Native recording results and managed snapshots cannot be relabeled.")
         if any(
             row.applied_action_count > PAUSED_PROFILE_STEPS[self.control_profile_id]
             for row in self.trials
@@ -195,7 +232,7 @@ class SimulationReport(FrozenReport):
             )
         else:
             valid = (
-                self.native_schema == "physicalai.smolvla-paired-report/v2"
+                self.native_schema in ("physicalai.smolvla-paired-report/v2", MANAGED_REPORT_SCHEMA)
                 and self.before_model_sha256 is not None
                 and self.after_model_sha256 is not None
                 and self.candidate_model_sha256 is None
@@ -229,6 +266,27 @@ class SimulationReport(FrozenReport):
         return self
 
 
+class ManagedImportReference(FrozenReport):
+    provider: Literal["managed_batch"] = "managed_batch"
+    operation_id: UUID
+    owner_key: Revision
+    project_id: UUID
+    evaluation_run_id: UUID
+    specification_sha256: Revision
+    binding_sha256: Revision
+    completion_sha256: Revision
+
+
+class ManagedEvaluationReceipt(ManagedImportReference):
+    report: SimulationReport
+
+    @model_validator(mode="after")
+    def explicit_managed_report(self):
+        if self.report.native_schema != MANAGED_REPORT_SCHEMA:
+            raise ValueError("Managed import cannot impersonate an Azure ML recording report.")
+        return self
+
+
 def validate_report_binding(specification, report: SimulationReport) -> None:
     project = specification.project
     plan = project.evaluation_plan
@@ -250,7 +308,9 @@ def validate_report_binding(specification, report: SimulationReport) -> None:
             None
             if row.policy == "reference"
             else (
-                specification.baseline.model_sha256
+                (
+                    getattr(specification, "baseline_candidate", None) or specification.baseline
+                ).model_sha256
                 if row.policy == "before"
                 else specification.candidate.model_sha256
             )

@@ -117,6 +117,8 @@ def create_worker(settings: WorkerSettings | None = None, operations=None, ident
                 capture_bytes=configuration.artifact_capture_bytes,
                 dataset_bytes=configuration.artifact_dataset_bytes,
                 maximum_files=configuration.artifact_max_files,
+                managed_evaluations_enabled=configuration.paused_evaluation_enabled,
+                verifier=artifacts,
             )
             runner = ArtifactRunner(app.state.artifact_operations, configuration.tenant_id)
             runner.start()
@@ -213,6 +215,28 @@ def create_worker(settings: WorkerSettings | None = None, operations=None, ident
         if operations is None:
             raise unavailable("Resident artifact operation processor")
         return operations.policy(actor)
+
+    @app.get(
+        "/v1/learning/projects/{project_id}/managed-evaluations/{evaluation_id}",
+        dependencies=[Depends(controller)],
+    )
+    def managed_import_reference(
+        project_id: UUID,
+        evaluation_id: UUID,
+        request: Request,
+        actor: Annotated[Principal, Depends(read_actor)],
+    ):
+        if not configuration.paused_evaluation_enabled:
+            raise Problem(503, "paused_learning_unavailable", "Managed evaluation import is off.")
+        operations = request.app.state.artifact_operations
+        if operations is None:
+            raise unavailable("Resident artifact operation processor")
+        operations.policy(actor)
+        from apps.learning_worker.managed_reports import context
+
+        return context(
+            request.app.state.worker.registry, actor, project_id, evaluation_id
+        ).reference
 
     @app.get("/v1/learning/artifact-operations/{operation_id}", dependencies=[Depends(controller)])
     def artifact_status(

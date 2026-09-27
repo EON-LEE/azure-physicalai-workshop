@@ -4,7 +4,7 @@ import { isAbort } from '../api/errors';
 import { useRequestScope } from '../hooks/useRequestScope';
 import { Badge, ErrorNotice, FieldValue } from '../ui/common';
 import type { LearningApi, PolicyRelease, Resource } from './contracts';
-import type { SimulationReport } from './simulationReports';
+import { MANAGED_REPORT_SCHEMA, type SimulationReport } from './simulationReports';
 
 const labels = { before: 'P0', after: 'P1', reference: '기준 제어기', candidate: '최초 후보' };
 const number = (value: number) => new Intl.NumberFormat('ko-KR', { maximumFractionDigits: 3 }).format(value);
@@ -18,6 +18,7 @@ export function SimulationComparison({ api, jobId, jobStatus, report, candidateI
   const [error, setError] = useState<unknown>(null);
   const [reviewed, setReviewed] = useState(false);
   const [released, setReleased] = useState<Resource<PolicyRelease> | null>(null);
+  const managed = report.native_schema === MANAGED_REPORT_SCHEMA;
   const releaseId = useRef(crypto.randomUUID());
   const requestScope = useRequestScope();
   useEffect(() => () => { if (url) URL.revokeObjectURL(url); }, [url]);
@@ -40,7 +41,7 @@ export function SimulationComparison({ api, jobId, jobStatus, report, candidateI
     <div className="learning-panel-body">
       <p>검증된 원본의 요약입니다. 현재 LIVE 동작이나 실시간 100ms/80ms 통과가 아닙니다. 전체 시도·시계열은 원본 보고서에 보존됩니다.</p>
       <div className="inline-note" role="status"><strong>{report.quality_gate_passed ? '시뮬레이션 품질 기준 통과' : '시뮬레이션 품질 기준 미달'}</strong>
-        <p>Azure 작업 상태: {jobStatus} · {report.comparison_kind === 'reference_bootstrap' ? '기준 제어기는 학습된 P0가 아닙니다.' : `절대 성공률 변화: ${number(report.absolute_success_rate_improvement * 100)}%p`}</p>
+        <p>{managed ? 'managed_batch 원본 검증 상태' : 'Azure 작업 상태'}: {jobStatus} · {report.comparison_kind === 'reference_bootstrap' ? '기준 제어기는 학습된 P0가 아닙니다.' : `절대 성공률 변화: ${number(report.absolute_success_rate_improvement * 100)}%p`}</p>
       </div>
       <dl className="learning-metadata">
         <FieldValue label="평가된 시뮬레이션 프로파일"><code>{report.control_profile_id}</code></FieldValue>
@@ -50,7 +51,9 @@ export function SimulationComparison({ api, jobId, jobStatus, report, candidateI
         <FieldValue label="안전 / 자원 위반">{report.safety_violation_count} / {report.resource_violation_count}</FieldValue>
         <FieldValue label="고정된 평가 기준 SHA"><code>{report.criteria_sha256}</code></FieldValue>
         <FieldValue label="모델 독립 scene conditions SHA"><code>{report.frozen_plan_sha256}</code></FieldValue>
-        <FieldValue label="native plan / results SHA"><code>{report.native_plan_sha256}</code><code>{report.results_sha256}</code></FieldValue>
+        <FieldValue label="native plan SHA"><code>{report.native_plan_sha256}</code></FieldValue>
+        {managed ? <FieldValue label="사전 고정 mapping / evidence snapshot SHA"><code>{report.mapping_sha256}</code><code>{report.evidence_sha256}</code></FieldValue>
+          : <FieldValue label="native results SHA"><code>{report.results_sha256}</code></FieldValue>}
       </dl>
       <div className="table-scroll"><table><caption>각 역할의 전체 20개 조건 · 실패 포함</caption>
         <thead><tr><th>역할</th><th>성공 / 전체</th><th>정책 WALL p95 (ms)</th></tr></thead>
@@ -63,7 +66,8 @@ export function SimulationComparison({ api, jobId, jobStatus, report, candidateI
       <div className="table-scroll"><table><caption>모든 40회 물리 시도 요약 · 원본 시계열 대체 아님</caption>
         <thead><tr><th>역할 / seed</th><th>결과</th><th>WALL 초</th><th>SIM 초</th><th>파지 / 안정화</th><th>정책 WALL p95 ms</th><th>전체 구간 WALL 최대 ms</th></tr></thead>
         <tbody>{report.trials.map((trial) => <tr key={`${trial.policy}-${trial.episode_id}-${trial.attempt}`}>
-          <td>{labels[trial.policy]} / {trial.seed}<code>{trial.environment_id}</code></td>
+          <td>{labels[trial.policy]} / {trial.seed}<code>{trial.environment_id}</code>
+            {managed && <><small>논리 조건: {trial.logical_case_id}</small><small>실제 물리 시도: {trial.physical_attempt_id}</small></>}</td>
           <td>{trial.physical_success ? '성공' : '실패'}{trial.failure_reason && <small>{trial.failure_reason}</small>}</td>
           <td>{number(trial.wall_duration_ms / 1000)}</td><td>{number(trial.simulation_duration_ms / 1000)}</td>
           <td>{trial.task_evidence.grasp_verified ? '확인' : '미확인'} / {trial.task_evidence.settled ? '확인' : '미확인'}</td>

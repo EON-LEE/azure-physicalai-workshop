@@ -22,6 +22,7 @@ def main():
     sys.addaudithook(offline_only)
     from azure.batch import BatchClient
 
+    from apps.learning_worker import managed_reports
     from simulation import batch, batch_learned, batch_task, paired_evaluation
 
     assert version("azure-batch") == "15.1.0"
@@ -41,6 +42,7 @@ def main():
                     batch_learned.__name__,
                     paired_evaluation.__name__,
                 ],
+                "consumer_modules": [managed_reports.__name__],
                 "network_or_process_attempts": attempts,
                 "gpu_modules_loaded": [],
             },

@@ -47,9 +47,14 @@ def learning_publication(configuration, learning):
 
     report = evaluation.report
     if isinstance(report, SimulationReport):
+        before = (
+            learning.get(actor, "candidate", evaluation.before_candidate_id).value
+            if evaluation.before_candidate_id is not None
+            else None
+        )
         baseline = (
             None
-            if report.comparison_kind == "reference_bootstrap"
+            if report.comparison_kind == "reference_bootstrap" or before is not None
             else learning._baseline(
                 actor,
                 evaluation.baseline_release_id,
@@ -70,6 +75,7 @@ def learning_publication(configuration, learning):
                 run=evaluation,
                 candidate=candidate,
                 baseline=baseline,
+                baseline_candidate=before,
             ),
             report,
         )

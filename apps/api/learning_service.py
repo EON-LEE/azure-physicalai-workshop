@@ -366,6 +366,7 @@ class LearningService:
         session=None,
         receipt=None,
         captures=(),
+        managed_import=None,
     ):
         existing = self._existing(actor, "artifact_operation", operation_id, digest)
         if existing:
@@ -373,7 +374,13 @@ class LearningService:
         client = self._dependency(self.artifacts, "Resident artifact processor")
         policy = client.artifact_policy(actor)
         now = utcnow()
-        operation = "capture" if session is not None else "dataset"
+        operation = (
+            "managed_evaluation"
+            if managed_import is not None
+            else "capture"
+            if session is not None
+            else "dataset"
+        )
         work = ArtifactWork(
             id=operation_id,
             actor=actor,
@@ -387,6 +394,7 @@ class LearningService:
             session=session,
             receipt=receipt,
             captures=captures,
+            managed_import=managed_import,
         )
         state = ArtifactStatus(
             id=work.id,
@@ -446,6 +454,8 @@ class LearningService:
             )
         if original.status in ("ready", "failed", "timed_out"):
             return stored
+        if original.operation == "managed_evaluation":
+            self._apply_managed_import(actor, original, response)
         if response.status == "ready" and original.operation == "dataset":
             work = ArtifactWork.model_validate(original.work_document)
             self._claim(
@@ -504,6 +514,106 @@ class LearningService:
                 message="No owned worker receipt exists; heavy work was not replayed.",
             )
         return self._apply_artifact(actor, stored, state)
+
+    def import_managed_evaluation(self, actor, evaluation_id, body, etag):
+        digest = operation_hash(evaluation_id, "managed_evaluation", body)
+        if self._existing(actor, "artifact_operation", body.request_id, digest):
+            return self.get_artifact_operation(actor, body.request_id)
+        stored = self.get(actor, "evaluation", evaluation_id)
+        require_etag(stored, etag)
+        run = stored.value
+        if run.provider != "managed_batch" or run.status != "awaiting_import":
+            raise Problem(
+                409, "managed_import_required", "An original managed evaluation is required."
+            )
+        project = self.get(actor, "project", run.project_id).value
+        self._timing_admission(project, "evaluation")
+        self._policy(project.policy_type)
+        client = self._dependency(self.artifacts, "Resident artifact processor")
+        reference = client.managed_import_reference(actor, project.id, run.id)
+        if (
+            reference.operation_id != body.request_id
+            or reference.owner_key != actor.owner_key
+            or reference.project_id != project.id
+            or reference.evaluation_run_id != run.id
+            or reference.specification_sha256 != run.specification_sha256
+            or run.import_operation_id not in (None, body.request_id)
+        ):
+            raise Problem(409, "managed_import_binding", "The original import request differs.")
+        return self._begin_artifact(
+            actor, project, body.request_id, run.id, digest, managed_import=reference
+        )
+
+    def _apply_managed_import(self, actor, operation, response):
+        stored = self.get(actor, "evaluation", operation.target_id)
+        run = stored.value
+        work = ArtifactWork.model_validate(operation.work_document)
+        reference = work.managed_import
+        if (
+            run.provider != "managed_batch"
+            or run.project_id != work.project.id
+            or run.specification_sha256 != reference.specification_sha256
+            or run.import_operation_id not in (None, operation.id)
+        ):
+            raise Problem(409, "managed_import_binding", "Evaluation/import identity changed.")
+        if run.status == "succeeded":
+            if response.result is None or run.import_receipt != response.result.managed_evaluation:
+                raise Problem(409, "managed_import_binding", "A completed import cannot change.")
+            return
+        if response.status == "ready":
+            receipt = response.result.managed_evaluation
+            if receipt is None or receipt.model_dump(exclude={"report"}) != reference.model_dump():
+                raise Problem(503, "managed_import_receipt", "Complete managed receipt is missing.")
+            project = self.get(actor, "project", run.project_id).value
+            candidate = self.get(actor, "candidate", run.candidate_id).value
+            before = (
+                self.get(actor, "candidate", run.before_candidate_id).value
+                if run.before_candidate_id is not None
+                else None
+            )
+            baseline = (
+                None
+                if before is not None
+                else self._baseline(
+                    actor,
+                    run.baseline_release_id,
+                    execution_timing="paused_simulation",
+                    control_profile_id=project.control_profile_id,
+                )
+            )
+            validate_report_binding(
+                JobSpecification(
+                    owner_key=actor.owner_key,
+                    project=project,
+                    run=run,
+                    candidate=candidate,
+                    baseline=baseline,
+                    baseline_candidate=before,
+                ),
+                receipt.report,
+            )
+            self._dependency(self.artifacts, "Verified learning artifacts").verify_report(
+                actor, project, run, receipt.report
+            )
+            self._save(
+                actor,
+                stored,
+                status="succeeded",
+                import_operation_id=operation.id,
+                import_receipt=receipt,
+                report=receipt.report,
+                error_code=None,
+                message="Complete managed Batch artifacts verified; physical quality is separate.",
+            )
+        else:
+            changes = {
+                "import_operation_id": operation.id,
+                "error_code": response.error_code,
+                "message": response.message
+                or "Awaiting a complete verified managed artifact import.",
+            }
+            if any(getattr(run, key) != item for key, item in changes.items()):
+                self._save(actor, stored, **changes)
 
     def _baseline(
         self, actor: Principal, release_id: UUID, *, execution_timing=None, control_profile_id=None
@@ -851,6 +961,11 @@ class LearningService:
         if stored is None:
             stored = self.get(actor, "evaluation", job_id)
         if stored.value.status in JOB_TERMINAL:
+            return stored
+        if isinstance(stored.value, EvaluationRun) and stored.value.provider == "managed_batch":
+            if stored.value.import_operation_id is not None:
+                self.get_artifact_operation(actor, stored.value.import_operation_id)
+                return self.get(actor, "evaluation", job_id)
             return stored
         jobs = self._dependency(self.jobs, "Azure ML learning backend")
         receipt = jobs.status(actor, stored.value)
@@ -1335,6 +1450,12 @@ class LearningService:
 
     def cancel_job(self, actor: Principal, job_id: UUID, request_id: UUID, etag: str | None):
         stored = self.get_job(actor, job_id)
+        if isinstance(stored.value, EvaluationRun) and stored.value.provider == "managed_batch":
+            raise Problem(
+                409,
+                "managed_operator_required",
+                "This is not an Azure ML job; managed physical cancellation is operator-owned.",
+            )
         if stored.value.status in JOB_TERMINAL or stored.value.cancellation is not None:
             return stored
         digest = fingerprint(
@@ -1493,9 +1614,14 @@ class LearningService:
         project = self.get(actor, "project", candidate.project_id).value
         self._timing_admission(project, "release")
         if isinstance(run.report, SimulationReport):
+            before = (
+                self.get(actor, "candidate", run.before_candidate_id).value
+                if run.before_candidate_id is not None
+                else None
+            )
             baseline = (
                 None
-                if project.project_kind == "bootstrap"
+                if project.project_kind == "bootstrap" or before is not None
                 else self._baseline(
                     actor,
                     run.baseline_release_id,
@@ -1512,6 +1638,7 @@ class LearningService:
                     run=run,
                     candidate=candidate,
                     baseline=baseline,
+                    baseline_candidate=before,
                 ),
                 run.report,
             )

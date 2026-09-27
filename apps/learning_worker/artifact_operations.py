@@ -62,6 +62,8 @@ class ArtifactOperations:
         capture_bytes=4 * 1024**3,
         dataset_bytes=20 * 1024**3,
         maximum_files=100000,
+        managed_evaluations_enabled=False,
+        verifier=None,
     ):
         self.registry = registry
         self.enabled = enabled
@@ -69,6 +71,8 @@ class ArtifactOperations:
         self.maximum_seconds = maximum_seconds
         self.capture_bytes, self.dataset_bytes = capture_bytes, dataset_bytes
         self.maximum_files = maximum_files
+        self.managed_evaluations_enabled = managed_evaluations_enabled
+        self.verifier = verifier
 
     def _state(self, actor, operation_id):
         value = self.registry._read_record(
@@ -120,6 +124,18 @@ class ArtifactOperations:
             )
         if actor.object_id not in self.actor_ids or actor != work.actor:
             raise Problem(403, "artifact_owner_unapproved", "Artifact owner is not allowlisted.")
+        if work.operation == "managed_evaluation":
+            if not self.managed_evaluations_enabled:
+                raise Problem(
+                    503, "paused_learning_unavailable", "Managed evaluation import is off."
+                )
+            from apps.learning_worker.managed_reports import context
+
+            original = context(
+                self.registry, actor, work.project.id, work.target_id, expected=work.managed_import
+            )
+            if original.binding.specification.project != work.project:
+                raise Problem(409, "managed_import_project", "Original project binding differs.")
         ceiling = self.capture_bytes if work.operation == "capture" else self.dataset_bytes
         if (
             work.max_bytes > ceiling
@@ -234,16 +250,36 @@ class ArtifactOperations:
                 ):
                     raise ValueError("Original operation or deadline differs")
                 if current.value.operation == "dataset" and (
-                    result.artifact_id != current.value.target_id or result.capture is not None
+                    result.artifact_id != current.value.target_id
+                    or result.capture is not None
+                    or result.managed_evaluation is not None
                 ):
                     raise ValueError("Sealed dataset identity differs from original target")
-                if current.value.operation == "capture" and result.capture is None:
+                if current.value.operation == "capture" and (
+                    result.capture is None or result.managed_evaluation is not None
+                ):
                     raise ValueError("Original capture receipt is missing")
+                if current.value.operation == "managed_evaluation":
+                    from apps.learning_worker.managed_reports import verified_receipt
+
+                    work = self.work(actor, operation_id)
+                    if self.verifier is None or result.managed_evaluation is None:
+                        raise ValueError("Complete managed report verification is missing")
+                    if (
+                        verified_receipt(self.verifier, actor, work.managed_import)
+                        != result.managed_evaluation
+                    ):
+                        raise ValueError("Verified report differs from the original import")
             except (KeyError, ValueError, ValidationError) as exc:
                 raise unavailable("Verified artifact completion metadata") from exc
             index = self.registry.artifact_index(actor, result.artifact_id)
+            document = (
+                "report.json"
+                if current.value.operation == "managed_evaluation"
+                else "manifest.json"
+            )
             if index.get("manifest_sha256") != result.manifest_sha256 or (
-                index.get("files", {}).get("manifest.json") != result.manifest_sha256
+                index.get("files", {}).get(document) != result.manifest_sha256
             ):
                 raise Problem(
                     503, "artifact_manifest_unverified", "Final verified manifest is missing."
@@ -252,10 +288,14 @@ class ArtifactOperations:
                 actor,
                 current,
                 status="ready",
-                phase="manifest_committed",
+                phase="report_committed"
+                if current.value.operation == "managed_evaluation"
+                else "manifest_committed",
                 result=result,
                 error_code=None,
-                message="The verified artifact manifest is committed.",
+                message="The complete managed report is verified; physical quality is separate."
+                if current.value.operation == "managed_evaluation"
+                else "The verified artifact manifest is committed.",
             )
         if current.value.status == "running" and (
             current.value.heartbeat_at is None

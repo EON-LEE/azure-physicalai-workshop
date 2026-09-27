@@ -28,6 +28,16 @@ def estimate_input_size(work, registry, credential, settings):
                 f"{work.actor.owner_key}/{work.receipt.episode_id}/",
             )
         ]
+    elif work.operation == "managed_evaluation":
+        from apps.learning_worker.managed_reports import context, input_locations
+
+        value = context(
+            registry, work.actor, work.project.id, work.target_id, expected=work.managed_import
+        )
+        locations = [
+            (settings.registry_account_url, settings.registry_container, location)
+            for location in input_locations(registry, work.actor, value)
+        ]
     else:
         locations = [
             (
@@ -72,6 +82,15 @@ def execute(operation_id, actor_id, claim_id, settings):
         try:
             ops = ArtifactOperations(registry)
             work = ops.work(actor, operation_id)
+            if work.operation == "managed_evaluation" and not settings.paused_evaluation_enabled:
+                raise Problem(503, "paused_learning_unavailable", "Managed import is not admitted.")
+            if (
+                work.operation == "managed_evaluation"
+                and "smolvla" not in settings.allowed_policy_types
+            ):
+                raise Problem(
+                    503, "learning_policy_unapproved", "Model admission is not configured."
+                )
             maximum_bytes = (
                 settings.artifact_capture_bytes
                 if work.operation == "capture"
@@ -119,6 +138,15 @@ def execute(operation_id, actor_id, claim_id, settings):
                     manifest_sha256=capture.manifest_sha256,
                     capture=capture,
                 )
+            elif work.operation == "managed_evaluation":
+                from apps.learning_worker.managed_reports import complete
+
+                receipt = complete(verifier, actor, work)
+                result = ArtifactResult(
+                    artifact_id=receipt.report.artifact_id,
+                    manifest_sha256=receipt.report.report_sha256,
+                    managed_evaluation=receipt,
+                )
             else:
                 artifact_id, digest = verifier.seal_dataset(
                     actor, work.project, work.target_id, work.captures
@@ -133,6 +161,11 @@ def execute(operation_id, actor_id, claim_id, settings):
                     "result": result.model_dump(mode="json"),
                     "completed_at": utcnow().isoformat(),
                 },
+            )
+            return (
+                "report_committed"
+                if work.operation == "managed_evaluation"
+                else "manifest_committed"
             )
         except (Problem, ValueError, OSError, AzureError) as exc:
             registry.put(
@@ -157,7 +190,7 @@ def main():
     parser.add_argument("--claim-id", type=UUID, required=True)
     args = parser.parse_args()
     try:
-        execute(args.operation_id, args.actor_id, args.claim_id, WorkerSettings())
+        status = execute(args.operation_id, args.actor_id, args.claim_id, WorkerSettings())
     except (Problem, ValueError, OSError, AzureError) as exc:
         print(
             json.dumps(
@@ -169,7 +202,7 @@ def main():
             )
         )
         return 1
-    print(json.dumps({"status": "manifest_committed"}))
+    print(json.dumps({"status": status}))
     return 0
 
 

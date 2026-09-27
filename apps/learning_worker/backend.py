@@ -58,6 +58,11 @@ class PolicyLearningWorker:
 
     def _authorize_specification(self, actor, specification: JobSpecification):
         if (
+            specification.baseline_candidate is not None
+            and getattr(specification.run, "provider", "azure_ml") != "managed_batch"
+        ):
+            raise Problem(409, "worker_plan_mismatch", "Candidate pairing is managed-import only.")
+        if (
             specification.owner_key != actor.owner_key
             or specification.project.owner_key != actor.owner_key
             or specification.run.owner_key != actor.owner_key
@@ -78,6 +83,7 @@ class PolicyLearningWorker:
             specification.dataset,
             specification.candidate,
             specification.baseline,
+            specification.baseline_candidate,
             specification.training_parent,
         ):
             if record is not None and (
@@ -299,6 +305,8 @@ class PolicyLearningWorker:
         return jobs, sdk.create_plan
 
     def preflight(self, actor, specification):
+        if getattr(specification.run, "provider", "azure_ml") == "managed_batch":
+            raise Problem(409, "managed_import_required", "Managed evaluation is not an AML job.")
         if specification.project.execution_timing == "paused_simulation" and not (
             self.paused_training_enabled
             if specification.run.kind == "training"
@@ -455,6 +463,10 @@ class PolicyLearningWorker:
         return specification
 
     def _job_configuration(self, actor, specification):
+        if getattr(specification.run, "provider", "azure_ml") == "managed_batch":
+            raise Problem(
+                409, "managed_import_required", "Managed imports have no AML configuration."
+            )
         config = self.registry.job_configuration(actor, specification)
         if config is None:
             config = self.registry.approved_plan(actor, specification)["config"]
@@ -506,6 +518,10 @@ class PolicyLearningWorker:
         )
 
     def status(self, actor, run):
+        if getattr(run, "provider", "azure_ml") == "managed_batch":
+            raise Problem(
+                409, "managed_import_required", "Read the original artifact import status."
+            )
         specification = self._job(actor, run)
         if specification is None:
             return None
@@ -550,6 +566,10 @@ class PolicyLearningWorker:
         return result
 
     def cancel(self, actor, run):
+        if getattr(run, "provider", "azure_ml") == "managed_batch":
+            raise Problem(
+                409, "managed_operator_required", "Managed cancellation is operator-owned."
+            )
         specification = self._job(actor, run)
         if specification is None:
             raise Problem(404, "worker_job_missing", "No owned durable job claim exists.")

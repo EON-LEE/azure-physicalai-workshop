@@ -46,6 +46,9 @@ class JobSpecification(Frozen):
     project: LearningProject
     run: TrainingRun | EvaluationRun
     baseline: PolicyRelease | None = None
+    baseline_candidate: PolicyCandidate | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     training_parent: TrainingParent | None = None
     dataset: DatasetVersion | None = None
     candidate: PolicyCandidate | None = None

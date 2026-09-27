@@ -573,6 +573,10 @@ class VerifiedArtifacts:
             return candidate
 
     def completed_report(self, actor, specification, azure_job_id, *, required=True):
+        if getattr(specification.run, "provider", "azure_ml") == "managed_batch":
+            raise Problem(
+                409, "managed_import_required", "Managed reports use the bounded artifact import."
+            )
         if specification.project.execution_timing == "paused_simulation":
             from apps.learning_worker.paused_reports import complete_verified_report
 
@@ -690,7 +694,22 @@ class VerifiedArtifacts:
                 )
 
     def verify_report(self, actor, project, run, report):
-        from apps.api.simulation_reports import SimulationReport
+        from apps.api.simulation_reports import MANAGED_REPORT_SCHEMA, SimulationReport
+
+        if isinstance(report, SimulationReport) and report.native_schema == MANAGED_REPORT_SCHEMA:
+            from apps.learning_worker.managed_reports import context, verified_receipt
+
+            value = context(self.registry, actor, project.id, run.id)
+            if (
+                run.provider != "managed_batch"
+                or value.binding.specification.project != project
+                or value.reference.specification_sha256 != run.specification_sha256
+                or verified_receipt(self, actor, value.reference).report != report
+            ):
+                raise Problem(
+                    409, "managed_import_certificate", "Original verified import differs."
+                )
+            return
 
         if isinstance(report, SimulationReport):
             specification = self.registry.job(actor, run.backend_job_name)
@@ -720,6 +739,8 @@ class VerifiedArtifacts:
         report = SimulationReport.model_validate(saved["report"])
         if report.report_sha256 != report_sha:
             raise Problem(503, "report_digest_mismatch", "Verified report identity changed.")
+        if getattr(specification.run, "provider", "azure_ml") == "managed_batch":
+            self.verify_report(actor, specification.project, specification.run, report)
         with TemporaryDirectory(prefix="physicalai-report-download-") as folder:
             root = Path(folder) / "verified"
             index = self.registry.download(

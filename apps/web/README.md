@@ -232,6 +232,14 @@ The controls below belong to the separately protected operator area.
   so old/new cases sharing physical seeds cannot be silently substituted.
   Existing records show their declared profile and actual WALL/SIM measurements;
   no v1 failure is reinterpreted as a v2 success.
+- **Managed paired report imports:** Operator-predeclared `managed_batch`
+  evaluations display their explicit import state, not an invented Azure ML
+  ID/status or live robot state. Their complete reports retain forty physical
+  UUIDs, twenty logical case IDs and original mapping/evidence hashes. No old
+  native `results.json` is implied. The browser does not register bindings,
+  submit Batch jobs or offer an Azure ML cancellation action for these records.
+  Import verification and native physical quality remain separate; release and
+  public publication are never automatic.
 - **REFERENCE generation:** The separately admitted NRT path says
   `reference_controller · 수동 시연 아님`. It requires an explicit case selection
   and motion checkbox, sends only the request/case/approval, and uses a
