@@ -17,7 +17,7 @@ from learning.paused.capture import PausedEpisodeBudget, validate_dataset
 from learning.paused.evaluation import _trial
 from learning.paused.rollout import derive_trial
 from learning.paused.task import TaskState, evaluate_task_states
-from simulation.batch_learned import BatchLearnedSpec, load_inputs
+from simulation.batch_learned import BatchLearnedSpec, load_inputs, validate_evaluation_cohort
 from simulation.paused_learned import PausedLearnedRuntime
 
 SCHEMA = "physicalai.paused-learned-attempt/v1"
@@ -149,6 +149,11 @@ def physical_case(spec, scene, grant) -> dict:
 
 
 def rescore(report: dict, spec: BatchLearnedSpec, scene, profile, grant) -> dict:
+    validate_evaluation_cohort(spec, scene)
+    require(
+        report.get("evaluation_split", "test") == spec.evaluation_split,
+        "Native learned report differs from its explicit evaluation cohort.",
+    )
     require(
         report.get("schema") == SCHEMA
         and report.get("controller") == "learned"
@@ -300,6 +305,7 @@ def rescore(report: dict, spec: BatchLearnedSpec, scene, profile, grant) -> dict
     accepted = passed and report.get("physical_status") == "succeeded" and resource_violations == 0
     return {
         "accepted": accepted,
+        **({"evaluation_split": "validation"} if spec.evaluation_split == "validation" else {}),
         "execution_timing": "paused_simulation",
         "real_time_admission": False,
         "model_sha256": spec.model.manifest.sha256,
@@ -442,6 +448,7 @@ def run(
             time.sleep(0.001)
         report = {
             "schema": SCHEMA,
+            "evaluation_split": spec.evaluation_split,
             "execution_timing": "paused_simulation",
             "real_time_admission": False,
             "controller": "learned",

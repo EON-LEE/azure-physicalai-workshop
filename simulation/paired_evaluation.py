@@ -265,6 +265,7 @@ def bind_attempt(
     require(
         spec.attempt_id == assignment.physical_attempt_id
         and spec.previous_attempt_id is None
+        and spec.evaluation_split == "test"
         and spec.pairing_plan_sha256 == sha256(mapping_sha256)
         and spec.role == assignment.role
         and spec.model.manifest.sha256 == expected_model(plan, spec.role)

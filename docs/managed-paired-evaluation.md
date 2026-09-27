@@ -31,6 +31,10 @@ the real before/after model manifest hashes, owner, profile, criteria, frozen
 conditions, runtime and unmodified quality limits. Both model roots must pass
 native inference validation, task/lineage checks and training/held-out exclusion.
 There is no `reference`/vendor-base substitution for a before model.
+Only the one-trial adapter's default `evaluation_split="test"` is admissible.
+Explicit validation trials (candidate-only seeds 20001..20010) are rejected even
+if a caller attempts to attach a pairing hash or before/after role. They cannot
+replace any of the forty frozen TEST attempts.
 
 Each native plan case's `episode_id` is its **logical case ID**. For each case,
 assign distinct physical UUIDs to `before` and `after`; no physical UUID may occur

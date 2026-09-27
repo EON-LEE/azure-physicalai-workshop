@@ -96,6 +96,7 @@ grant; timeout/cancellation kills the owned model process group, with no fallbac
 | --- | --- |
 | `schema` | `physicalai.batch-learned-evaluation/v1` |
 | `role` | `candidate`, `before` or `after`; never `reference` |
+| `evaluation_split` | `test` by default (omitted from the wire); explicit `validation` requires an unpaired `candidate` |
 | `model` | `manifest: BlobInput` for `model.json`, plus every `checkpoint/` file |
 | `backbone` | `manifest: BlobInput` for `backbone.json`, plus its entire native file inventory |
 | `model_runtime` | `BlobInput` for the exact descriptor above |
@@ -122,10 +123,26 @@ The unchanged `PausedOperatorGrant` must authorize
 `controller=learned`, `policy_type=smolvla`,
 `authorization_kind=evaluation_grant`, `purpose=evaluation`, and the exact
 **file SHA of `model.json`**, not merely a weights-file SHA.
-Its original lifetime remains at most 600 seconds. The selected saved scene must
-be a predeclared TEST case with seed 30001..30020, with exact frozen initial/goal
-poses, revision and builder. TRAIN seeds and the 900002/900004 integration cases
-cannot be silently reused for this evaluation.
+Its original lifetime remains at most 600 seconds. By default the selected saved
+scene must be a predeclared TEST case with seed 30001..30020, with exact frozen
+initial/goal poses, revision and builder. Omitted or explicit
+`evaluation_split="test"` preserves the existing spec serialization/hash.
+
+Before freezing the final forty assignments, a trained candidate can be checked
+on the already-frozen validation cohort by adding `"evaluation_split": "validation"`
+to its one-trial spec. This requires `role="candidate"`, no
+`pairing_plan_sha256`, and the original saved scene's
+`execution.demonstration_split="validation"` with seed **20001..20010**. The same
+case, split, seed, revision, builder and poses must appear in the hash-pinned
+frozen conditions; nothing is added to or relabelled in that plan. Raw capture
+metadata and the native report must agree with the selected cohort.
+
+Validation uses the same model, grant, actuator, task predicates and timing
+guards. Its report and acceptance explicitly say `evaluation_split="validation"`
+and retain `learning_quality_proven=false`; acceptance means only that physical
+trial passed. Validation must never enter final paired quality scoring. Do not
+use held-out TEST outcomes to guide optimizer/debug decisions, or reuse TRAIN
+seeds or the 900002/900004 integration cases by changing their labels.
 
 All model downloads, model startup, Isaac initialization, original fixed
 sixty-tick warm-up, motion and capture remain subject to the existing original

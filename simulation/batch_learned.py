@@ -69,6 +69,7 @@ class BatchLearnedSpec(BatchSimulationSpec):
     model: ModelBundle
     backbone: ModelBundle
     model_runtime: BlobInput
+    evaluation_split: Literal["test", "validation"] = "test"
     pairing_plan_sha256: Revision | None = None
 
     @model_serializer(mode="wrap")
@@ -76,10 +77,17 @@ class BatchLearnedSpec(BatchSimulationSpec):
         value = handler(self)
         if self.pairing_plan_sha256 is None:
             value.pop("pairing_plan_sha256", None)
+        if self.evaluation_split == "test":
+            value.pop("evaluation_split", None)
         return value
 
     @model_validator(mode="after")
     def owner_scoped_models(self):
+        require(
+            self.evaluation_split == "test"
+            or (self.role == "candidate" and self.pairing_plan_sha256 is None),
+            "Validation is an unpaired candidate trial, never final before/after evidence.",
+        )
         prefix = f"tenants/{self.platform.tenant_id}/owners/{self.owner_id}/learning/"
         for bundle, name in ((self.model, "model.json"), (self.backbone, "backbone.json")):
             require(
@@ -94,6 +102,20 @@ class BatchLearnedSpec(BatchSimulationSpec):
         )
         require(self.model_runtime.size_bytes <= 65536, "Oversized model-runtime descriptor.")
         return self
+
+
+def validate_evaluation_cohort(spec: BatchLearnedSpec, scene) -> None:
+    seeds = range(20001, 20011) if spec.evaluation_split == "validation" else range(30001, 30021)
+    require(
+        scene.record_demonstration
+        and scene.demonstration_split == spec.evaluation_split
+        and scene.seed in seeds
+        and (
+            spec.evaluation_split == "test"
+            or (spec.role == "candidate" and spec.pairing_plan_sha256 is None)
+        ),
+        "Saved scene does not match its explicit evaluation cohort; no TRAIN/integration relabel.",
+    )
 
 
 class ModelRuntime(Model):
@@ -238,12 +260,7 @@ def validate_inputs(spec: BatchLearnedSpec, documents: dict[str, bytes], *, live
         and grant.issued_at < permit.wall_expires_at <= grant.expires_at,
         "Learned authority differs from the exact model, owner, case, profile or original grant.",
     )
-    require(
-        scene.record_demonstration
-        and scene.demonstration_split == "test"
-        and 30001 <= scene.seed <= 30020,
-        "Learned evaluation requires a predeclared held-out TEST case, never TRAIN/integration.",
-    )
+    validate_evaluation_cohort(spec, scene)
     if live:
         InstalledPausedPolicyProvider._check_runtime(grant, profile)
         scene_authority.validate_request(
@@ -457,7 +474,7 @@ def rescore_evidence(spec: BatchLearnedSpec, documents: dict[str, bytes]) -> tup
         and episode["environment_id"] == grant.authorization.environment_id
         and episode["revision"] == grant.authorization.revision
         and episode["seed"] == scene.seed
-        and episode["split"] == "test"
+        and episode["split"] == spec.evaluation_split
         and episode["provenance"]["code_revision"] == spec.source_revision
         and episode["provenance"]["simulator_image_digest"]
         == spec.platform.container_image.split("@", 1)[1]

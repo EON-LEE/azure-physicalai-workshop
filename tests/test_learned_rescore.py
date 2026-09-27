@@ -100,7 +100,7 @@ def evidence(authority, tmp_path):
         "environment_id": case["environment_id"],
         "revision": case["revision"],
         "seed": case["seed"],
-        "split": "test",
+        "split": scene.demonstration_split,
         "frame_count": len(frames),
         "demonstration": {"kind": "learned", "source_policy_sha256": spec.model.manifest.sha256},
         "provenance": {

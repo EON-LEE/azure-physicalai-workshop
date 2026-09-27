@@ -24,15 +24,18 @@ from tests.runtime_support import ACTOR, service
 
 
 @pytest.fixture
-def authority(learned_spec, tmp_path, monkeypatch):
+def authority(learned_spec, tmp_path, monkeypatch, request):
+    cohort = getattr(request, "param", {})
     document = paused_document()
-    document["scene"]["seed"] = 30001
+    document["scene"]["seed"] = cohort.get("seed", 30001)
     document["learning_execution"].update(
         schema="physicalai.paused-simulation/v2",
         profile_id=learned_spec.profile_id,
         max_simulation_seconds=60,
     )
-    document["execution"].update(record_demonstration=True, demonstration_split="test")
+    document["execution"].update(
+        record_demonstration=True, demonstration_split=cohort.get("split", "test")
+    )
     environment = service().save_environment(
         ACTOR, SaveEnvironment(document_json=json.dumps(document))
     )
@@ -52,7 +55,7 @@ def authority(learned_spec, tmp_path, monkeypatch):
                 "environment_id": environment.environment_id,
                 "revision": environment.revision,
                 "seed": scene.seed,
-                "split": "test",
+                "split": scene.demonstration_split,
                 "scene_builder_sha256": scene.scene_builder_sha256,
                 "expected_initial_position_m": list(scene.part_position),
                 "goal_position_m": list(scene.station(task["goal_id"]).position),
@@ -102,6 +105,8 @@ def authority(learned_spec, tmp_path, monkeypatch):
         criteria_canonical_sha256=permit.criteria_sha256,
         conditions_canonical_sha256=permit.frozen_plan_sha256,
     )
+    if "evaluation_split" in cohort:
+        value["evaluation_split"] = cohort["evaluation_split"]
     for name, payload in documents.items():
         value[name].update(sha256=digest(payload), size_bytes=len(payload))
     spec = batch_learned.BatchLearnedSpec.model_validate(value)
