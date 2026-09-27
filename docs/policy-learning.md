@@ -663,6 +663,11 @@ episode/frame/image bytes. Stage the assembled cohort in the owner-scoped
 **artifacts** container before registration with `learningartifacts`; a URI naming
 that datastore is not an alias for the separate demonstrations container.
 
+The actual Azure ML service adds one trailing `/` to registered `uri_folder`
+paths. Preflight accepts only that exact folder-only representation difference;
+the approved configuration URI remains unchanged. File inputs, nested paths,
+double separators, case changes and query strings still fail the location check.
+
 | Native input | Registered folder root | Required checksum |
 |---|---|---|
 | `demonstrations` | `manifest.json` and complete `episodes/<id>/...` tree | Exact assembled `manifest.json` file SHA |

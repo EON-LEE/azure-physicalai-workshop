@@ -82,6 +82,36 @@ def test_preflight_handles_pinned_sdk_response_shapes(azure_config, preflight_co
     azure.preflight(preflight_context[0], azure_config)
 
 
+def test_folder_registration_accepts_single_provider_added_trailing_slash(
+    azure_config, preflight_context
+):
+    preflight_context[-1].path += "/"
+    azure.preflight(preflight_context[0], azure_config)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "azureml://subscriptions/sub/resourcegroups/rg/workspaces/ws/datastores/data/paths/x//",
+        "azureml://subscriptions/sub/resourcegroups/rg/workspaces/ws/datastores/data/paths/x/child",
+        "azureml://subscriptions/sub/resourcegroups/rg/workspaces/ws/datastores/data/paths/X/",
+        "azureml://subscriptions/sub/resourcegroups/rg/workspaces/ws/datastores/data/paths/x/?query=1",
+    ],
+)
+def test_folder_location_matching_does_not_normalize_other_differences(path):
+    asset = {
+        "type": "uri_folder",
+        "uri": "azureml://subscriptions/sub/resourcegroups/rg/workspaces/ws/datastores/data/paths/x",
+    }
+    assert not azure.registered_input_matches("uri_folder", path, asset)
+
+
+def test_file_location_never_accepts_a_folder_suffix():
+    asset = {"type": "uri_file", "uri": "azureml://approved/file.json"}
+    assert not azure.registered_input_matches("uri_file", asset["uri"] + "/", asset)
+    assert not azure.registered_input_matches("uri_folder", asset["uri"], asset)
+
+
 @pytest.mark.parametrize(
     "kind",
     [

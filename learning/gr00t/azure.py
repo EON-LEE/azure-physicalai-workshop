@@ -11,6 +11,7 @@ from learning.azure import (
     SNAPSHOT_FILES,
     _uuid,
     datastore_prefix,
+    registered_input_matches,
     validate_compute,
     validate_managed_network_dependencies,
     validate_retention,
@@ -575,7 +576,7 @@ class Gr00tJobs:
         for asset in config["inputs"].values():
             data = self.client.data.get(asset["name"], version=asset["version"])
             require(
-                data.type == asset["type"] and data.path == asset["uri"],
+                registered_input_matches(data.type, data.path, asset),
                 "Data version/location changed",
             )
         policy = self.storage_client.management_policies.get(

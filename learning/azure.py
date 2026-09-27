@@ -93,6 +93,12 @@ def datastore_prefix(config: dict) -> str:
     )
 
 
+def registered_input_matches(asset_type: str, path: str, approved: dict) -> bool:
+    return asset_type == approved["type"] and (
+        path == approved["uri"] or (asset_type == "uri_folder" and path == approved["uri"] + "/")
+    )
+
+
 def validate_config(config: dict) -> None:
     extra = {"compute_tier"} if "compute_tier" in config else set()
     keys(config, CONFIG_KEYS | extra, "Azure learning configuration")
@@ -538,7 +544,7 @@ def preflight(client, config: dict) -> None:
     for asset in config["inputs"].values():
         registered = client.data.get(asset["name"], version=asset["version"])
         require(
-            registered.type == asset["type"] and registered.path == asset["uri"],
+            registered_input_matches(registered.type, registered.path, asset),
             "Registered input data version resolves outside the approved location",
         )
     retention = _az_json(
