@@ -82,6 +82,80 @@ def test_preflight_handles_pinned_sdk_response_shapes(azure_config, preflight_co
     azure.preflight(preflight_context[0], azure_config)
 
 
+@pytest.fixture
+def compute_wire_identity(azure_config, preflight_context):
+    client, _, _, compute, _, _ = preflight_context
+    compute.identity.user_assigned_identities[0].client_id = None
+    record = SimpleNamespace(
+        id=(
+            f"/subscriptions/{azure_config['subscription_id']}"
+            f"/resourceGroups/{azure_config['resource_group']}"
+            f"/providers/Microsoft.MachineLearningServices/workspaces/{azure_config['workspace']}"
+            f"/computes/{azure_config['compute']}"
+        ),
+        identity=SimpleNamespace(
+            tenant_id=azure_config["tenant_id"],
+            user_assigned_identities={
+                azure_config["managed_identity_resource_id"].lower(): SimpleNamespace(
+                    client_id=azure_config["managed_identity_client_id"]
+                )
+            },
+        ),
+    )
+    calls = []
+
+    def get(group, workspace, name):
+        calls.append((group, workspace, name))
+        return record
+
+    client.compute._operation = SimpleNamespace(get=get)
+    return record, calls
+
+
+def test_compute_identity_lost_by_sdk_is_verified_from_original_wire_metadata(
+    azure_config, preflight_context, compute_wire_identity
+):
+    azure.preflight(preflight_context[0], azure_config)
+    assert compute_wire_identity[1] == [
+        (azure_config["resource_group"], azure_config["workspace"], azure_config["compute"])
+    ]
+    assert preflight_context[3].identity.user_assigned_identities[0].client_id is None
+
+
+@pytest.mark.parametrize(
+    "change", ["compute", "tenant", "resource", "client", "missing", "no-wire"]
+)
+def test_missing_sdk_identity_never_weakens_the_approved_identity_binding(
+    azure_config, preflight_context, compute_wire_identity, change
+):
+    record, _ = compute_wire_identity
+    if change == "compute":
+        record.id += "-other"
+    elif change == "tenant":
+        record.identity.tenant_id = "another-tenant"
+    elif change == "resource":
+        record.identity.user_assigned_identities = {
+            "another-identity": SimpleNamespace(client_id=None)
+        }
+    elif change == "client":
+        next(iter(record.identity.user_assigned_identities.values())).client_id = "another-client"
+    elif change == "missing":
+        record.identity.user_assigned_identities = {}
+    else:
+        del preflight_context[0].compute._operation
+    with pytest.raises(ContractError, match="identity"):
+        azure.preflight(preflight_context[0], azure_config)
+
+
+def test_explicit_sdk_identity_mismatch_is_not_replaced_by_a_matching_wire_record(
+    azure_config, preflight_context, compute_wire_identity
+):
+    preflight_context[3].identity.user_assigned_identities[0].client_id = "another-client"
+    with pytest.raises(ContractError, match="identity"):
+        azure.preflight(preflight_context[0], azure_config)
+    assert compute_wire_identity[1] == []
+
+
 def test_folder_registration_accepts_single_provider_added_trailing_slash(
     azure_config, preflight_context
 ):

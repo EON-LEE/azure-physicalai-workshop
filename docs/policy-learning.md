@@ -677,6 +677,13 @@ strings. SDK 1.35 returns `PublicNetworkAccessType.DISABLED`, whose value is
 private workspace. This compatibility correction still rejects public access,
 internet-wide outbound mode and missing values; it changes no Azure settings.
 
+The pinned SDK's high-level compute conversion also omits assigned-identity
+client IDs that are present in the original REST response. When that field is
+absent, preflight reads the same compute through the SDK's generated operation
+and verifies its exact resource ID, tenant, attached identity resource and client
+ID. A missing or conflicting authoritative value still fails admission; no
+identity, role assignment or compute setting is changed.
+
 The actual Azure ML service adds one trailing `/` to registered `uri_folder`
 paths. Preflight accepts only that exact folder-only representation difference;
 the approved configuration URI remains unchanged. File inputs, nested paths,

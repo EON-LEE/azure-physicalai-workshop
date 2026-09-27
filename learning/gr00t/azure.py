@@ -13,6 +13,7 @@ from learning.azure import (
     datastore_prefix,
     registered_input_matches,
     validate_compute,
+    validate_compute_identity,
     validate_managed_network_dependencies,
     validate_retention,
 )
@@ -557,16 +558,7 @@ class Gr00tJobs:
         validate_managed_network_dependencies(workspace)
         compute = self.client.compute.get(config["compute"])
         validate_compute(compute, config)
-        identities = getattr(compute.identity, "user_assigned_identities", None)
-        require(isinstance(identities, list), "Missing compute UAMI")
-        require(
-            any(
-                identity.resource_id.lower() == config["managed_identity_resource_id"].lower()
-                and identity.client_id == config["managed_identity_client_id"]
-                for identity in identities
-            ),
-            "Wrong compute managed identity",
-        )
+        validate_compute_identity(self.client, compute, config)
         datastore = self.client.datastores.get(config["datastore"])
         credential_type = getattr(getattr(datastore.credentials, "type", None), "value", None)
         require(

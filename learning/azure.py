@@ -466,6 +466,49 @@ def validate_compute(compute, config: dict) -> None:
         )
 
 
+def validate_compute_identity(client, compute, config: dict) -> None:
+    identities = getattr(compute.identity, "user_assigned_identities", None)
+    require(isinstance(identities, list), "Compute has no explicit user-assigned identities")
+    matching = [
+        identity
+        for identity in identities
+        if isinstance(identity.resource_id, str)
+        and identity.resource_id.lower() == config["managed_identity_resource_id"].lower()
+    ]
+    require(len(matching) == 1, "Job managed identity is not attached to the approved compute")
+    client_id = matching[0].client_id
+    if client_id is None:
+        # SDK 1.35's Compute conversion drops client IDs present in its generated REST model.
+        operation = getattr(client.compute, "_operation", None)
+        require(callable(getattr(operation, "get", None)), "Compute identity metadata unavailable")
+        record = operation.get(config["resource_group"], config["workspace"], config["compute"])
+        expected_id = (
+            f"/subscriptions/{config['subscription_id']}/resourceGroups/{config['resource_group']}"
+            f"/providers/Microsoft.MachineLearningServices/workspaces/{config['workspace']}"
+            f"/computes/{config['compute']}"
+        )
+        identity = getattr(record, "identity", None)
+        require(
+            isinstance(getattr(record, "id", None), str)
+            and record.id.lower() == expected_id.lower()
+            and getattr(identity, "tenant_id", None) == config["tenant_id"],
+            "Compute identity response belongs to another resource or tenant",
+        )
+        assigned = getattr(identity, "user_assigned_identities", None)
+        require(isinstance(assigned, dict), "Compute identity metadata is missing")
+        actual = [
+            value
+            for key, value in assigned.items()
+            if isinstance(key, str)
+            and key.lower() == config["managed_identity_resource_id"].lower()
+        ]
+        require(len(actual) == 1, "Approved compute identity metadata is missing or ambiguous")
+        client_id = getattr(actual[0], "client_id", None)
+    require(
+        client_id == config["managed_identity_client_id"], "Managed identity client ID mismatch"
+    )
+
+
 def validate_managed_network_dependencies(workspace) -> None:
     network = workspace.managed_network
     mode = getattr(network, "isolation_mode", None)
@@ -517,19 +560,7 @@ def preflight(client, config: dict) -> None:
     )
     compute = client.compute.get(config["compute"])
     validate_compute(compute, config)
-    identities = getattr(compute.identity, "user_assigned_identities", None)
-    require(isinstance(identities, list), "Compute has no explicit user-assigned identities")
-    matching = [
-        identity
-        for identity in identities
-        if isinstance(identity.resource_id, str)
-        and identity.resource_id.lower() == config["managed_identity_resource_id"].lower()
-    ]
-    require(len(matching) == 1, "Job managed identity is not attached to the approved compute")
-    require(
-        matching[0].client_id == config["managed_identity_client_id"],
-        "Managed identity client ID mismatch",
-    )
+    validate_compute_identity(client, compute, config)
     datastore = client.datastores.get(config["datastore"])
     datastore_type = getattr(datastore.type, "value", datastore.type)
     credentials_type = getattr(datastore.credentials, "type", None)
