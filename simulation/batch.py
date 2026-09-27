@@ -421,7 +421,8 @@ def allocation_formula(deadline: str) -> str:
         "$samples = $PendingTasks.GetSamplePercent(TimeInterval_Minute * 5);\n"
         "$tasks = $samples < 70 ? max(0, $PendingTasks.GetSample(1)) : "
         "max(0, max($PendingTasks.GetSample(TimeInterval_Minute * 5)));\n"
-        f'$TargetLowPriorityNodes = time() < time("{deadline}") ? min(1, $tasks) : 0;\n'
+        f'$TargetLowPriorityNodes = time() < time("{deadline}") '
+        "? min(1, max($tasks, $CurrentLowPriorityNodes)) : 0;\n"
         "$NodeDeallocationOption = terminate;"
     )
 

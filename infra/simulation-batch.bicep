@@ -43,7 +43,7 @@ var autoscale = format('''
 $TargetDedicatedNodes = 0;
 $samples = $PendingTasks.GetSamplePercent(TimeInterval_Minute * 5);
 $tasks = $samples < 70 ? max(0, $PendingTasks.GetSample(1)) : max(0, max($PendingTasks.GetSample(TimeInterval_Minute * 5)));
-$TargetLowPriorityNodes = time() < time("{0}") ? min(1, $tasks) : 0;
+$TargetLowPriorityNodes = time() < time("{0}") ? min(1, max($tasks, $CurrentLowPriorityNodes)) : 0;
 $NodeDeallocationOption = terminate;
 ''', allocationDeadlineUtc)
 var containerOptions = '--entrypoint /usr/bin/timeout --runtime=nvidia --cap-drop ALL --security-opt no-new-privileges --shm-size 2g --tmpfs /data:rw,nosuid,nodev,mode=1777,size=2147483648 --tmpfs /isaac-sim/.cache:rw,nosuid,nodev,mode=1777,size=2147483648 --tmpfs /isaac-sim/.nv/ComputeCache:rw,nosuid,nodev,mode=1777,size=536870912 --tmpfs /isaac-sim/.nvidia-omniverse/logs:rw,nosuid,nodev,mode=1777,size=134217728'

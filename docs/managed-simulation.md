@@ -142,8 +142,10 @@ zero-to-one demand, a five-minute evaluation/sampling window, and an explicit
 UTC allocation cutoff no later than 60 minutes after its approved start.
 `allocationStartUtc` is required, with no `utcNow()` default: redeploying the
 same reviewed parameters cannot silently renew the paid allocation window.
-No demand eventually returns the target to zero. The cutoff forces target zero
-even if demand persists; service evaluation/deallocation is not instantaneous
+Initial demand creates at most one node. Once allocated, that node remains
+available through the explicitly approved allocation window so image/driver
+initialization is not discarded between readiness and a fresh episode grant.
+The cutoff forces target zero even if demand persists; service evaluation/deallocation is not instantaneous
 (evaluation can lag by five minutes). Redeploying a new cutoff is a new approval,
 not an implicit renewal. Target-zero deallocation terminates node work; interrupted
 work without complete proof remains incomplete.

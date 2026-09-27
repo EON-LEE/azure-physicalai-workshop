@@ -88,6 +88,7 @@ def test_managed_simulator_pool_is_zero_default_single_low_priority_and_private(
     formula = template["variables"]["autoscale"]
     assert "$TargetDedicatedNodes = 0" in formula
     assert "min(1," in formula and "$PendingTasks.GetSample" in formula
+    assert "max($tasks, $CurrentLowPriorityNodes)" in formula
     assert "$NodeDeallocationOption = terminate" in formula
     assert allocation_formula("{0}") in formula.replace("\r\n", "\n")
     assert "dateTimeAdd" in template["variables"]["allocationDeadlineUtc"]
