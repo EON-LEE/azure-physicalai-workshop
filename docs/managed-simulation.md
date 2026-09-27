@@ -137,6 +137,11 @@ runs as a non-admin user.
 The native container needs
 the image's existing `python.sh`, `/usr/bin/timeout`, nvidia-smi and Vulkan loader.
 Writable bounded tmpfs/cache mounts accommodate the assigned non-admin UID.
+The actual first Isaac startup exposed additional Kit and Warp writes outside
+the earlier cache mounts. `HOME` and XDG paths now point to the private `/data`
+tmpfs, and Kit's `cache`, `data`, and `logs` directories have separately bounded
+tmpfs mounts. This fixes non-admin cache writes without changing physics or
+granting write access to the installed runtime.
 
 ## Bounded warm-up, then a fresh approved episode
 

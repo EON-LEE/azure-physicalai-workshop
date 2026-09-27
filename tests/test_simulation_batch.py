@@ -83,6 +83,10 @@ def test_sdk_payload_is_one_digest_pinned_job_task_with_no_retries(spec, batch_s
     assert "--entrypoint /isaac-sim/python.sh" in options
     assert "--runtime" not in options
     assert {"name": "NVIDIA_VISIBLE_DEVICES", "value": "all"} in task["environmentSettings"]
+    assert {"name": "HOME", "value": "/data"} in task["environmentSettings"]
+    assert {"name": "XDG_CACHE_HOME", "value": "/data/.cache"} in task["environmentSettings"]
+    assert "/isaac-sim/kit/cache:rw,nosuid,nodev,mode=1777,size=2147483648" in options
+    assert "/isaac-sim/kit/data:rw,nosuid,nodev,mode=1777,size=268435456" in options
     assert "--gpus" not in options and "--privileged" not in options
     assert "simulation.batch_task" in task["commandLine"]
     assert "bootstrap_tls" not in task["commandLine"]

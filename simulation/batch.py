@@ -46,6 +46,9 @@ PROOF_LIMITS = {
 CONTAINER_OPTIONS = (
     "--entrypoint /isaac-sim/python.sh --cap-drop ALL --security-opt no-new-privileges "
     "--shm-size 2g --tmpfs /data:rw,nosuid,nodev,mode=1777,size=2147483648 "
+    "--tmpfs /isaac-sim/kit/cache:rw,nosuid,nodev,mode=1777,size=2147483648 "
+    "--tmpfs /isaac-sim/kit/data:rw,nosuid,nodev,mode=1777,size=268435456 "
+    "--tmpfs /isaac-sim/kit/logs:rw,nosuid,nodev,mode=1777,size=134217728 "
     "--tmpfs /isaac-sim/.cache:rw,nosuid,nodev,mode=1777,size=2147483648 "
     "--tmpfs /isaac-sim/.nv/ComputeCache:rw,nosuid,nodev,mode=1777,size=536870912 "
     "--tmpfs /isaac-sim/.nvidia-omniverse/logs:rw,nosuid,nodev,mode=1777,size=134217728"
@@ -294,6 +297,9 @@ def build_job_task(spec: BatchSimulationSpec, spec_url: str, spec_sha256: str):
             models.EnvironmentSetting(name="PYTHONPATH", value="/app"),
             models.EnvironmentSetting(name="NVIDIA_DRIVER_CAPABILITIES", value="all"),
             models.EnvironmentSetting(name="NVIDIA_VISIBLE_DEVICES", value="all"),
+            models.EnvironmentSetting(name="HOME", value="/data"),
+            models.EnvironmentSetting(name="XDG_CACHE_HOME", value="/data/.cache"),
+            models.EnvironmentSetting(name="XDG_DATA_HOME", value="/data/.local/share"),
             models.EnvironmentSetting(
                 name="AZURE_CLIENT_ID", value=str(spec.platform.node_identity_client_id)
             ),
@@ -346,6 +352,9 @@ def build_warmup(platform: BatchPlatform, warmup_id: UUID):
             models.EnvironmentSetting(name="PYTHONPATH", value="/app"),
             models.EnvironmentSetting(name="NVIDIA_DRIVER_CAPABILITIES", value="all"),
             models.EnvironmentSetting(name="NVIDIA_VISIBLE_DEVICES", value="all"),
+            models.EnvironmentSetting(name="HOME", value="/data"),
+            models.EnvironmentSetting(name="XDG_CACHE_HOME", value="/data/.cache"),
+            models.EnvironmentSetting(name="XDG_DATA_HOME", value="/data/.local/share"),
         ],
     )
     return job, task
