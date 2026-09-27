@@ -62,6 +62,10 @@ def is_paused(config: dict) -> bool:
 
 
 def code_files(config: dict) -> tuple[str, ...]:
+    if "source_delivery" in config:
+        from learning.smolvla.embedded_source import static_code_files
+
+        return static_code_files()
     files = (
         PAUSED_CODE_FILES
         if is_paused(config)
@@ -76,6 +80,11 @@ def validate_config(config: dict) -> None:
         "Unsupported SmolVLA Azure configuration schema",
     )
     base = dict(config)
+    if "source_delivery" in config:
+        from learning.smolvla.embedded_source import validate_delivery
+
+        validate_delivery(config)
+        base.pop("source_delivery")
     checkpointing = base.pop("checkpointing", None)
     if "checkpointing" in config:
         from learning.smolvla.checkpoint_runner import validate_policy
@@ -165,12 +174,22 @@ def build_job(config: dict, snapshot_sha256: str, job_name: str) -> dict:
         train["limits"]["timeout"] = config["parameters"]["timeout_seconds"]
         job["jobs"] = {"train": train}
         del job["outputs"]["dataset"]
+    if "source_delivery" in config:
+        from learning.smolvla.embedded_source import embedded_command
+
+        for name, component in job["jobs"].items():
+            del component["code"]
+            component["command"] = embedded_command(config, snapshot_sha256, stage=name)
     return job
 
 
 def create_plan(
     config: dict, output: Path, *, deterministic_job_name: str, source_root=None
 ) -> str:
+    if "source_delivery" in config:
+        from learning.smolvla.embedded_source import verify_static_binding
+
+        verify_static_binding(config, source_root or Path(__file__).resolve().parents[2])
     return shared.create_plan(
         config,
         output,
@@ -197,6 +216,10 @@ def read_plan(path: Path) -> dict:
         plan["config"]["schema"] == (LEGACY_CONFIG_SCHEMA if legacy else CONFIG_SCHEMA),
         "Policy plan/config deadline schemas differ",
     )
+    if "source_delivery" in plan["config"]:
+        from learning.smolvla.embedded_source import verify_static_binding
+
+        verify_static_binding(plan["config"], path / "code")
     return plan
 
 
@@ -204,6 +227,10 @@ def verify_code(root: Path, expected_sha256: str, *, config: dict | None = None)
     shared.verify_code(
         root, expected_sha256, code_files=code_files(config) if config is not None else CODE_FILES
     )
+    if config is not None and "source_delivery" in config:
+        from learning.smolvla.embedded_source import verify_static_binding
+
+        verify_static_binding(config, root)
 
 
 class PolicyJobs(shared.Gr00tJobs):

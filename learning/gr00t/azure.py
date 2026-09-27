@@ -239,6 +239,11 @@ def running_job_binding(client, config: dict) -> dict:
                 criteria_sha256=config["criteria_sha256"],
                 frozen_plan_sha256=config["frozen_plan_sha256"],
             )
+        if "source_delivery" in config:
+            expected.update(
+                source_delivery=config["source_delivery"]["mode"],
+                static_source_sha256=config["source_delivery"]["static_sha256"],
+            )
         require(
             all(
                 (job.tags or {}).get(key) == value
@@ -277,6 +282,11 @@ def job_tags(config: dict, snapshot_sha256: str, *, policy_type: str = POLICY_TY
             real_time_admission="false",
             criteria_sha256=config["criteria_sha256"],
             frozen_plan_sha256=config["frozen_plan_sha256"],
+        )
+    if "source_delivery" in config:
+        tags.update(
+            source_delivery=config["source_delivery"]["mode"],
+            static_source_sha256=config["source_delivery"]["static_sha256"],
         )
     return tags
 
@@ -617,6 +627,12 @@ class Gr00tJobs:
             and (job.tags or {}).get("real_time_admission")
             == ("false" if "execution_timing" in self.config else None),
             "Named job mode/criteria/conditions differs from its approved config",
+        )
+        delivery = self.config.get("source_delivery", {})
+        require(
+            (job.tags or {}).get("source_delivery") == delivery.get("mode")
+            and (job.tags or {}).get("static_source_sha256") == delivery.get("static_sha256"),
+            "Named job source delivery differs from its approved config",
         )
 
     def status(self, job_name: str) -> dict:

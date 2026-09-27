@@ -689,6 +689,108 @@ paths. Preflight accepts only that exact folder-only representation difference;
 the approved configuration URI remains unchanged. File inputs, nested paths,
 double separators, case changes and query strings still fail the location check.
 
+### Explicit image-embedded AML source delivery
+
+When the workspace's code-asset service cannot upload/register source under the
+approved keyless private-storage policy, the paused training pipeline can use
+an explicit **image-embedded** delivery variant. This does not enable storage
+keys, public networking, broader roles, serverless compute or a non-AML training
+backend. Default/legacy configurations still emit `code: "./code"` and use their
+existing source-upload path; there is no automatic fallback after a failed job.
+
+Add this closed object to a newly reviewed `physicalai.smolvla-azure/v2` config:
+
+```json
+{
+  "source_delivery": {
+    "schema": "physicalai.smolvla-source-delivery/v1",
+    "mode": "image_embedded",
+    "static_sha256": "<exact static_sha256 from the exported package>"
+  }
+}
+```
+
+This variant is supported only for explicitly paused `kind: "train"` pipelines,
+including their native `export` and `train` components and an explicitly approved
+checkpoint resume. Evaluation/legacy schemas, unknown modes and extra delivery
+fields are rejected. Compute, one-instance limits, identity-only inputs/outputs,
+checkpoint rules, absolute `job_deadline_utc` and durable submission/cancellation
+claims remain unchanged. Parent and child job tags also bind the static payload.
+
+Source and config are deliberately packaged in two stages to avoid a config/image
+SHA cycle. First export the exact current approved static source:
+
+```bash
+python -m learning.smolvla.embedded_source --output /approved/new-image-context
+```
+
+This offline command writes `source/`, `static-manifest.json`,
+`source-delivery.json`, `package.json` and `Dockerfile`. It copies only the fixed
+native paused/checkpoint/bootstrap allowlist, with no `run-config.json`,
+`snapshot.json`, credentials, datasets or model weights. `static_sha256` hashes
+the canonical relative-path-to-file-SHA inventory. The Dockerfile has the fixed
+qualified base:
+`factory20n3ig3ttsxayp2.azurecr.io/physicalai-smolvla@sha256:441f2a33a8bb0c534a10ad7d56c4f7be611dccde39e8ee0b99610b4a7a75e8f9`.
+It adds only source/manifest bytes and a Python 3.11 stdlib source check; no
+dependency installation, entrypoint change or image build occurs in the exporter.
+
+The parent/operator may build the exported context under separate authorization:
+
+```bash
+docker build --file /approved/new-image-context/Dockerfile \
+  --build-arg STATIC_SOURCE_SHA256="$STATIC_SOURCE_SHA256" \
+  --tag "$NEW_PRIVATE_CODE_IMAGE_TAG" /approved/new-image-context
+```
+
+After the built image digest and static readback are verified, use that **new**
+immutable digest as `environment_image`, add the exported delivery object to the
+complete runtime config, and create a fresh ordinary plan:
+
+```bash
+python -m learning.smolvla.azure --config /approved/new-run-config.json \
+  --plan-dir /approved/new-plan --job-name "$NEW_EXPLICIT_JOB_NAME"
+```
+
+The plan still contains an auditable local `code/` snapshot for review, but its
+AML command nodes omit `code` entirely. The original full snapshot algorithm
+binds the frozen static files **plus the exact canonical runtime-config bytes**.
+The absolute command invokes
+`/opt/physicalai/source/learning/smolvla/image_bootstrap.py` with the qualified
+`/opt/smolvla-venv/bin/python -I -B`, a bounded base64 config, config-file SHA,
+full-snapshot SHA and static-source SHA. No inline Python/shell program or
+arbitrary executable is supplied. The current limits are 16 KiB decoded config,
+32 KiB command text, 128 static files, 4 MiB per source file, 16 MiB total source
+and 64 KiB per source manifest; oversize input fails rather than widening them.
+
+The bootstrap imports only the standard library. Before native imports or
+process/model/network work it rejects expired/noncanonical/modified config,
+unknown delivery, wrong full/static hashes, missing/extra files and symlinks.
+It copies the frozen source into a **new task-local** directory, writes the exact
+decoded `run-config.json`, rechecks every copied byte and writes `snapshot.json`.
+It then sets cwd/PYTHONPATH to that materialized root and execs the same
+`learning.paused.components export|train` entry, leaving native supervision,
+actual Azure component/parent binding, original wall deadlines and all
+data/model/task/checkpoint validators in place. AML may override its initial
+working directory; the image paths are absolute and do not depend on `/work`.
+No Azure execution identity is synthesized. Runtime scratch is task-local,
+not a persistent service or a deployed queue reconciler.
+
+Before enabling an actual job, run the separate offline verification in the
+native Python 3.11 environment:
+
+```bash
+python -m learning.checks.embedded_source_check --report /approved/offline-check.json
+```
+
+It uses the actual pinned Azure ML 1.35 loader and code-dependency resolver,
+requiring zero code-resolution calls for the embedded graph and two for the
+legacy two-component graph. It also materializes/verifies the complete native
+snapshot and runs the standalone bootstrap from an unrelated cwd. It performs
+no image build, upload, credential acquisition, job submission or model load.
+This removes the **code-asset** dependency only; registered data mounts, image
+pulls, actual compute/storage admission and training still require live proof.
+All prior upload/registration failures and expired job approvals remain immutable.
+
 | Native input | Registered folder root | Required checksum |
 |---|---|---|
 | `demonstrations` | `manifest.json` and complete `episodes/<id>/...` tree | Exact assembled `manifest.json` file SHA |
