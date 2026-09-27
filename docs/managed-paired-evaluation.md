@@ -143,6 +143,26 @@ python -m simulation.paired_evaluation \
   --output /private/reports/mapped-report.json
 ```
 
+For explicitly admitted command-provenance checkpoint v3 models, also pass
+`--model-runtime /private/model-runtime.json`. The equivalent Python call is
+`aggregate(..., model_runtime=original_descriptor_bytes)`. The optional payload
+is bounded to **65,536 bytes** and must hash exactly to
+`mapping.model_runtime_sha256`. The closed `ModelRuntime/v2` validates the
+literal command-v3 validator/server/provider branch and binds the frozen
+legacy profile plus actual simulator image/source identity. It selects
+`learning.paused.command_artifacts.validate_models(plan, models, scope=scope)`;
+no old v2 validator is patched or given a fake pipeline manifest.
+
+Omitted or v1 descriptors retain the original v2 model gate and cannot admit
+command v3. Mixed before/after admission versions are rejected. With v2
+admission the result carries a `model_admission` proof referencing the same
+descriptor, literal entry points, request/response schemas, image/source and
+both source-inventory hashes. Consumers may relay this actual native result;
+they must not synthesize it or reuse the historical v1 descriptor. Each native
+trial's model-process preflight and provider report must attest the same proof.
+The full raw-payload, lineage, case, heartbeat and quality checks below still
+apply unchanged.
+
 There are no cloud calls or GPU imports. Output is create-only and cannot be
 written inside attempt/model directories. A partial set produces
 `complete=false`, `quality_gate_passed=false`, `conclusion=inconclusive`, all

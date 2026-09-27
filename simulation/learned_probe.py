@@ -8,6 +8,7 @@ import os
 import sys
 import time
 from dataclasses import asdict
+from datetime import UTC, datetime
 from pathlib import Path
 
 from learning.common import canonical, digest, file_digest, integer, read_json, require
@@ -17,7 +18,15 @@ from learning.paused.capture import PausedEpisodeBudget, validate_dataset
 from learning.paused.evaluation import _trial
 from learning.paused.rollout import derive_trial
 from learning.paused.task import TaskState, evaluate_task_states
-from simulation.batch_learned import BatchLearnedSpec, load_inputs, validate_evaluation_cohort
+from simulation.batch_learned import (
+    BatchLearnedSpec,
+    CommandModelRuntime,
+    command_admission_proof,
+    load_inputs,
+    read_model_runtime,
+    validate_evaluation_cohort,
+    verify_model_runtime,
+)
 from simulation.paused_learned import PausedLearnedRuntime
 
 SCHEMA = "physicalai.paused-learned-attempt/v1"
@@ -320,7 +329,13 @@ def rescore(report: dict, spec: BatchLearnedSpec, scene, profile, grant) -> dict
 
 
 def run(
-    spec: BatchLearnedSpec, *, paths, model_root: Path, socket_path: Path, output: Path
+    spec: BatchLearnedSpec,
+    *,
+    paths,
+    model_root: Path,
+    socket_path: Path,
+    output: Path,
+    model_runtime: Path | None = None,
 ) -> dict:
     from simulation.capture_status import CaptureStatusStore
     from simulation.core import SimulationCore
@@ -336,6 +351,17 @@ def run(
 
     environment, scene, profile, grant = load_inputs(spec, paths)
     permit = grant.authorization
+    descriptor = (
+        read_model_runtime(model_runtime, spec.model_runtime.sha256) if model_runtime else None
+    )
+    admission = None
+    if type(descriptor) is CommandModelRuntime:
+        verify_model_runtime(
+            descriptor,
+            spec=spec,
+            deadline=time.monotonic() + (grant.expires_at - datetime.now(UTC)).total_seconds(),
+        )
+        admission = command_admission_proof(descriptor, runtime_sha256=spec.model_runtime.sha256)
     require(not output.exists(), "Never overwrite a learned physical attempt.")
     catalogue = {
         "schema": "physicalai.paused-policy-catalog/v1",
@@ -350,9 +376,16 @@ def run(
     }
     catalogue_path = output.parent / "catalogue.json"
     catalogue_path.write_bytes(canonical(catalogue))
-    provider = InstalledPausedPolicyProvider.load(
-        catalogue_path, file_digest(catalogue_path), profile
-    )
+    if type(descriptor) is CommandModelRuntime:
+        from simulation.command_policy_deployment import CommandPausedPolicyProvider
+
+        provider = CommandPausedPolicyProvider.load(
+            catalogue_path, file_digest(catalogue_path), profile, spec=spec, runtime=descriptor
+        )
+    else:
+        provider = InstalledPausedPolicyProvider.load(
+            catalogue_path, file_digest(catalogue_path), profile
+        )
     application = hardware = runtime = core = trace = None
     report = None
     phase = "asset_preparation"
@@ -448,6 +481,7 @@ def run(
             time.sleep(0.001)
         report = {
             "schema": SCHEMA,
+            **({"model_admission": admission} if admission is not None else {}),
             "evaluation_split": spec.evaluation_split,
             "execution_timing": "paused_simulation",
             "real_time_admission": False,
@@ -535,6 +569,7 @@ def main() -> None:
     parser.add_argument("--inputs", type=Path, required=True)
     parser.add_argument("--model-root", type=Path, required=True)
     parser.add_argument("--socket-path", type=Path, required=True)
+    parser.add_argument("--model-runtime", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     spec = BatchLearnedSpec.model_validate(read_json(args.spec, max_bytes=1024**2))
@@ -547,6 +582,7 @@ def main() -> None:
         model_root=args.model_root,
         socket_path=args.socket_path,
         output=args.output,
+        model_runtime=args.model_runtime,
     )
     if (report.get("native_acceptance") or {}).get("accepted") is not True:
         raise SystemExit(1)

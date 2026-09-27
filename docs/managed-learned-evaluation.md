@@ -67,6 +67,76 @@ interpreter hash, and an actual subprocess's Python version/base/stdlib.
 The dependency/code image digests identify the separately qualified assembly;
 they are not required to equal the training GPU runtime hash or the Isaac image.
 
+### Separately attested Azure ML command candidates
+
+`ModelRuntime/v1` admits only the existing pipeline-provenance checkpoint v2.
+It does **not** gain v3 support by inspecting a model header. For a genuine
+standalone Azure ML command candidate, supply
+`schema="physicalai.paused-model-runtime/v2"` with every v1 field above plus:
+
+| Field | Closed value or binding |
+| --- | --- |
+| `admission_kind` | `azureml_command_v3` |
+| `artifact_schema` | `physicalai.smolvla-checkpoint/v3` |
+| `training_execution` | `azureml_command` |
+| `server_entrypoint` | `learning.paused.command_model` |
+| `provider_entrypoint` | `simulation.command_policy_deployment.CommandPausedPolicyProvider` |
+| `request_schema` / `response_schema` | `physicalai.smolvla-request/v2` / `physicalai.smolvla-response/v2` |
+| `legacy_servo_sha256` | Actual unchanged 39-file legacy control-bundle hash |
+| `control_profile_sha256` | Original approved complete profile hash |
+| `simulator_image` | Actual final immutable simulator image |
+| `simulator_source_revision` | Actual simulator source revision, also in the original grant/spec |
+| `simulator_source_files` | Complete `/app` Python source inventory described below |
+
+Generate this **private sidecar after the final image is built and independently
+read back**, not inside that image. This avoids an image/descriptor self-hash
+cycle. The exact descriptor file SHA is still pinned by the original managed
+spec, claim, preflight proof and paired mapping. Do not reuse descriptor
+`553fb4...` or synthesize a descriptor from an intended build context after the
+actual `/work` bytes or entry points change.
+
+`source_files` must contain every `/work/learning/**/*.py`, including
+`command_artifacts.py`, `command_model.py`, their imports and the byte-exact old
+modules. `simulator_source_files` contains every `.py` under the literal `/app`
+package roots **apps, contracts, learning, simulation**, including the new
+provider and all admission wrappers. The only excluded directory names are
+`__pycache__`, `.cache`, `.pytest_cache`, `.ruff_cache`, `.venv` and `venv`.
+Do not put admission code in excluded paths. Symlinks are rejected, including
+inside excluded-directory entries; actual extra/missing/source-changed files
+fail verification. The complete `learning/` Python inventory must be identical
+in `/app` and `/work`. Descriptor input remains bounded to 65,536 bytes and must
+also fit the existing bounded preflight receipt after encoding.
+
+The operator must prove the original 39 fingerprinted files, protocol table
+and both v1/v2 numeric-limit dictionaries are byte-for-byte unchanged. The
+recorded legacy hashes are servo
+`d72db917989c3d55512241e1fd14b1a86be51317d5812bc3109a33b5ecf18351`
+and profile
+`851df47a362e4f62fcf0cbfa1b2761339ed5e346d1575123629c20355acb77dc`.
+Those hashes identify the unchanged legacy control bundle, **not the newly
+approved admission system**. Its additional authority is the new full runtime
+descriptor plus immutable image/source/grant binding. No old hash list, model
+schema constant, validator import or sealed TRAIN metadata is rewritten.
+
+The command branch calls only
+`learning.paused.command_artifacts.validate_model` and the new native
+`learning.paused.command_model` server. It requires original v3 metadata,
+`training_execution="azureml_command"` and one genuine command job identity;
+pipeline/component aliases, v2 conversion views and fixture/untrained policies
+are rejected. `CommandPausedPolicyProvider` performs new strict admission with
+normal construction and inherits the unchanged legacy authorization, original
+deadline checks, protected socket creation and guarded policy adapter. The
+pinned `PausedLearnedRuntime`, `SocketChunkPolicy`, IPC schemas and actual
+actuator/gravity/watchdogs are untouched. Legacy providers continue rejecting v3.
+
+For this branch only, the model command below uses
+`-m learning.paused.command_model` with the same arguments. The native probe
+receives `--model-runtime <original-sidecar>` and verifies its hash and both
+source contexts before selecting the new provider. The report and model-process
+preflight contain the same explicit `model_admission`/`admission` proof; offline
+rescore rejects missing, mixed-kind or rebound entry points/profile/source
+inventories. No descriptor-supplied arbitrary Python module is imported.
+
 The task starts the existing native server:
 
 ```text
@@ -113,9 +183,10 @@ Manifests are downloaded and hash-checked first, and their native inventories mu
 exactly match the spec. Every payload has an exact size/SHA check. Existing
 `learning.paused.artifacts.validate_model` and
 `learning.smolvla.artifacts.validate_backbone` validate the actual local files.
-The selected model must be an actual changed, trained **candidate** with paused-v2
-provenance, nine-dimensional action/state processors, the exact backbone, task,
-profile, criteria and conditions. A vendor six-DOF base, `pretrained` preparation,
+The selected model must be an actual changed, trained **candidate** with paused
+provenance matching its explicitly selected admission version, nine-dimensional
+action/state processors, the exact backbone, task, profile, criteria and
+conditions. A vendor six-DOF base, `pretrained` preparation,
 test fixture, pickle or dynamic processor is not an inference policy. In a
 before/after comparison, both policies must satisfy the native inference contract.
 

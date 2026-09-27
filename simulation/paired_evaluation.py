@@ -37,7 +37,14 @@ from learning.paused.evaluation import (
 from learning.paused.rollout import derive_trial, validate_runtime
 from learning.paused.task import TaskState
 from simulation.batch import PROOF_LIMITS, validate_completion
-from simulation.batch_learned import BatchLearnedSpec, rescore_evidence, validate_inputs
+from simulation.batch_learned import (
+    BatchLearnedSpec,
+    CommandModelRuntime,
+    command_admission_proof,
+    parse_model_runtime,
+    rescore_evidence,
+    validate_inputs,
+)
 from simulation.learned_probe import decode_image, physical_case
 
 PRIVATE_LIMITS = {
@@ -500,6 +507,7 @@ def aggregate(
     evidence_sha256: str,
     before_root: Path,
     after_root: Path,
+    model_runtime: bytes | None = None,
 ) -> dict:
     require(
         evidence.mapping_sha256 == sha256(mapping_sha256)
@@ -523,7 +531,32 @@ def aggregate(
         present == {str(item.physical_attempt_id) for item in evidence.attempts},
         "Snapshot omitted or introduced unlisted physical attempt directories.",
     )
-    models = validate_models(
+    admission = None
+    model_validator = validate_models
+    if model_runtime is not None:
+        require(
+            len(model_runtime) <= 65536 and digest(model_runtime) == mapping.model_runtime_sha256,
+            "Original paired model-runtime descriptor bytes differ.",
+        )
+        runtime = parse_model_runtime(parse_json(model_runtime))
+        if type(runtime) is CommandModelRuntime:
+            require(
+                runtime.control_profile_sha256 == mapping.evaluation_plan["control_profile_sha256"]
+                and runtime.legacy_servo_sha256
+                == mapping.evaluation_plan["control_profile"]["servo_profile_sha256"]
+                and runtime.simulator_image.split("@", 1)[1]
+                == mapping.runtime["provenance"]["simulator_image_digest"]
+                and runtime.simulator_source_revision
+                == mapping.runtime["provenance"]["code_revision"],
+                "Paired command admission differs from the frozen runtime/control/image binding.",
+            )
+            from learning.paused.command_artifacts import validate_models as command_models
+
+            model_validator = command_models
+            admission = command_admission_proof(
+                runtime, runtime_sha256=mapping.model_runtime_sha256
+            )
+    models = model_validator(
         mapping.evaluation_plan,
         {"before": before_root, "after": after_root},
         scope=Scope(**mapping.evaluation_plan["scope"]),
@@ -560,13 +593,16 @@ def aggregate(
                 "Frozen paired attempt order changed.",
             )
             last_end = claim_time(item.get("ended_at_utc", item["claimed_at_utc"]))
-    return summarize(
+    result = summarize(
         mapping,
         records,
         mapping_sha256=mapping_sha256,
         evidence_sha256=evidence_sha256,
         evidence_verified=True,
     )
+    if admission is not None:
+        result["model_admission"] = admission
+    return result
 
 
 def main() -> None:
@@ -578,6 +614,7 @@ def main() -> None:
     parser.add_argument("--evidence-sha256", required=True)
     parser.add_argument("--before-root", type=Path, required=True)
     parser.add_argument("--after-root", type=Path, required=True)
+    parser.add_argument("--model-runtime", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     require(args.mapping.stat().st_size <= 4 * 1024**2, "Oversized frozen mapping.")
@@ -597,6 +634,11 @@ def main() -> None:
     )
     mapping = PairingPlan.model_validate(parse_json(mapping_bytes))
     evidence = PairingEvidence.model_validate(parse_json(evidence_bytes))
+    runtime_bytes = None
+    if args.model_runtime is not None:
+        runtime_path = safe_path(args.model_runtime.parent, args.model_runtime.name)
+        require(runtime_path.stat().st_size <= 65536, "Oversized model-runtime descriptor.")
+        runtime_bytes = runtime_path.read_bytes()
     result = aggregate(
         args.root,
         mapping,
@@ -605,6 +647,7 @@ def main() -> None:
         evidence_sha256=args.evidence_sha256,
         before_root=args.before_root,
         after_root=args.after_root,
+        model_runtime=runtime_bytes,
     )
     write_json(args.output, result)
     print(

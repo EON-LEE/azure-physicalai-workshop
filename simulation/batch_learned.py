@@ -19,7 +19,16 @@ from typing import Annotated, Literal
 from pydantic import Field, field_validator, model_serializer, model_validator
 
 from apps.api.models import Model, Revision
-from learning.common import canonical, digest, file_digest, read_json, relative_path, require
+from learning.common import (
+    canonical,
+    digest,
+    file_digest,
+    parse_json,
+    read_json,
+    relative_path,
+    require,
+    sha256,
+)
 from simulation.batch import (
     BATCH_TOKEN_SCOPE,
     BatchSimulationSpec,
@@ -35,6 +44,23 @@ from simulation.batch_task import PrivateArtifacts
 Image = Annotated[str, Field(pattern=r"^[a-z0-9]+\.azurecr\.io/[a-z0-9_./-]+@sha256:[a-f0-9]{64}$")]
 MODEL_PYTHON = "/opt/smolvla-venv/bin/python"
 MODEL_CODE = "/work"
+SIMULATOR_CODE = "/app"
+APP_SOURCE_ROOTS = ("apps", "contracts", "learning", "simulation")
+SOURCE_EXCLUDES = frozenset(
+    {"__pycache__", ".cache", ".pytest_cache", ".ruff_cache", ".venv", "venv"}
+)
+COMMAND_NATIVE_SOURCES = frozenset(
+    {
+        "learning/paused/command_artifacts.py",
+        "learning/paused/command_model.py",
+    }
+)
+COMMAND_APP_SOURCES = COMMAND_NATIVE_SOURCES | {
+    "simulation/command_policy_deployment.py",
+    "simulation/batch_learned.py",
+    "simulation/learned_probe.py",
+    "simulation/paired_evaluation.py",
+}
 
 
 class ModelFile(Model):
@@ -138,6 +164,140 @@ class ModelRuntime(Model):
         return value
 
 
+class CommandModelRuntime(ModelRuntime):
+    schema_version: Literal["physicalai.paused-model-runtime/v2"] = Field(alias="schema")
+    admission_kind: Literal["azureml_command_v3"]
+    artifact_schema: Literal["physicalai.smolvla-checkpoint/v3"]
+    training_execution: Literal["azureml_command"]
+    server_entrypoint: Literal["learning.paused.command_model"]
+    provider_entrypoint: Literal["simulation.command_policy_deployment.CommandPausedPolicyProvider"]
+    request_schema: Literal["physicalai.smolvla-request/v2"]
+    response_schema: Literal["physicalai.smolvla-response/v2"]
+    legacy_servo_sha256: Revision
+    control_profile_sha256: Revision
+    simulator_image: Image
+    simulator_source_revision: str = Field(pattern=r"^[a-f0-9]{40}$")
+    simulator_source_files: dict[str, Revision] = Field(min_length=1, max_length=2048)
+
+    @model_validator(mode="after")
+    def complete_admission_sources(self):
+        for name in self.simulator_source_files:
+            path = relative_path(name)
+            require(
+                path.parts[0] in APP_SOURCE_ROOTS
+                and name.endswith(".py")
+                and not SOURCE_EXCLUDES.intersection(path.parts),
+                "Invalid simulator admission source path.",
+            )
+        require(
+            COMMAND_NATIVE_SOURCES <= set(self.source_files)
+            and COMMAND_APP_SOURCES <= set(self.simulator_source_files)
+            and self.source_files
+            == {
+                name: checksum
+                for name, checksum in self.simulator_source_files.items()
+                if name.startswith("learning/")
+            },
+            "Both source contexts must attest the same complete native admission code.",
+        )
+        return self
+
+
+def parse_model_runtime(value: dict) -> ModelRuntime | CommandModelRuntime:
+    schema = value.get("schema")
+    if schema == "physicalai.paused-model-runtime/v1":
+        return ModelRuntime.model_validate(value)
+    require(
+        schema == "physicalai.paused-model-runtime/v2", "Unknown model admission runtime version."
+    )
+    return CommandModelRuntime.model_validate(value)
+
+
+def read_model_runtime(path: Path, checksum: str) -> ModelRuntime | CommandModelRuntime:
+    require(
+        path.stat().st_size <= 65536
+        and not any(item.is_symlink() for item in (path, *path.parents)),
+        "Invalid or Symlink model-runtime sidecar.",
+    )
+    with path.open("rb") as stream:
+        value = stream.read(65537)
+    require(len(value) <= 65536, "Model-runtime sidecar exceeds its byte bound.")
+    require(digest(value) == sha256(checksum), "Original model-runtime checksum differs.")
+    return parse_model_runtime(parse_json(value))
+
+
+def validate_command_runtime_binding(runtime: CommandModelRuntime, spec, profile) -> None:
+    require(
+        type(runtime) is CommandModelRuntime,
+        "Command v3 requires an explicit v2 runtime descriptor.",
+    )
+    CommandModelRuntime.model_validate(runtime.model_dump(mode="json", by_alias=True))
+    require(
+        runtime.simulator_image == spec.platform.container_image
+        and runtime.simulator_source_revision == spec.source_revision
+        and runtime.control_profile_sha256 == spec.control_profile_sha256 == profile.sha256
+        and runtime.legacy_servo_sha256 == profile.servo_profile_sha256
+        and spec.profile_id == profile.profile_id,
+        "Command admission runtime/image/source/profile binding differs.",
+    )
+
+
+def verify_python_sources(root: Path, prefixes: tuple[str, ...], expected: dict[str, str]) -> None:
+    require(
+        root.is_dir() and not any(item.is_symlink() for item in (root, *root.parents)),
+        "Invalid or Symlink attested source root.",
+    )
+    actual = {}
+    for prefix in prefixes:
+        start = root / prefix
+        require(not start.is_symlink(), "Symlink in attested source inventory.")
+        if not start.exists():
+            continue
+        require(start.is_dir(), "Expected an attested Python source directory.")
+        for directory, names, files in os.walk(start, followlinks=False):
+            parent = Path(directory)
+            for name in (*names, *files):
+                require(not (parent / name).is_symlink(), "Symlink in attested source inventory.")
+            names[:] = [name for name in names if name not in SOURCE_EXCLUDES]
+            for name in files:
+                if not name.endswith(".py"):
+                    continue
+                path = parent / name
+                relative = path.relative_to(root).as_posix()
+                require(len(actual) < 2048, "Attested source inventory exceeds its bound.")
+                actual[relative] = file_digest(path)
+    require(actual == expected, "Complete Python source inventory/checksum differs.")
+
+
+def command_admission_proof(runtime: CommandModelRuntime, *, runtime_sha256: str) -> dict:
+    return {
+        "admission_kind": runtime.admission_kind,
+        "artifact_schema": runtime.artifact_schema,
+        "training_execution": runtime.training_execution,
+        "server_entrypoint": runtime.server_entrypoint,
+        "provider_entrypoint": runtime.provider_entrypoint,
+        "request_schema": runtime.request_schema,
+        "response_schema": runtime.response_schema,
+        "runtime_sha256": sha256(runtime_sha256),
+        "legacy_servo_sha256": runtime.legacy_servo_sha256,
+        "control_profile_sha256": runtime.control_profile_sha256,
+        "simulator_image": runtime.simulator_image,
+        "simulator_source_revision": runtime.simulator_source_revision,
+        "simulator_sources_sha256": digest(canonical(runtime.simulator_source_files)),
+        "native_sources_sha256": digest(canonical(runtime.source_files)),
+    }
+
+
+def validate_runtime_model(runtime: ModelRuntime, root: Path, *, scope, model_sha256: str) -> dict:
+    if type(runtime) is CommandModelRuntime:
+        from learning.paused.command_artifacts import validate_model
+    else:
+        require(type(runtime) is ModelRuntime, "Unknown model admission runtime type.")
+        from learning.paused.artifacts import validate_model
+
+    return validate_model(root, expected_scope=scope, expected_model_sha256=model_sha256)
+
+
 def build_learned_job_task(spec: BatchLearnedSpec, spec_url: str, spec_sha256: str):
     job, task = build_job_task(spec, spec_url, spec_sha256)
     task.command_line = (
@@ -187,11 +347,26 @@ def model_environment(parent: dict[str, str]) -> dict[str, str]:
     return value
 
 
-def model_command(*, model_root, backbone_root, binding, socket_path, model_sha256, uid):
+def model_command(
+    *,
+    model_root,
+    backbone_root,
+    binding,
+    socket_path,
+    model_sha256,
+    uid,
+    runtime: ModelRuntime | None = None,
+):
+    require(
+        runtime is None or type(runtime) in (ModelRuntime, CommandModelRuntime),
+        "Unknown explicit model-server admission type.",
+    )
     return [
         MODEL_PYTHON,
         "-m",
-        "learning.paused.model",
+        "learning.paused.command_model"
+        if type(runtime) is CommandModelRuntime
+        else "learning.paused.model",
         "--model-root",
         str(model_root),
         "--backbone-root",
@@ -302,12 +477,26 @@ def validate_inputs(spec: BatchLearnedSpec, documents: dict[str, bytes], *, live
     return environment, scene, profile, grant
 
 
-def verify_model_runtime(descriptor: ModelRuntime, *, deadline: float) -> dict:
+def verify_model_runtime(
+    descriptor: ModelRuntime, *, deadline: float, spec: BatchLearnedSpec | None = None
+) -> dict:
     require(os.name == "posix", "The qualified model runtime must share the Linux kernel.")
     require(
         file_digest(Path(MODEL_PYTHON).resolve()) == descriptor.python_sha256,
         "The installed model interpreter differs from the qualified runtime descriptor.",
     )
+    if type(descriptor) is CommandModelRuntime:
+        from simulation.paused_configuration import paused_servo_sha256
+        from simulation.paused_profiles import paused_profile
+
+        require(spec is not None, "Command admission requires its original managed specification.")
+        validate_command_runtime_binding(
+            descriptor, spec, paused_profile(paused_servo_sha256(), spec.profile_id)
+        )
+        verify_python_sources(
+            Path(SIMULATOR_CODE), APP_SOURCE_ROOTS, descriptor.simulator_source_files
+        )
+        verify_python_sources(Path(MODEL_CODE), ("learning",), descriptor.source_files)
     files = {
         path.relative_to(MODEL_CODE).as_posix()
         for path in (Path(MODEL_CODE) / "learning").rglob("*.py")
@@ -448,8 +637,20 @@ def rescore_evidence(spec: BatchLearnedSpec, documents: dict[str, bytes]) -> tup
     )
     encoded = base64.b64decode(server["runtime_descriptor_base64"], validate=True)
     require(digest(encoded) == spec.model_runtime.sha256, "Model-runtime descriptor was rebound.")
-    ModelRuntime.model_validate(parse_json(encoded))
+    runtime = parse_model_runtime(parse_json(encoded))
     report = parse_json(documents["probe.json"])
+    if type(runtime) is CommandModelRuntime:
+        validate_command_runtime_binding(runtime, spec, profile)
+        proof = command_admission_proof(runtime, runtime_sha256=spec.model_runtime.sha256)
+        require(
+            server.get("admission") == report.get("model_admission") == proof,
+            "The actual command provider/server admission differs from its original descriptor.",
+        )
+    else:
+        require(
+            "admission" not in server and "model_admission" not in report,
+            "Legacy runtime descriptors cannot admit a command-v3 policy.",
+        )
     acceptance = rescore(report, spec, scene, profile, grant)
     require(
         parse_json(documents["acceptance.json"]) == acceptance,
@@ -500,7 +701,6 @@ class LearnedArtifacts(PrivateArtifacts):
 
 def run_native(spec: BatchLearnedSpec, paths, directory: Path, deadline: float, *, store) -> dict:
     from learning.contract import Scope
-    from learning.paused.artifacts import validate_model
     from learning.smolvla.artifacts import validate_backbone
     from simulation.batch_task import configure_native_environment, gpu_preflight, run_bounded
     from simulation.learned_probe import rescore
@@ -516,16 +716,17 @@ def run_native(spec: BatchLearnedSpec, paths, directory: Path, deadline: float, 
     staging.mkdir(mode=0o700)
     descriptor_path = staging / "model-runtime.json"
     store.download(spec.model_runtime, descriptor_path)
-    descriptor = ModelRuntime.model_validate(read_json(descriptor_path, max_bytes=65536))
-    python_proof = verify_model_runtime(descriptor, deadline=preparation_deadline)
+    descriptor = read_model_runtime(descriptor_path, spec.model_runtime.sha256)
+    python_proof = verify_model_runtime(descriptor, deadline=preparation_deadline, spec=spec)
     model_root, backbone_root = staging / "model", staging / "backbone"
     download_bundle(store, spec.model, model_root, model=True, deadline=preparation_deadline)
     download_bundle(store, spec.backbone, backbone_root, model=False, deadline=preparation_deadline)
     scope = Scope(str(spec.platform.tenant_id), spec.owner_id)
-    metadata = validate_model(
+    metadata = validate_runtime_model(
+        descriptor,
         model_root,
-        expected_scope=scope,
-        expected_model_sha256=spec.model.manifest.sha256,
+        scope=scope,
+        model_sha256=spec.model.manifest.sha256,
     )
     require(
         metadata["backbone_manifest_sha256"] == spec.backbone.manifest.sha256
@@ -564,6 +765,7 @@ def run_native(spec: BatchLearnedSpec, paths, directory: Path, deadline: float, 
                 socket_path=socket_path,
                 model_sha256=spec.model.manifest.sha256,
                 uid=os.geteuid(),
+                runtime=descriptor,
             ),
             socket_path=socket_path,
             deadline=preparation_deadline,
@@ -583,6 +785,10 @@ def run_native(spec: BatchLearnedSpec, paths, directory: Path, deadline: float, 
             "uid": os.geteuid(),
             "socket_transport": "same-kernel-unix-so_peercred",
         }
+        if type(descriptor) is CommandModelRuntime:
+            preflight["model_process"]["admission"] = command_admission_proof(
+                descriptor, runtime_sha256=spec.model_runtime.sha256
+            )
         (directory / "preflight.json").write_bytes(canonical(preflight) + b"\n")
         spec_path = directory / "learned-spec.json"
         spec_path.write_bytes(canonical(spec.model_dump(mode="json", by_alias=True)))
@@ -599,6 +805,8 @@ def run_native(spec: BatchLearnedSpec, paths, directory: Path, deadline: float, 
                 str(model_root),
                 "--socket-path",
                 str(socket_path),
+                "--model-runtime",
+                str(descriptor_path),
                 "--output",
                 str(directory / "probe.json"),
             ],
