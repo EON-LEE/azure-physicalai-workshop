@@ -41,6 +41,19 @@ def run_training(
         "criteria_sha256": config["criteria_sha256"],
         "frozen_plan_sha256": config["frozen_plan_sha256"],
     }
+    builder, validator, parent = model_contract, validate_model, None
+    if "job_execution" in config:
+        from learning.paused.command_artifacts import (
+            model_contract as command_builder,
+        )
+        from learning.paused.command_artifacts import (
+            validate_model as command_validator,
+        )
+        from learning.paused.command_artifacts import (
+            validate_parent,
+        )
+
+        builder, validator, parent = command_builder, command_validator, validate_parent
     return _run_training(
         dataset,
         parent_root,
@@ -53,11 +66,12 @@ def run_training(
         config=config,
         client=client,
         options=options,
-        model_validator=validate_model,
+        model_validator=validator,
+        parent_validator=parent,
         conversion_validator=validate_conversion,
         profile_type=PausedControlProfile,
         model_builder=partial(
-            model_contract,
+            builder,
             criteria_sha256=config["criteria_sha256"],
             frozen_plan_sha256=config["frozen_plan_sha256"],
         ),

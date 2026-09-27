@@ -29,6 +29,7 @@ from learning.common import (
 from learning.contract import Scope
 
 SCHEMA = "physicalai.smolvla-training-checkpoint/v1"
+COMMAND_SCHEMA = "physicalai.smolvla-training-checkpoint/v2"
 MANIFEST = "checkpoint.json"
 CONTINUATION_SCHEMA = "physicalai.smolvla-continuation/v1"
 BINDING_KEYS = frozenset(
@@ -131,8 +132,14 @@ def validate_binding(value: dict) -> None:
 
 
 def _origin(value: dict) -> None:
-    keys(value, set(ORIGIN_KEYS), "checkpoint origin")
-    for name in ("azure_job_id", "azure_pipeline_job_id"):
+    command = value.get("azure_job_type") == "command"
+    expected = (
+        (set(ORIGIN_KEYS) - {"azure_pipeline_job_id"}) | {"azure_job_type"}
+        if command
+        else set(ORIGIN_KEYS)
+    )
+    keys(value, expected, "checkpoint origin")
+    for name in ("azure_job_id",) if command else ("azure_job_id", "azure_pipeline_job_id"):
         require(
             isinstance(value[name], str)
             and re.fullmatch(
@@ -142,11 +149,12 @@ def _origin(value: dict) -> None:
             ),
             "Missing actual scoped checkpoint job identity",
         )
-    require(
-        value["azure_job_id"].rsplit("/jobs/", 1)[0]
-        == value["azure_pipeline_job_id"].rsplit("/jobs/", 1)[0],
-        "Checkpoint job identities cross workspaces",
-    )
+    if not command:
+        require(
+            value["azure_job_id"].rsplit("/jobs/", 1)[0]
+            == value["azure_pipeline_job_id"].rsplit("/jobs/", 1)[0],
+            "Checkpoint job identities cross workspaces",
+        )
     sha256(value["specification_sha256"])
     sha256(value["code_snapshot_sha256"])
     utc(value["job_deadline_utc"])
@@ -259,7 +267,9 @@ def _manifest(value: dict, limits: CheckpointLimits) -> None:
         "complete checkpoint manifest",
     )
     require(
-        value["schema"] == SCHEMA and value["state_kind"] in ("full_state", "weights_only"),
+        value["schema"]
+        == (COMMAND_SCHEMA if value["origin"].get("azure_job_type") == "command" else SCHEMA)
+        and value["state_kind"] in ("full_state", "weights_only"),
         "Unknown checkpoint/state schema",
     )
     integer(value["step"], "completed optimizer step", 1, 100000)
@@ -306,7 +316,7 @@ def seal_checkpoint(
     require(not (root / MANIFEST).exists(), "Never overwrite a completed checkpoint")
     integer(prior_optimizer_steps, "prior actual optimizer steps")
     value = {
-        "schema": SCHEMA,
+        "schema": COMMAND_SCHEMA if origin.get("azure_job_type") == "command" else SCHEMA,
         "step": step,
         "cumulative_optimizer_steps": prior_optimizer_steps + step,
         "state_kind": state_kind,
@@ -448,6 +458,9 @@ def _readback(container, name: str, expected: dict, remaining, *, destination=No
         retry_total=0,
         connection_timeout=min(10, seconds),
         read_timeout=min(30, seconds),
+    )
+    require(
+        isinstance(props.etag, str) and bool(props.etag), "Missing Blob checkpoint readback ETag"
     )
     require(props.size == expected["bytes"], "Blob checkpoint readback byte count differs")
     result = hashlib.sha256()

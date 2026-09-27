@@ -204,8 +204,12 @@ def workspace_id(config: dict) -> str:
     )
 
 
-def running_job_binding(client, config: dict) -> dict:
+def running_job_binding(client, config: dict, *, snapshot_sha256: str | None = None) -> dict:
     """Bind a component output to its actual running Azure job and approved parent pipeline."""
+    if "job_execution" in config:
+        from learning.paused.command import running_command_binding
+
+        return running_command_binding(client, config, snapshot_sha256=snapshot_sha256)
     component_id = azure_job_identity(config)
     component = client.jobs.get(component_id.rsplit("/", 1)[1])
     require(
@@ -287,6 +291,12 @@ def job_tags(config: dict, snapshot_sha256: str, *, policy_type: str = POLICY_TY
         tags.update(
             source_delivery=config["source_delivery"]["mode"],
             static_source_sha256=config["source_delivery"]["static_sha256"],
+        )
+    if "job_execution" in config:
+        tags.update(
+            job_execution="command",
+            data_transport="private_blob_mi",
+            runtime_config_sha256=digest(canonical(config)),
         )
     return tags
 
@@ -634,13 +644,22 @@ class Gr00tJobs:
             and (job.tags or {}).get("static_source_sha256") == delivery.get("static_sha256"),
             "Named job source delivery differs from its approved config",
         )
+        if "job_execution" in self.config:
+            from learning.paused.command import validate_job
+
+            validate_job(job, self.config)
+        else:
+            require(
+                not (job.tags or {}).get("job_execution"),
+                "A command job cannot be relabelled as pipeline",
+            )
 
     def status(self, job_name: str) -> dict:
         token(job_name, "job name")
         job = self.client.jobs.get(job_name)
         self._owned(job)
         require(job.status in STATES, f"Unknown Azure job status: {job.status}")
-        return {
+        receipt = {
             "job_name": job.name,
             "azure_job_id": job.id,
             "owner_key": self.config["owner_id"],
@@ -651,6 +670,9 @@ class Gr00tJobs:
             "loss": None,
             "quality_verified": False,
         }
+        if "job_execution" in self.config:
+            receipt["azure_job_type"] = "command"
+        return receipt
 
     def submit(
         self, plan_dir: Path, *, approved_plan_sha256: str, deterministic_job_name: str

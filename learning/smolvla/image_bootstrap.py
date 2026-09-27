@@ -19,6 +19,11 @@ from pathlib import Path, PurePosixPath
 
 DELIVERY_SCHEMA = "physicalai.smolvla-source-delivery/v1"
 STATIC_SCHEMA = "physicalai.smolvla-static-source/v1"
+COMMAND_EXECUTION = {
+    "schema": "physicalai.smolvla-command-execution/v1",
+    "kind": "command",
+    "data_transport": "private_blob_mi",
+}
 NATIVE_PYTHON = "/opt/smolvla-venv/bin/python"
 IMAGE_ROOT = "/opt/physicalai"
 BOOTSTRAP_RELATIVE = "learning/smolvla/image_bootstrap.py"
@@ -233,6 +238,10 @@ def _configuration(encoded: str, checksum: str, static_sha256: str) -> tuple[dic
         is not None,
         "Runtime image must remain digest-pinned",
     )
+    if "job_execution" in config:
+        _require(
+            config["job_execution"] == COMMAND_EXECUTION, "Unapproved standalone job execution"
+        )
     return config, payload
 
 
@@ -289,20 +298,33 @@ def execute_component(
     *,
     command: str,
     snapshot_sha256: str,
-    input_path: Path,
-    output_path: Path,
+    input_path: Path | None = None,
+    output_path: Path | None = None,
     parent_path: Path | None = None,
     backbone_path: Path | None = None,
     resume_checkpoint: Path | None = None,
 ) -> None:
     _require(
-        command in ("export", "train"),
+        command in ("export", "train", "command-train"),
         "Only the approved export/train native components may execute",
     )
+    direct = command == "command-train"
+    _require(direct == ("job_execution" in config), "Wrong native command execution variant")
     _require(
-        (parent_path is not None and backbone_path is not None)
-        if command == "train"
-        else parent_path is None and backbone_path is None and resume_checkpoint is None,
+        all(
+            value is None
+            for value in (input_path, output_path, parent_path, backbone_path, resume_checkpoint)
+        )
+        if direct
+        else (
+            input_path is not None
+            and output_path is not None
+            and (
+                parent_path is not None and backbone_path is not None
+                if command == "train"
+                else parent_path is None and backbone_path is None and resume_checkpoint is None
+            )
+        ),
         "Wrong arguments for the selected native component",
     )
     _require(
@@ -327,17 +349,20 @@ def execute_component(
         sys.executable,
         "-B",
         "-m",
-        "learning.paused.components",
-        command,
-        "--input",
-        str(input_path.resolve()),
-        "--output",
-        str(output_path.resolve()),
-        "--runtime-config",
-        "run-config.json",
-        "--snapshot-sha256",
-        snapshot_sha256,
+        "learning.paused.command" if direct else "learning.paused.components",
     ]
+    if not direct:
+        args.extend(
+            (command, "--input", str(input_path.resolve()), "--output", str(output_path.resolve()))
+        )
+    args.extend(
+        [
+            "--runtime-config",
+            "run-config.json",
+            "--snapshot-sha256",
+            snapshot_sha256,
+        ]
+    )
     for name, value in (
         ("--parent", parent_path),
         ("--backbone", backbone_path),
@@ -364,11 +389,11 @@ def main() -> None:
     verify = actions.add_parser("verify-static")
     verify.add_argument("--static-sha256", required=True)
     run = actions.add_parser("run")
-    run.add_argument("command", choices=("export", "train"))
+    run.add_argument("command", choices=("export", "train", "command-train"))
     for name in ("static-sha256", "config-base64", "config-sha256", "snapshot-sha256"):
         run.add_argument(f"--{name}", required=True)
     for name in ("input", "output"):
-        run.add_argument(f"--{name}", type=Path, required=True)
+        run.add_argument(f"--{name}", type=Path)
     for name in ("parent", "backbone", "resume-checkpoint"):
         run.add_argument(f"--{name}", type=Path)
     args = parser.parse_args()

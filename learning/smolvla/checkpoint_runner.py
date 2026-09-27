@@ -76,9 +76,11 @@ def validate_policy(value: dict, *, parameters: dict) -> CheckpointLimits:
     )
     resume = value["resume"]
     if resume is not None:
+        command = resume.get("source_azure_job_type") == "command"
         keys(
             resume,
-            {"checkpoint_sha256", "source_azure_job_id", "source_azure_pipeline_job_id", "step"},
+            {"checkpoint_sha256", "source_azure_job_id", "step"}
+            | ({"source_azure_job_type"} if command else {"source_azure_pipeline_job_id"}),
             "explicit checkpoint resume",
         )
         sha256(resume["checkpoint_sha256"])
@@ -186,6 +188,9 @@ def make_binding(
 def validate_resume_checkpoint(
     root: Path, *, config: dict, expected_binding: dict, current_origin: dict
 ) -> dict:
+    from learning.smolvla.checkpoints import _origin
+
+    _origin(current_origin)
     policy = config["checkpointing"]
     limits = validate_policy(policy, parameters=config["parameters"])
     approved = policy["resume"]
@@ -218,13 +223,28 @@ def validate_resume_checkpoint(
     require(
         value["step"] == approved["step"]
         and value["origin"]["azure_job_id"] == approved["source_azure_job_id"]
-        and value["origin"]["azure_pipeline_job_id"] == approved["source_azure_pipeline_job_id"]
         and value["origin"]["azure_job_id"] != current_origin["azure_job_id"]
-        and value["origin"]["azure_pipeline_job_id"] != current_origin["azure_pipeline_job_id"]
         and value["origin"]["specification_sha256"] != current_origin["specification_sha256"]
         and value["origin"]["test_only"] == current_origin["test_only"],
         "Resume requires a distinct newly authorized job bound to the exact checkpoint origin",
     )
+    if current_origin.get("azure_job_type") == "command":
+        require(
+            value["origin"].get("azure_job_type")
+            == approved.get("source_azure_job_type")
+            == "command"
+            and "azure_pipeline_job_id" not in value["origin"]
+            and "source_azure_pipeline_job_id" not in approved,
+            "Command checkpoint continuation cannot synthesize a pipeline hierarchy",
+        )
+    else:
+        require(
+            "azure_job_type" not in value["origin"]
+            and "source_azure_job_type" not in approved
+            and value["origin"]["azure_pipeline_job_id"] == approved["source_azure_pipeline_job_id"]
+            and value["origin"]["azure_pipeline_job_id"] != current_origin["azure_pipeline_job_id"],
+            "Checkpoint pipeline lineage changed",
+        )
     require(
         value["origin"]["azure_job_id"].rsplit("/jobs/", 1)[0]
         == current_origin["azure_job_id"].rsplit("/jobs/", 1)[0],

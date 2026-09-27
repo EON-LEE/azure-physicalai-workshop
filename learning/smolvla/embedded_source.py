@@ -34,12 +34,20 @@ QUALIFIED_BASE_IMAGE = (
     "441f2a33a8bb0c534a10ad7d56c4f7be611dccde39e8ee0b99610b4a7a75e8f9"
 )
 SOURCE_FILES = ("learning/smolvla/embedded_source.py", BOOTSTRAP_RELATIVE)
+COMMAND_FILES = (
+    "learning/paused/command.py",
+    "learning/paused/blob_transfer.py",
+    "learning/paused/command_artifacts.py",
+    "learning/paused/command_model.py",
+)
 
 
-def static_code_files() -> tuple[str, ...]:
+def static_code_files(*, direct: bool = False) -> tuple[str, ...]:
     from learning.smolvla.azure import CHECKPOINT_CODE_FILES, PAUSED_CODE_FILES
 
-    return PAUSED_CODE_FILES + CHECKPOINT_CODE_FILES + SOURCE_FILES
+    return (
+        PAUSED_CODE_FILES + CHECKPOINT_CODE_FILES + SOURCE_FILES + (COMMAND_FILES if direct else ())
+    )
 
 
 def validate_delivery(config: dict) -> None:
@@ -59,8 +67,8 @@ def validate_delivery(config: dict) -> None:
     )
 
 
-def static_inventory(root: Path) -> dict[str, str]:
-    names = static_code_files()
+def static_inventory(root: Path, *, direct: bool = False) -> dict[str, str]:
+    names = static_code_files(direct=direct)
     require(len(names) == len(set(names)) <= MAX_FILES, "Invalid static source allowlist")
     files, total = {}, 0
     for name in names:
@@ -78,14 +86,15 @@ def static_inventory(root: Path) -> dict[str, str]:
 def verify_static_binding(config: dict, root: Path) -> None:
     validate_delivery(config)
     require(
-        digest(canonical(static_inventory(root))) == config["source_delivery"]["static_sha256"],
+        digest(canonical(static_inventory(root, direct="job_execution" in config)))
+        == config["source_delivery"]["static_sha256"],
         "Static image source differs from the reviewed plan source bytes",
     )
 
 
-def prepare_context(output: Path, *, source_root: Path | None = None) -> dict:
+def prepare_context(output: Path, *, source_root: Path | None = None, direct: bool = False) -> dict:
     root = source_root or Path(__file__).resolve().parents[2]
-    files = static_inventory(root)
+    files = static_inventory(root, direct=direct)
     static_sha = digest(canonical(files))
     require(
         not output.exists() and not output.is_symlink(),
@@ -108,6 +117,10 @@ def prepare_context(output: Path, *, source_root: Path | None = None) -> dict:
     )
     delivery = {"schema": DELIVERY_SCHEMA, "mode": "image_embedded", "static_sha256": static_sha}
     write_json(output / "source-delivery.json", delivery)
+    if direct:
+        from learning.paused.command import EXECUTION
+
+        write_json(output / "job-execution.json", EXECUTION)
     shutil.copyfile(safe_path(root, "learning/smolvla/Dockerfile.embedded"), output / "Dockerfile")
     receipt = {
         "schema": "physicalai.smolvla-static-source-package/v1",
@@ -115,6 +128,7 @@ def prepare_context(output: Path, *, source_root: Path | None = None) -> dict:
         "static_sha256": static_sha,
         "file_count": len(files),
         "runtime_config_embedded": False,
+        "direct_command": direct,
         "image_built": False,
         "cloud_calls": 0,
         "build_arguments": [
@@ -139,19 +153,23 @@ def prepare_context(output: Path, *, source_root: Path | None = None) -> dict:
 def embedded_command(config: dict, snapshot_sha256: str, *, stage: str) -> str:
     validate_delivery(config)
     sha256(snapshot_sha256)
-    require(stage in ("convert", "train"), "Unsupported embedded component")
+    require(stage in ("convert", "train", "command-train"), "Unsupported embedded component")
+    require(
+        (stage == "command-train") == ("job_execution" in config),
+        "Wrong embedded job execution mode",
+    )
     payload = canonical(config) + b"\n"
     encoded = base64.b64encode(payload).decode("ascii")
     command = (
         f"{NATIVE_PYTHON} -I -B {BOOTSTRAP_PATH} run "
-        + ("export" if stage == "convert" else "train")
+        + ("export" if stage == "convert" else stage)
         + f" --static-sha256 {config['source_delivery']['static_sha256']}"
         + f" --config-base64 {encoded} --config-sha256 {digest(payload)}"
         + f" --snapshot-sha256 {snapshot_sha256}"
     )
     if stage == "convert":
         command += " --input '${{inputs.raw}}' --output '${{outputs.dataset}}'"
-    else:
+    elif stage == "train":
         command += (
             " --input '${{inputs.dataset}}' --output '${{outputs.model}}'"
             " --parent '${{inputs.parent}}' --backbone '${{inputs.backbone}}'"
@@ -165,8 +183,9 @@ def embedded_command(config: dict, snapshot_sha256: str, *, stage: str) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--direct-command", action="store_true")
     args = parser.parse_args()
-    print(canonical(prepare_context(args.output)).decode())
+    print(canonical(prepare_context(args.output, direct=args.direct_command)).decode())
 
 
 if __name__ == "__main__":

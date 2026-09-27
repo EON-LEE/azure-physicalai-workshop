@@ -182,6 +182,7 @@ def _run_training(
     client,
     options: TrainOptions,
     model_validator=validate_model,
+    parent_validator=None,
     conversion_validator=validate_conversion,
     profile_type=ControlProfile,
     model_builder=model_contract,
@@ -207,7 +208,7 @@ def _run_training(
         converted["test_only"] is False and converted.get("control_profile") is not None,
         "Production SmolVLA requires actual scoped v2 demonstrations",
     )
-    parent = model_validator(
+    parent = (parent_validator or model_validator)(
         parent_root,
         expected_scope=scope,
         expected_model_sha256=parent_model_sha256,
@@ -256,9 +257,18 @@ def _run_training(
     import torch
 
     require(torch.cuda.is_available(), "Real SmolVLA optimization requires an Azure CUDA GPU")
+    if "job_execution" in config:
+        require(
+            torch.cuda.device_count() == 1,
+            "Standalone native training requires one physical CUDA GPU",
+        )
     from learning.gr00t.azure import running_job_binding
 
-    binding = running_job_binding(client, config)
+    binding = running_job_binding(
+        client,
+        config,
+        **({"snapshot_sha256": code_snapshot_sha256} if "job_execution" in config else {}),
+    )
     deadline.check()
     checkpoint_context, resumed = None, None
     if "checkpointing" in config:
@@ -278,14 +288,19 @@ def _run_training(
             conversion_sha256,
             native_runtime(environment_image=config["environment_image"]),
         )
-        origin = {
-            "azure_job_id": binding["azure_component_job_id"],
-            "azure_pipeline_job_id": binding["azure_job_id"],
-            "specification_sha256": binding["specification_sha256"],
-            "code_snapshot_sha256": code_snapshot_sha256,
-            "job_deadline_utc": config["job_deadline_utc"],
-            "test_only": False,
-        }
+        if "job_execution" in config:
+            from learning.paused.command import checkpoint_origin
+
+            origin = checkpoint_origin(binding, config=config, snapshot_sha256=code_snapshot_sha256)
+        else:
+            origin = {
+                "azure_job_id": binding["azure_component_job_id"],
+                "azure_pipeline_job_id": binding["azure_job_id"],
+                "specification_sha256": binding["specification_sha256"],
+                "code_snapshot_sha256": code_snapshot_sha256,
+                "job_deadline_utc": config["job_deadline_utc"],
+                "test_only": False,
+            }
         if resume_checkpoint is not None:
             resumed = validate_resume_checkpoint(
                 resume_checkpoint,
@@ -332,6 +347,8 @@ def _run_training(
     before = parameter_fingerprint(seed / "model.safetensors")
     deadline.check()
     gpu = {"cuda": True, "name": torch.cuda.get_device_name()}
+    if "job_execution" in config:
+        gpu["device_count"] = torch.cuda.device_count()
     write_json(
         output / "training-context.json",
         {
@@ -482,6 +499,15 @@ def _seal_checkpoint(
             "raw_schema": "physicalai.demonstrations/v3",
             "conversion_schema": converted["schema"],
         }
+    standalone = binding.get("azure_job_type") == "command"
+    job_lineage = (
+        {"azure_job_id": binding["azure_job_id"], "azure_job_type": "command"}
+        if standalone
+        else {
+            "azure_job_id": binding["azure_component_job_id"],
+            "azure_pipeline_job_id": binding["azure_job_id"],
+        }
+    )
     model = model_builder(
         checkpoint=checkpoint,
         scope=scope,
@@ -502,8 +528,7 @@ def _seal_checkpoint(
             "config_sha256": digest(canonical(asdict(options))),
             "code_snapshot_sha256": code_snapshot_sha256,
             "specification_sha256": binding["specification_sha256"],
-            "azure_job_id": binding["azure_component_job_id"],
-            "azure_pipeline_job_id": binding["azure_job_id"],
+            **job_lineage,
             "optimizer_steps": actual_updates,
             "checkpoint_step": step,
             "cumulative_optimizer_steps": previous_steps + actual_updates,
@@ -521,8 +546,22 @@ def _seal_checkpoint(
             else parent["training"]["azure_job_id"]
             if options.resume_mode == "weights_only"
             else None,
-            "resume_from_pipeline_job_id": (
-                resumed["origin"]["azure_pipeline_job_id"] if resumed else None
+            **(
+                {
+                    "resume_from_job_type": (
+                        "command"
+                        if resumed
+                        else parent["training"].get("azure_job_type")
+                        if parent["training"] and options.resume_mode == "weights_only"
+                        else None
+                    )
+                }
+                if standalone
+                else {
+                    "resume_from_pipeline_job_id": (
+                        resumed["origin"]["azure_pipeline_job_id"] if resumed else None
+                    )
+                }
             ),
             "ancestor_model_sha256s": [
                 *(parent["training"]["ancestor_model_sha256s"] if parent["training"] else []),
@@ -542,6 +581,7 @@ def _seal_checkpoint(
         output / "result.json",
         {
             **binding,
+            **({"schema": "physicalai.smolvla-command-training-result/v1"} if standalone else {}),
             **(mode_metadata or {}),
             "optimizer_steps": actual_updates,
             "candidate": destination.relative_to(output).as_posix(),

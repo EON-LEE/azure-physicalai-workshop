@@ -65,7 +65,7 @@ def code_files(config: dict) -> tuple[str, ...]:
     if "source_delivery" in config:
         from learning.smolvla.embedded_source import static_code_files
 
-        return static_code_files()
+        return static_code_files(direct="job_execution" in config)
     files = (
         PAUSED_CODE_FILES
         if is_paused(config)
@@ -80,6 +80,11 @@ def validate_config(config: dict) -> None:
         "Unsupported SmolVLA Azure configuration schema",
     )
     base = dict(config)
+    if "job_execution" in config:
+        from learning.paused.command import validate_execution
+
+        validate_execution(config)
+        base.pop("job_execution")
     if "source_delivery" in config:
         from learning.smolvla.embedded_source import validate_delivery
 
@@ -139,6 +144,11 @@ def validate_config(config: dict) -> None:
             == checkpointing["resume"]["checkpoint_sha256"],
             "Resume input does not bind the approved complete checkpoint manifest",
         )
+        require(
+            ("job_execution" in config)
+            == (checkpointing["resume"].get("source_azure_job_type") == "command"),
+            "Checkpoint continuation must preserve the explicit command/pipeline provenance",
+        )
     if config["kind"] == "train":
         require(
             config["parameters"]["gradient_accumulation_steps"] == 1,
@@ -155,6 +165,11 @@ def job_deadline(config: dict) -> JobDeadline:
 
 
 def build_job(config: dict, snapshot_sha256: str, job_name: str) -> dict:
+    if "job_execution" in config:
+        from learning.paused.command import build_command
+
+        validate_config(config)
+        return build_command(config, snapshot_sha256, job_name)
     job = shared.build_job(
         config,
         snapshot_sha256,

@@ -847,6 +847,169 @@ symlinks, real Python 3.11 stdlib/libpython and all native libraries must work i
 the final OS/driver image. Image assembly/import/ABI qualification and actual
 GPU inference are runtime-owner tasks, not implied by this offline package.
 
+### Explicit standalone AML command with private MI transfer
+
+Image delivery removes code-asset uploads, but **does not** remove AML's
+service-side custom input/output preparation. The subsequent real pipeline
+attempts failed before compute with EsCloud's `403 Key based authentication is
+not permitted`. Do not enable shared keys/public storage, broaden roles, retry an
+expired grant, or claim those failures ran an optimizer. A separately reviewed,
+default-off alternative is a **genuine standalone Azure ML command**, not Batch,
+using the same native paused conversion, CUDA trainer and checkpoint publisher.
+
+Its complete v2 config adds the following closed object, retains
+`source_delivery.mode="image_embedded"` and requires an explicit `checkpointing`
+policy:
+
+```json
+{
+  "job_execution": {
+    "schema": "physicalai.smolvla-command-execution/v1",
+    "kind": "command",
+    "data_transport": "private_blob_mi"
+  }
+}
+```
+
+This variant is limited to paused training, `Standard_NC24ads_A100_v4`,
+`LowPriority`, one instance and one actual CUDA device. `run_id` must exactly equal
+the newly authorized AML job name. Existing registered `demonstrations`,
+`parent_model` and `backbone` names/versions/URIs/manifest SHAs remain in the
+reviewed config as provenance; **the AML job itself has no `code`, `inputs`,
+custom `outputs`, pipeline children or default datastore setting**. No new
+asset registrations are needed for the already registered TRAIN20/prepared
+inputs. The SDK may expose its system-only `default` artifact output: the guard
+accepts only the observed exact
+`azureml://datastores/workspaceartifactstore/ExperimentRun/dcid.<actual-job-name>`,
+`uri_folder`, `rw_mount` presentation, never an arbitrary mount named `default`.
+
+Export a fresh static payload, then have the parent/operator build and qualify
+it under separate authority. These are commands for that operator, not an
+automatic cloud build:
+
+```bash
+python -m learning.smolvla.embedded_source --direct-command --output "$NEW_CONTEXT"
+docker build --file "$NEW_CONTEXT/Dockerfile" \
+  --build-arg STATIC_SOURCE_SHA256="$EXPORTED_STATIC_SHA256" \
+  --tag "$NEW_PRIVATE_CODE_IMAGE_TAG" "$NEW_CONTEXT"
+```
+
+The source-only Dockerfile retains the exact qualified `441f2a33...` base above,
+Python 3.11/ENTRYPOINT and all dependencies. The direct package contains 74 static
+files and additionally emits `job-execution.json`. It never includes runtime
+config, credentials, dataset bytes or model weights. Export from the **fully
+integrated approved source tree**: another branch's static hash is not a
+substitute for the actual bytes being built. After immutable image digest and
+static/native-import readback are known, place that digest in `environment_image`,
+the exported `source-delivery.json` and `job-execution.json` objects in a complete
+**new** approved config, and create its offline plan:
+
+```bash
+python -m learning.smolvla.azure --config "$APPROVED_NEW_COMMAND_CONFIG" \
+  --plan-dir "$NEW_PLAN" --job-name "$NEW_RUN_ID"
+```
+
+The original expired pipeline grants remain unchanged. Submission still goes
+through the existing exact-plan/durable-claim `PolicyJobs.submit` adapter and
+independent watchdog enrollment; do not bypass it with `az ml job create`.
+The command uses the bounded stdlib image bootstrap's fixed `command-train`
+action. It materializes the exact static-plus-canonical-config snapshot from an
+arbitrary AML cwd, then runs `learning.paused.command`. `runtime_config_sha256`
+in job tags hashes canonical config JSON **without** LF; the embedded config-file
+SHA and full source snapshot bind the actual canonical file **with** its final LF.
+
+Before data access, the native entry verifies source/config, original UTC expiry,
+actual running root ID/type, MI client ID, compute/image, offline flags, single-node
+timeout, command text and all source/scope/profile tags. It rereads the existing
+datastore mapping and registered input versions without creating code/data assets.
+Only the approved account/container and exact owner-scoped input prefixes are
+used by `BlobServiceClient(ManagedIdentityCredential(client_id=...))`.
+There is no SharedKey/SAS/public/Hugging Face path or default credential fallback.
+
+Transfer allows at most 25,000 files per artifact, 4 GiB per file, and 16 GiB total
+input bytes across artifacts; output transfer has a separate 16 GiB total limit.
+There are four bounded download workers. These limits admit the actual TRAIN20
+17,195-file, 1,303,192,572-byte dataset plus the approximately 2.94 GB prepared
+model/backbone, not a 1,024-file model-only cap. Signed raw frame streams determine
+the exact PNG inventory before image transfer; unknown/missing/unsafe paths,
+wrong hashes, missing ETags and changed counts fail. Every object uses bounded
+ETag-conditional reads and SHA verification. Raw validation still requires all
+twenty TRAIN seeds 10001..10020, actual live provenance, complete frames and the
+unchanged physical profile/task/criteria. Conversion retains every original
+episode/frame identity; fixtures and held-out/G0 seeds cannot train.
+
+Conversion and native training use task-local directories. Verified converted
+data is published at `<output_prefix>/<run_id>/dataset/dataset/`, model candidates
+and result at `<output_prefix>/<run_id>/model/`, and the existing full-state
+checkpoint publisher at `<output_prefix>/<run_id>/checkpoints/step-N/`.
+Publication is create-only, exact-readback and manifest-last; a native mutable
+`training/checkpoints/last` symlink is never published as a candidate.
+Failure logs/receipt are retained under `transfer/failure/` while authority remains,
+and native stderr/system logs remain evidence if publication or expiry prevents
+that write. No partial output becomes a completed candidate. The outer Linux
+process-group supervisor bounds **transfer, conversion, optimization and
+publication together** by the earlier of original UTC expiry and the configured
+monotonic execution timeout. Checkpoint frequency/full-state validity, new-update
+counts, cancellation and no automatic retries remain unchanged.
+
+| Artifact | New explicit schema/provenance |
+|---|---|
+| Candidate `model.json` | `physicalai.smolvla-checkpoint/v3`; top-level `training_execution="azureml_command"`; `training.azure_job_id` and `azure_job_type="command"` only |
+| Final `result.json` | `physicalai.smolvla-command-training-result/v1`; one actual root job ID/type, original mode/specification, optimizer updates, candidate path and model manifest SHA |
+| Complete training checkpoint | `physicalai.smolvla-training-checkpoint/v2`; origin contains one `azure_job_id`, `azure_job_type="command"`, specification/source/deadline/test provenance |
+| Explicit checkpoint resume | Existing policy with `checkpoint_sha256`, `source_azure_job_id`, `source_azure_job_type="command"`, `step`; no source pipeline ID |
+
+No same-job pseudo-parent or component is invented. Old pipeline model v2,
+checkpoint v1 and legacy input/mount paths remain separate and valid. New v3
+metadata additionally records actual `training.gpu.device_count=1`. Full-state
+resume preserves the exact source checkpoint/runtime/data/config and requires a
+different newly authorized command; `optimizer_steps` counts only new updates.
+
+**The legacy servo fingerprint is not new model admission authority.** All 39
+servo-hashed files, including the 15 legacy learning files and both legacy model
+validators, protocol table and numeric limits remain byte-exact. Those old
+validators/model server still reject v3. New
+`learning.paused.command_artifacts.validate_model` is v3-only, validates the
+original complete metadata without a fabricated v2 view, and
+`validate_models(plan, models, scope=...)` retains the frozen paired profile,
+task/ancestry and TRAIN/held-out leakage checks. Direct training alone can select
+the original fully validated v2 prepared parent or a real v3 trained parent.
+
+The separately attested `learning.paused.command_model` CLI accepts the same
+arguments and uses the unchanged paused IPC and prediction/control methods.
+Its ordinary constructor performs v3 admission and frozen criteria checks before
+reusing the original native CUDA `_load` implementation with **original v3
+metadata**. There is no constructor bypass or monkeypatch. The runtime owner must
+select it through the new closed `azureml_command_v3` runtime/admission descriptor,
+complete native source inventory and new image/grant binding. Keeping profile
+`851df...` unchanged preserves the original control bundle; it does not silently
+authorize this new model-admission path or relabel the immutable TRAIN data.
+
+Consumers reuse
+`learning.paused.command.validate_command_job(client, config, actual_job,
+snapshot_sha256=..., expected_status="Completed")` after loading the original
+approved config and independently verifying its snapshot. This read-only helper
+checks actual SDK root metadata/image, not just tags. It permits historical
+terminal verification after expiry without admitting new work. Native runtime
+admission separately requires `Running`, the real `AZUREML_RUN_ID` and an unexpired
+original deadline. API/worker/runtime consumers must choose the new validator only
+through this explicit closed provenance boundary, not by trusting a v3 header.
+
+Run the separate **offline** real-SDK/native-Python checks:
+
+```bash
+python -m learning.checks.command_job_check --report "$NEW_COMMAND_CHECK_REPORT"
+python -m learning.checks.embedded_source_check --report "$LEGACY_IMAGE_CHECK_REPORT"
+```
+
+They verify SDK 1.35 root wire/GET normalization, zero code/data-asset resolution,
+no custom mounts, full source materialization/native imports from unrelated cwd,
+cold expiry rejection, and legacy embedded-zero versus local-two code resolutions.
+They do not build an image, contact Azure, train a model or prove GPU/model quality.
+Final image/39-file/runtime-descriptor qualification, fresh live AML optimization,
+checkpoint persistence, validation and all forty held-out trials remain separate
+parent-authorized checks.
+
 ### Paused evaluation evidence and release boundaries
 
 `learning.paused.evaluation` uses paired/bootstrap **plan v2, results v3 and
