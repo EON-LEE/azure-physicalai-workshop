@@ -44,12 +44,17 @@ PROOF_LIMITS = {
     "raw-manifest.json": 4 * 1024**2,
 }
 CONTAINER_OPTIONS = (
-    "--entrypoint /isaac-sim/python.sh --runtime=nvidia "
-    "--cap-drop ALL --security-opt no-new-privileges "
+    "--entrypoint /isaac-sim/python.sh --cap-drop ALL --security-opt no-new-privileges "
     "--shm-size 2g --tmpfs /data:rw,nosuid,nodev,mode=1777,size=2147483648 "
     "--tmpfs /isaac-sim/.cache:rw,nosuid,nodev,mode=1777,size=2147483648 "
     "--tmpfs /isaac-sim/.nv/ComputeCache:rw,nosuid,nodev,mode=1777,size=536870912 "
     "--tmpfs /isaac-sim/.nvidia-omniverse/logs:rw,nosuid,nodev,mode=1777,size=134217728"
+)
+GPU_RUNTIME_PREPARATION = (
+    '/usr/bin/timeout --signal=TERM --kill-after=5s 30s /bin/bash -c "set -euo pipefail; '
+    "nvidia-ctk runtime configure --runtime=docker --set-as-default; "
+    "systemctl reload docker; "
+    "docker info --format '{{.DefaultRuntime}}' | grep -Fx nvidia\""
 )
 PREFLIGHT_COMMAND = (
     "--signal=TERM --kill-after=5s 60s /isaac-sim/python.sh "
@@ -312,6 +317,13 @@ def build_warmup(platform: BatchPlatform, warmup_id: UUID):
         ),
         all_tasks_complete_mode=models.BatchAllTasksCompleteMode.NO_ACTION,
         metadata=[models.BatchMetadataItem(name="physicalai_platform_sha256", value=binding)],
+        job_preparation_task=models.BatchJobPreparationTask(
+            command_line=GPU_RUNTIME_PREPARATION,
+            wait_for_success=True,
+            user_identity=models.UserIdentity(
+                auto_user=models.AutoUserSpecification(scope="pool", elevation_level="admin")
+            ),
+        ),
     )
     task = models.BatchTaskCreateOptions(
         id="preflight",

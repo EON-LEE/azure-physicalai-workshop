@@ -126,10 +126,14 @@ The node entry points are:
 The native image does **not** need the optional Batch SDK. It uses its existing
 Blob/MI dependencies. Batch overrides the normal bridge ENTRYPOINT; it does not
 launch `bootstrap_tls`, RPC, SSH or a web server. After the host driver bootstrap,
-the container explicitly selects `--runtime=nvidia` and
+the warm-up's bounded 30-second host job-preparation task selects NVIDIA as the
+Docker default runtime and verifies the readback. Container tasks explicitly set
 `NVIDIA_VISIBLE_DEVICES=all`. The first actual task lacked `nvidia-smi` despite
 the host's successful graphics proof, so implicit Batch GPU discovery was not
-sufficient after installing the driver. No `--gpus` task option is added.
+sufficient after installing the driver. The Batch service also rejects task-level
+`--runtime` options, so no `--runtime` or `--gpus` task option is added. The
+preparation task can change only the reviewed Docker runtime; physics still
+runs as a non-admin user.
 The native container needs
 the image's existing `python.sh`, `/usr/bin/timeout`, nvidia-smi and Vulkan loader.
 Writable bounded tmpfs/cache mounts accommodate the assigned non-admin UID.

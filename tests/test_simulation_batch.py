@@ -81,7 +81,7 @@ def test_sdk_payload_is_one_digest_pinned_job_task_with_no_retries(spec, batch_s
     assert task["containerSettings"]["imageName"] == spec.platform.container_image
     options = task["containerSettings"]["containerRunOptions"]
     assert "--entrypoint /isaac-sim/python.sh" in options
-    assert "--runtime=nvidia" in options
+    assert "--runtime" not in options
     assert {"name": "NVIDIA_VISIBLE_DEVICES", "value": "all"} in task["environmentSettings"]
     assert "--gpus" not in options and "--privileged" not in options
     assert "simulation.batch_task" in task["commandLine"]
@@ -100,7 +100,13 @@ def test_warmup_uses_single_task_pool_bounds_without_account_gated_job_propertie
     assert "maxParallelTasks" not in job.as_dict()
     assert "allowTaskPreemption" not in job.as_dict()
     assert task.required_slots == 1
-    assert "--runtime=nvidia" in task.container_settings.container_run_options
+    assert "--runtime" not in task.container_settings.container_run_options
+    assert "nvidia-ctk runtime configure --runtime=docker --set-as-default" in (
+        job.job_preparation_task.command_line
+    )
+    assert "--kill-after=5s 30s" in job.job_preparation_task.command_line
+    assert job.job_preparation_task.wait_for_success is True
+    assert job.job_preparation_task.user_identity.auto_user.elevation_level == "admin"
     assert any(
         item.name == "NVIDIA_VISIBLE_DEVICES" and item.value == "all"
         for item in task.environment_settings
