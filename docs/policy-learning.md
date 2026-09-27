@@ -663,6 +663,14 @@ episode/frame/image bytes. Stage the assembled cohort in the owner-scoped
 **artifacts** container before registration with `learningartifacts`; a URI naming
 that datastore is not an alias for the separate demonstrations container.
 
+Managed training preflight also reads the Blob lifecycle policy. Blob Data
+Contributor does not grant the management-plane
+`Microsoft.Storage/storageAccounts/managementPolicies/read` action, as confirmed
+by an actual worker request. The default-off
+`infra/learning-worker-policy-reader.bicep` grants Reader only on the existing
+account's `managementPolicies/default` resource. It changes neither policy
+contents nor data access and adds no policy-write or subscription-wide permission.
+
 The actual Azure ML service adds one trailing `/` to registered `uri_folder`
 paths. Preflight accepts only that exact folder-only representation difference;
 the approved configuration URI remains unchanged. File inputs, nested paths,

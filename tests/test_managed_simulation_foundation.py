@@ -150,3 +150,19 @@ def test_managed_warmup_controller_is_bounded_and_cannot_dispatch_physics(tmp_pa
     assert "@sha256:" in container["image"]
     assert container["command"][:2] == ["/srv/apps/learning_worker/.venv/bin/python", "-c"]
     assert not resources(template, "Microsoft.Authorization/roleAssignments")
+
+
+def test_training_worker_can_only_read_the_existing_retention_policy(tmp_path):
+    template = compile_template(
+        ROOT / "infra" / "learning-worker-policy-reader.bicep", tmp_path / "policy-reader.json"
+    )
+    assert template["parameters"]["enabled"]["defaultValue"] is False
+    grants = resources(template, "Microsoft.Authorization/roleAssignments")
+    assert len(grants) == 1
+    grant = grants[0]
+    assert grant["condition"] == "[parameters('enabled')]"
+    assert "Microsoft.Storage/storageAccounts/managementPolicies" in grant["scope"]
+    assert "'default'" in grant["scope"]
+    assert "acdd72a7-3385-48ef-bd42-f606fba81ae7" in grant["properties"]["roleDefinitionId"]
+    assert grant["properties"]["principalType"] == "ServicePrincipal"
+    assert not resources(template, "Microsoft.Storage/storageAccounts/managementPolicies")

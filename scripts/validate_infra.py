@@ -29,6 +29,7 @@ def validate() -> None:
             "reference-presentation",
             "learning",
             "learning-worker",
+            "learning-worker-policy-reader",
             "learning-reconciler",
             "gpu-capacity-probe",
             "simulation-batch-foundation",
