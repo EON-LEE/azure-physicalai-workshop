@@ -671,6 +671,12 @@ by an actual worker request. The default-off
 account's `managementPolicies/default` resource. It changes neither policy
 contents nor data access and adds no policy-write or subscription-wide permission.
 
+Workspace networking is checked against SDK enum **values** as well as plain
+strings. SDK 1.35 returns `PublicNetworkAccessType.DISABLED`, whose value is
+`Disabled`; comparing its enum display string incorrectly rejected an actually
+private workspace. This compatibility correction still rejects public access,
+internet-wide outbound mode and missing values; it changes no Azure settings.
+
 The actual Azure ML service adds one trailing `/` to registered `uri_folder`
 paths. Preflight accepts only that exact folder-only representation difference;
 the approved configuration URI remains unchanged. File inputs, nested paths,

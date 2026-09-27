@@ -541,7 +541,10 @@ class Gr00tJobs:
             workspace.managed_network is not None
             and workspace.managed_network.isolation_mode.replace("_", "").lower()
             == "allowonlyapprovedoutbound"
-            and str(workspace.public_network_access).lower() == "disabled",
+            and str(
+                getattr(workspace.public_network_access, "value", workspace.public_network_access)
+            ).lower()
+            == "disabled",
             "GR00T requires private approved-outbound-only AML networking",
         )
         require(
