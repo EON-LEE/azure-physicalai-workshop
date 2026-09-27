@@ -60,7 +60,11 @@ def test_managed_simulator_pool_is_zero_default_single_low_priority_and_private(
         "sku": "[parameters('hostImageSku')]",
         "version": "[variables('hostImage').version]",
     }
-    extension = vm["extensions"][0]
+    assert vm["extensions"] == (
+        "[if(equals(parameters('driverInstallation'), 'extension'), "
+        "variables('gridExtensions'), createArray())]"
+    )
+    extension = template["variables"]["gridExtensions"][0]
     assert extension["publisher"] == "Microsoft.HpcCompute"
     assert extension["type"] == "NvidiaGpuDriverLinux"
     assert extension["typeHandlerVersion"] == "1.14"
@@ -71,7 +75,8 @@ def test_managed_simulator_pool_is_zero_default_single_low_priority_and_private(
         "installCUDA": False,
         "updateOS": False,
     }
-    start = properties["startTask"]
+    assert "bootstrapStartTask" in properties["startTask"]
+    start = template["variables"]["extensionStartTask"]
     assert start["waitForSuccess"] is True and start["maxTaskRetryCount"] == 0
     assert "simulation.batch_task preflight" in start["commandLine"]
     assert "--kill-after=5s 60s" in start["commandLine"]
@@ -88,3 +93,11 @@ def test_managed_simulator_pool_is_zero_default_single_low_priority_and_private(
     assert "dateTimeAdd" in template["variables"]["allocationDeadlineUtc"]
     assert "roleAssignments" not in json.dumps(template)
     assert "ssh" not in json.dumps(template).lower()
+    bootstrap = template["variables"]["bootstrapStartTask"]
+    assert bootstrap["commandLine"] == "[parameters('driverBootstrapCommand')]"
+    assert bootstrap["userIdentity"]["autoUser"] == {
+        "scope": "Pool",
+        "elevationLevel": "Admin",
+    }
+    assert "containerSettings" not in bootstrap
+    assert bootstrap["waitForSuccess"] is True and bootstrap["maxTaskRetryCount"] == 0

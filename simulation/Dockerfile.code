@@ -1,6 +1,7 @@
 ARG SIMULATOR_BASE_IMAGE
 FROM ${SIMULATOR_BASE_IMAGE}
 USER root
+RUN chmod a+rx /isaac-sim
 WORKDIR /app
 COPY apps/__init__.py apps/__init__.py
 COPY apps/api/ apps/api/

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import time
 from datetime import UTC, datetime, timedelta
@@ -12,7 +13,7 @@ from typing import Literal
 from urllib.parse import urlencode, urlsplit
 from uuid import UUID
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, field_validator, model_serializer, model_validator
 
 from apps.api.models import Model, Revision
 from learning.common import canonical, digest, parse_json, read_json, relative_path, require, sha256
@@ -27,6 +28,8 @@ HOST_IMAGES = {
     "2404": ("24.04.2026092501", "batch.node.ubuntu 24.04"),
 }
 TASK_WALL_SECONDS = 900
+WARMUP_WALL_SECONDS = 1800
+GRID_INSTALLER_SHA256 = "1a529dd4d173ba3b36f3c284bb54fce5dd39c9e757856980b8ae0b7798e7764b"
 PROOF_LIMITS = {
     "inputs/spec.json": 1024**2,
     **{
@@ -82,8 +85,9 @@ class BatchPlatform(Model):
     image_offer: Literal["ubuntu-hpc"]
     image_sku: Literal["2204", "2404"]
     image_version: Literal["22.04.2026082801", "24.04.2026092501"]
-    driver_handler_version: Literal["1.14"]
+    driver_handler_version: Literal["1.14"] | None
     driver_version: Literal["570.237"] = GRID_DRIVER
+    driver_installation: Literal["extension", "bootstrap"] = "extension"
     gpu_name: Literal["NVIDIA A10-24Q"] = GPU_NAME
     container_image: str = Field(
         pattern=r"^[a-z0-9]+\.azurecr\.io/[a-z0-9_./-]+@sha256:[a-f0-9]{64}$"
@@ -93,11 +97,22 @@ class BatchPlatform(Model):
     def exact_host_image(self):
         if self.image_version != HOST_IMAGES[self.image_sku][0]:
             raise ValueError("Host SKU and exact reviewed image version do not match.")
+        if self.driver_installation == "bootstrap" and self.image_sku != "2204":
+            raise ValueError("Managed driver bootstrap requires the reviewed Ubuntu 22.04 host.")
+        if (self.driver_installation == "extension") != (self.driver_handler_version == "1.14"):
+            raise ValueError("Only extension installation may declare a handler version.")
         return self
 
     @property
     def node_agent_sku(self) -> str:
         return HOST_IMAGES[self.image_sku][1]
+
+    @model_serializer(mode="wrap")
+    def preserve_extension_wire(self, handler):
+        value = handler(self)
+        if self.driver_installation == "extension":
+            value.pop("driver_installation", None)
+        return value
 
 
 class BatchSimulationSpec(Model):
@@ -291,7 +306,7 @@ def build_warmup(platform: BatchPlatform, warmup_id: UUID):
         display_name="GPU readiness only; no physics episode",
         pool_info=models.BatchPoolInfo(pool_id=platform.pool_id),
         constraints=models.BatchJobConstraints(
-            max_wall_clock_time=timedelta(seconds=TASK_WALL_SECONDS), max_task_retry_count=0
+            max_wall_clock_time=timedelta(seconds=WARMUP_WALL_SECONDS), max_task_retry_count=0
         ),
         all_tasks_complete_mode=models.BatchAllTasksCompleteMode.NO_ACTION,
         metadata=[models.BatchMetadataItem(name="physicalai_platform_sha256", value=binding)],
@@ -405,6 +420,26 @@ def allocation_formula(deadline: str) -> str:
         "max(0, max($PendingTasks.GetSample(TimeInterval_Minute * 5)));\n"
         f'$TargetLowPriorityNodes = time() < time("{deadline}") ? min(1, $tasks) : 0;\n'
         "$NodeDeallocationOption = terminate;"
+    )
+
+
+def bootstrap_source() -> bytes:
+    return Path(__file__).with_name("batch_bootstrap.sh").read_text(encoding="utf-8").encode()
+
+
+def driver_bootstrap_command(platform: BatchPlatform) -> str:
+    source = bootstrap_source()
+    checksum = digest(source)
+    payload = base64.b64encode(source).decode()
+    code = (
+        "import base64,hashlib,os,subprocess;"
+        f"data=base64.b64decode('{payload}');"
+        f"assert hashlib.sha256(data).hexdigest()=='{checksum}';"
+        f"os.environ['PHYSICALAI_BOOTSTRAP_SHA256']='{checksum}';"
+        f"subprocess.run(['/bin/bash','-s','--','{platform.container_image}'],input=data,check=True)"
+    )
+    return (
+        '/usr/bin/timeout --signal=TERM --kill-after=10s 900s /usr/bin/python3 -u -c "' + code + '"'
     )
 
 
@@ -577,20 +612,32 @@ def validate_pool(pool, platform: BatchPlatform) -> None:
         "Managed simulator nodes must not have public IPs.",
     )
     start = pool.start_task
+    bootstrap = platform.driver_installation == "bootstrap"
     require(
-        start is not None
-        and start.command_line == PREFLIGHT_COMMAND
-        and start.wait_for_success is True
-        and start.max_task_retry_count == 0
-        and start.container_settings.image_name == platform.container_image
-        and start.container_settings.container_run_options == PREFLIGHT_CONTAINER_OPTIONS
-        and start.user_identity.auto_user.scope == "task"
-        and start.user_identity.auto_user.elevation_level == "nonadmin",
-        "The pool lacks the reviewed non-admin bounded preflight StartTask.",
+        start is not None and start.wait_for_success is True and start.max_task_retry_count == 0,
+        "The pool lacks the reviewed bounded preflight StartTask.",
     )
     extensions = pool.virtual_machine_configuration.extensions or []
-    require(len(extensions) == 1, "The pool must use only the reviewed NVIDIA extension.")
-    validate_driver_extension(extensions[0], platform)
+    if bootstrap:
+        require(
+            not extensions
+            and start.command_line == driver_bootstrap_command(platform)
+            and start.container_settings is None
+            and start.user_identity.auto_user.scope == "pool"
+            and start.user_identity.auto_user.elevation_level == "admin",
+            "The driver bootstrap differs from its reviewed script or has competing extensions.",
+        )
+    else:
+        require(
+            start.command_line == PREFLIGHT_COMMAND
+            and start.container_settings.image_name == platform.container_image
+            and start.container_settings.container_run_options == PREFLIGHT_CONTAINER_OPTIONS
+            and start.user_identity.auto_user.scope == "task"
+            and start.user_identity.auto_user.elevation_level == "nonadmin",
+            "The pool lacks the reviewed non-admin bounded preflight StartTask.",
+        )
+        require(len(extensions) == 1, "The pool must use only the reviewed NVIDIA extension.")
+        validate_driver_extension(extensions[0], platform)
 
 
 def validate_driver_extension(
@@ -641,13 +688,14 @@ def inspect_platform(client, platform: BatchPlatform) -> dict:
         and node.start_task_info.exit_code == 0,
         "The managed GPU node has not completed its bounded hardware preflight.",
     )
-    extension = client.get_node_extension(platform.pool_id, node.id, "nvidia-grid")
-    require(
-        str(extension.provisioning_state).lower() == "succeeded",
-        "The actual GRID extension has not succeeded at the approved handler version.",
-    )
-    # The node endpoint redacts settings; validate_pool already checked the full configuration.
-    validate_driver_extension(extension.vm_extension, platform, allow_redacted_settings=True)
+    if platform.driver_installation == "extension":
+        extension = client.get_node_extension(platform.pool_id, node.id, "nvidia-grid")
+        require(
+            str(extension.provisioning_state).lower() == "succeeded",
+            "The actual GRID extension has not succeeded at the approved handler version.",
+        )
+        # The node endpoint redacts settings; validate_pool already checked the full configuration.
+        validate_driver_extension(extension.vm_extension, platform, allow_redacted_settings=True)
     payload = bytearray()
     for chunk in client.download_node_file(
         platform.pool_id, node.id, "startup/wd/preflight.json", ocp_range="bytes=0-65536"
@@ -659,6 +707,12 @@ def inspect_platform(client, platform: BatchPlatform) -> dict:
 
     proof = parse_json(bytes(payload))
     validate_gpu_evidence(proof)
+    if platform.driver_installation == "bootstrap":
+        require(
+            proof.get("bootstrap_sha256") == digest(bootstrap_source())
+            and proof.get("driver_installer_sha256") == GRID_INSTALLER_SHA256,
+            "The GPU proof does not bind the reviewed driver bootstrap and installer.",
+        )
     observed = datetime.fromisoformat(proof["observed_at_utc"].replace("Z", "+00:00"))
     require(
         observed.tzinfo is not None

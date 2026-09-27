@@ -54,9 +54,13 @@ describe the existing reference deployment, not the new managed execution path.
 
 The managed foundation and worker/task images have subsequently been deployed.
 The first real one-node Batch warm-up was accepted, but East US 2 allocation
-failed for insufficient GPU capacity and returned to zero at its original
-cutoff. The checked West US 2 account has zero LowPriority-core quota. No managed
-Isaac execution or trained-policy success is claimed. Separate managed CPU
+failed and returned to zero at its original cutoff. The exact regional Batch
+SKU was subsequently found not to support LowPriority there. The West US 2
+account's quota was increased to 36 through the official account-only quota
+process, and an actual managed A10 was allocated. That host failed in Batch's
+reserved bootstrap before NVIDIA/Isaac startup; the matched Ubuntu 22.04
+alternative is being qualified separately. No managed Isaac execution or
+trained-policy success is claimed from allocation alone. Separate managed CPU
 jobs did verify native complete-checkpoint publication to private Blob and
 fresh-compute restoration, including rejection of a torn newer checkpoint.
 Those durability records are explicitly tiny CPU fixtures, not robot training.

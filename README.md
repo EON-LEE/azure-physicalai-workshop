@@ -128,11 +128,17 @@ service private endpoints, NAT-backed node subnets, dedicated node identity and
 account-scoped submitter/reader permissions have been deployed. The private
 worker and Isaac task images have verified immutable source bytes. A real
 single-node LowPriority warm-up was submitted in East US 2, but Batch returned
-`AllocationFailed` because the requested GPU size lacked regional capacity.
-No GPU node ran; the unchanged allocation cutoff returned the target to zero.
-The checked West US 2 alternative has zero Batch LowPriority-core quota, so no
-GPU pool or task was started there. The split remains Batch for Isaac
-rendering/physics and Azure ML for training, not a manual VM restart workflow.
+`AllocationFailed`. A subsequent Batch catalog read found that this exact
+full-A10 SKU is not LowPriority-capable in East US 2; account quota alone was
+not a valid admission check. The controller now checks regional support and
+account quota before submission. An official account-only quota request raised
+West US 2 from zero to 36 Spot cores, and one managed A10 was actually allocated
+there without subscription-wide role grants. Its Ubuntu 24.04 Batch bootstrap
+then failed before NVIDIA or Isaac startup due to temporary-disk mount recovery.
+The explicit Ubuntu 22.04 host alternative remains under live qualification.
+These allocation and bootstrap results are not physical-task success. The split
+remains Batch for Isaac rendering/physics and Azure ML for training, not a manual
+VM restart workflow.
 
 **Intermediate weights:** the native training path can publish periodic
 checkpoints directly to private Blob, verify every file's bytes and ETag, then

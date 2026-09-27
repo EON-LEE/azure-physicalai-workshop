@@ -179,7 +179,7 @@ def test_service_duration_format_does_not_change_existing_job_authority(spec, ba
     class ServiceDurationClient(Client):
         def get_job(self, job_id):
             result = super().get_job(job_id).as_dict()
-            result["constraints"]["maxWallClockTime"] = "PT15M"
+            result["constraints"]["maxWallClockTime"] = "PT30M"
             return models.BatchJob(result)
 
         def get_task(self, job_id, task_id):
@@ -421,6 +421,107 @@ def test_node_settings_redaction_requires_full_pool_settings_and_actual_gpu_proo
     platform_client.pool.virtual_machine_configuration.extensions[0]["settings"] = {"length": 64}
     with pytest.raises(ValueError, match="GRID extension"):
         inspect_platform(platform_client.client, spec.platform)
+
+
+def test_driver_bootstrap_preserves_physics_user_and_requires_exact_script_and_gpu_proof(
+    spec, platform_client
+):
+    from azure.batch import models
+
+    from learning.common import digest
+    from simulation.batch import (
+        GRID_INSTALLER_SHA256,
+        BatchPlatform,
+        bootstrap_source,
+        driver_bootstrap_command,
+        inspect_platform,
+    )
+
+    assert "driver_installation" not in spec.platform.model_dump(mode="json")
+    platform = BatchPlatform.model_validate(
+        {
+            **spec.platform.model_dump(mode="json"),
+            "image_sku": "2204",
+            "image_version": "22.04.2026082801",
+            "driver_installation": "bootstrap",
+            "driver_handler_version": None,
+        }
+    )
+    vm = platform_client.pool.virtual_machine_configuration
+    vm.image_reference.sku, vm.image_reference.version = platform.image_sku, platform.image_version
+    vm.node_agent_sku_id = platform.node_agent_sku
+    vm.extensions = []
+    command = driver_bootstrap_command(platform)
+    assert "--kill-after=10s 900s" in command
+    assert digest(bootstrap_source()) in command
+    platform_client.pool.start_task = models.BatchStartTask(
+        {
+            "commandLine": command,
+            "waitForSuccess": True,
+            "maxTaskRetryCount": 0,
+            "userIdentity": {"autoUser": {"scope": "pool", "elevationLevel": "admin"}},
+        }
+    )
+    download = platform_client.client.download_node_file
+
+    def with_bootstrap(*args, **kwargs):
+        proof = json.loads(b"".join(download(*args, **kwargs)))
+        proof.update(
+            bootstrap_sha256=digest(bootstrap_source()),
+            driver_installer_sha256=GRID_INSTALLER_SHA256,
+        )
+        yield json.dumps(proof).encode()
+
+    with pytest.raises(ValueError, match="bootstrap and installer"):
+        inspect_platform(platform_client.client, platform)
+    platform_client.client.download_node_file = with_bootstrap
+    assert inspect_platform(platform_client.client, platform)["ready"] is True
+    platform_client.pool.start_task.command_line = command + " extra"
+    with pytest.raises(ValueError, match="bootstrap differs"):
+        inspect_platform(platform_client.client, platform)
+    _, task = build_job_task(spec, spec_url(spec), spec.sha256)
+    assert task.user_identity.auto_user.elevation_level == "nonadmin"
+
+
+def test_driver_cleanup_preserves_container_runtime_packages():
+    import re
+    import subprocess
+    from pathlib import Path
+
+    source = Path("simulation/batch_bootstrap.sh").read_text()
+    subprocess.run(["bash", "-n"], input=source, text=True, check=True)
+    expression = re.search(r"awk '([^']+)'", source, re.DOTALL).group(1)
+    packages = [
+        "nvidia-driver-570",
+        "nvidia-kernel-common-570",
+        "libnvidia-compute-570:amd64",
+        "nvidia-container-toolkit",
+        "nvidia-container-toolkit-base",
+        "libnvidia-container1:amd64",
+        "libnvidia-container-tools",
+        "nvidia-docker2",
+        "docker.io",
+    ]
+    result = subprocess.run(
+        ["awk", expression],
+        input="".join(name + "\tinstalled\n" for name in packages),
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    assert result.stdout.splitlines() == packages[:3]
+    assert "no-check-for-alternate-installs" not in source
+    assert "sha256sum --check --status" in source
+    assert 'sh "$driver" --check' in source
+    assert "NEEDRESTART_MODE=l" in source
+
+
+def test_batch_overlay_allows_non_admin_traversal_without_world_write():
+    from pathlib import Path
+
+    recipe = Path("simulation/Dockerfile.code").read_text()
+    assert "RUN chmod a+rx /isaac-sim" in recipe
+    assert "chmod 777" not in recipe
 
 
 def test_pool_preflight_accepts_actual_arm_created_service_enum_casing(spec, platform_client):

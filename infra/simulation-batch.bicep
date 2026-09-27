@@ -16,6 +16,10 @@ param registryServer string
 @description('Explicit host candidate; the Ubuntu 24.04 Batch bootstrap failed on the tested A10 node.')
 @allowed(['2204', '2404'])
 param hostImageSku string
+@allowed(['extension', 'bootstrap'])
+param driverInstallation string = 'extension'
+@description('Exact command from simulation.batch.driver_bootstrap_command; validated before a warmup job is submitted.')
+param driverBootstrapCommand string = ''
 @description('Immutable deployment-window start, in UTC; redeploying a new window requires explicit approval.')
 param allocationStartUtc string
 @minValue(1)
@@ -43,6 +47,50 @@ $TargetLowPriorityNodes = time() < time("{0}") ? min(1, $tasks) : 0;
 $NodeDeallocationOption = terminate;
 ''', allocationDeadlineUtc)
 var containerOptions = '--entrypoint /usr/bin/timeout --cap-drop ALL --security-opt no-new-privileges --shm-size 2g --tmpfs /data:rw,nosuid,nodev,mode=1777,size=2147483648 --tmpfs /isaac-sim/.cache:rw,nosuid,nodev,mode=1777,size=2147483648 --tmpfs /isaac-sim/.nv/ComputeCache:rw,nosuid,nodev,mode=1777,size=536870912 --tmpfs /isaac-sim/.nvidia-omniverse/logs:rw,nosuid,nodev,mode=1777,size=134217728'
+var gridExtensions = [{
+  name: 'nvidia-grid'
+  publisher: 'Microsoft.HpcCompute'
+  type: 'NvidiaGpuDriverLinux'
+  typeHandlerVersion: '1.14'
+  autoUpgradeMinorVersion: false
+  enableAutomaticUpgrade: false
+  settings: {
+    driverVersion: '570.237'
+    installCUDA: false
+    updateOS: false
+  }
+}]
+var extensionStartTask = {
+  commandLine: '--signal=TERM --kill-after=5s 60s /isaac-sim/python.sh -m simulation.batch_task preflight --output preflight.json'
+  containerSettings: {
+    imageName: simulatorImage
+    containerRunOptions: containerOptions
+    workingDirectory: 'TaskWorkingDirectory'
+  }
+  environmentSettings: [
+    { name: 'PYTHONPATH', value: '/app' }
+    { name: 'NVIDIA_DRIVER_CAPABILITIES', value: 'all' }
+  ]
+  userIdentity: {
+    autoUser: {
+      scope: 'Task'
+      elevationLevel: 'NonAdmin'
+    }
+  }
+  maxTaskRetryCount: 0
+  waitForSuccess: true
+}
+var bootstrapStartTask = {
+  commandLine: driverBootstrapCommand
+  userIdentity: {
+    autoUser: {
+      scope: 'Pool'
+      elevationLevel: 'Admin'
+    }
+  }
+  maxTaskRetryCount: 0
+  waitForSuccess: true
+}
 
 resource account 'Microsoft.Batch/batchAccounts@2025-06-01' existing = {
   name: batchAccountName
@@ -81,21 +129,7 @@ resource pool 'Microsoft.Batch/batchAccounts/pools@2025-06-01' = if (provisionPo
         osDisk: {
           diskSizeGB: 128
         }
-        extensions: [
-          {
-            name: 'nvidia-grid'
-            publisher: 'Microsoft.HpcCompute'
-            type: 'NvidiaGpuDriverLinux'
-            typeHandlerVersion: '1.14'
-            autoUpgradeMinorVersion: false
-            enableAutomaticUpgrade: false
-            settings: {
-              driverVersion: '570.237'
-              installCUDA: false
-              updateOS: false
-            }
-          }
-        ]
+        extensions: driverInstallation == 'extension' ? gridExtensions : []
         containerConfiguration: {
           type: 'DockerCompatible'
           containerImageNames: [
@@ -124,32 +158,7 @@ resource pool 'Microsoft.Batch/batchAccounts/pools@2025-06-01' = if (provisionPo
         formula: autoscale
       }
     }
-    startTask: {
-      commandLine: '--signal=TERM --kill-after=5s 60s /isaac-sim/python.sh -m simulation.batch_task preflight --output preflight.json'
-      containerSettings: {
-        imageName: simulatorImage
-        containerRunOptions: containerOptions
-        workingDirectory: 'TaskWorkingDirectory'
-      }
-      environmentSettings: [
-        {
-          name: 'PYTHONPATH'
-          value: '/app'
-        }
-        {
-          name: 'NVIDIA_DRIVER_CAPABILITIES'
-          value: 'all'
-        }
-      ]
-      userIdentity: {
-        autoUser: {
-          scope: 'Task'
-          elevationLevel: 'NonAdmin'
-        }
-      }
-      maxTaskRetryCount: 0
-      waitForSuccess: true
-    }
+    startTask: driverInstallation == 'bootstrap' ? bootstrapStartTask : extensionStartTask
     metadata: [
       {
         name: 'physicalaiDriver'
