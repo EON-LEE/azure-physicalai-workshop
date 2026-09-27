@@ -173,6 +173,50 @@ def test_bootstrap_package_builds_real_native_graph_without_claiming_payload_or_
     )
 
 
+def test_command_bootstrap_package_preserves_one_real_job_and_whole_command_budget(tmp_path):
+    from learning.common import read_json
+    from learning.paused.bootstrap import create_package
+    from learning.paused.command import EXECUTION
+    from learning.smolvla.embedded_source import prepare_context
+
+    binding, config, raw, parent, backbone = setup_package(tmp_path)
+    context = tmp_path / "image"
+    prepare_context(context, direct=True)
+    config.update(
+        run_id="new-command-bootstrap",
+        source_delivery=read_json(context / "source-delivery.json"),
+        job_execution=EXECUTION,
+        compute_size="Standard_NC24ads_A100_v4",
+        compute_tier="LowPriority",
+        output_prefix=f"tenants/{config['tenant_id']}/owners/{config['owner_id']}/learning/outputs",
+    )
+    output = tmp_path / "command-package"
+    receipt = create_package(
+        config,
+        binding,
+        raw_manifest=raw,
+        parent_manifest=parent,
+        backbone_manifest=backbone,
+        output=output,
+        job_name=config["run_id"],
+    )
+    job = read_json(output / "plan" / "job.json")
+    assert job["type"] == "command" and job["name"] == config["run_id"]
+    assert not {"jobs", "code", "inputs", "outputs"}.intersection(job)
+    assert receipt["schema"] == "physicalai.paused-bootstrap-package/v2"
+    assert receipt["job_execution"] == EXECUTION
+    assert receipt["execution_seconds"] == config["parameters"]["timeout_seconds"]
+    assert "conversion_seconds" not in receipt and "training_seconds" not in receipt
+    assert receipt["raw_episode_count"] == 20 and receipt["raw_frame_count"] == 20 * 424
+    assert receipt["payloads_verified"] is False and receipt["jobs_submitted"] == 0
+    sequence = read_json(output / "operator-sequence.json")
+    assert sequence["schema"] == "physicalai.paused-bootstrap-operator-sequence/v2"
+    assert sequence["outputs"] == {}
+    assert sequence["private_output_prefix"] == config["output_prefix"] + "/" + config["run_id"]
+    assert sequence["job_execution"] == EXECUTION
+    assert not any("job" in command for command in sequence["registration_commands"])
+
+
 @pytest.mark.parametrize(
     "change",
     [

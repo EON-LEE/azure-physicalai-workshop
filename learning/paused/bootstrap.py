@@ -312,8 +312,6 @@ def create_package(
             config["parameters"]["max_steps"] + config["parameters"]["checkpoint_steps"] - 1
         )
         // config["parameters"]["checkpoint_steps"],
-        "conversion_seconds": job["jobs"]["convert"]["limits"]["timeout"],
-        "training_seconds": job["jobs"]["train"]["limits"]["timeout"],
         "job_deadline_utc": config["job_deadline_utc"],
         "compute": config["compute"],
         "compute_size": config["compute_size"],
@@ -326,10 +324,34 @@ def create_package(
         "learning_quality_verified": False,
         "real_time_admission": False,
     }
+    direct = "job_execution" in config
+    if direct:
+        receipt.update(
+            schema="physicalai.paused-bootstrap-package/v2",
+            job_execution=config["job_execution"],
+            execution_seconds=job["limits"]["timeout"],
+        )
+    else:
+        receipt.update(
+            conversion_seconds=job["jobs"]["convert"]["limits"]["timeout"],
+            training_seconds=job["jobs"]["train"]["limits"]["timeout"],
+        )
+    execution_fields = (
+        {
+            "job_execution": config["job_execution"],
+            "private_output_prefix": config["output_prefix"] + "/" + job_name,
+        }
+        if direct
+        else {}
+    )
     write_json(
         output / "operator-sequence.json",
         {
-            "schema": "physicalai.paused-bootstrap-operator-sequence/v1",
+            "schema": (
+                "physicalai.paused-bootstrap-operator-sequence/v2"
+                if direct
+                else "physicalai.paused-bootstrap-operator-sequence/v1"
+            ),
             "registration_commands": commands,
             "registration_commands_executed": False,
             "registration_requires": [
@@ -343,7 +365,8 @@ def create_package(
                 "Actual private datastore/MI/compute/asset preflight: max one GPU, no auto retry.",
                 "Use PolicyJobs.submit through the durable paid-job claim, not az ml job create.",
             ],
-            "outputs": job["outputs"],
+            "outputs": {} if direct else job["outputs"],
+            **execution_fields,
             "checkpoint_blob_prefix": config["output_prefix"] + "/" + job_name + "/checkpoints",
             "quality_boundary": (
                 "Optimizer updates, saved weights and loss are training diagnostics. "

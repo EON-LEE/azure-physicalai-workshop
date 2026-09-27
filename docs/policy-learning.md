@@ -614,6 +614,12 @@ qualified training image. Its output explicitly says **manifest metadata checked
 payloads not verified, submission still gated**. The existing managed conversion
 and training components perform full payload validation.
 
+For the explicit private-MI command variant, the helper emits package and
+operator-sequence v2 receipts with one whole-command `execution_seconds` budget
+and a `private_output_prefix`. Its AML `outputs` remain empty; it does not invent
+conversion/training child jobs or per-stage time budgets. Legacy pipeline
+packages retain their v1 receipts and separate component budgets.
+
 First pin the operator-supplied successful reference qualification, then extract
 its exact profile/task identity into a **new** train-only preparation binding:
 
