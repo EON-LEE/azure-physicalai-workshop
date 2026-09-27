@@ -315,6 +315,9 @@ class PrivateArtifacts:
             content_settings=ContentSettings(content_type="application/json"),
         )
 
+    def validate_evidence(self, documents: dict[str, bytes]) -> dict:
+        return validate_success_evidence(self.spec, documents)
+
     def read_completion(self) -> dict | None:
         try:
             proof = parse_json(self._read_bounded(self._output("completion.json"), 1024**2))
@@ -345,12 +348,12 @@ class PrivateArtifacts:
                 documents[artifact.path] = bytes(payload)
         require(
             digest(documents["inputs/spec.json"]) == proof["spec_file_sha256"]
-            and BatchSimulationSpec.model_validate(parse_json(documents["inputs/spec.json"])).sha256
+            and type(self.spec).model_validate(parse_json(documents["inputs/spec.json"])).sha256
             == self.spec.sha256,
             "Stored task specification differs from the original attempt.",
         )
         if proof["accepted"]:
-            native_receipt = validate_success_evidence(self.spec, documents)
+            native_receipt = self.validate_evidence(documents)
             receipt = proof["raw_manifest"]
             require(
                 receipt == native_receipt, "Terminal receipt references a different native episode."
@@ -374,7 +377,13 @@ class PrivateArtifacts:
 
 
 def run_episode(
-    spec: BatchSimulationSpec, spec_path: Path, store, *, directory: Path, runner=None
+    spec: BatchSimulationSpec,
+    spec_path: Path,
+    store,
+    *,
+    directory: Path,
+    runner=None,
+    evidence_validator=None,
 ) -> dict:
     started = time.monotonic()
     result = {
@@ -425,7 +434,7 @@ def run_episode(
         result.update(verdict)
         if result["accepted"]:
             store.verify_raw_manifest(result["raw_manifest"], directory / "raw-manifest.json")
-            native_receipt = validate_success_evidence(
+            native_receipt = (evidence_validator or validate_success_evidence)(
                 spec,
                 {
                     **{f"inputs/{name}.json": path.read_bytes() for name, path in paths.items()},
@@ -536,16 +545,7 @@ def validate_success_evidence(spec: BatchSimulationSpec, documents: dict[str, by
     return receipt
 
 
-def run_native(spec, paths, directory, deadline) -> dict:
-    from apps.api.models import EnvironmentRecord
-    from simulation.paused_configuration import OperatorPausedAuthority, paused_servo_sha256
-    from simulation.paused_profiles import paused_profile
-
-    def remaining():
-        value = deadline - time.monotonic()
-        require(value > 0, "The original Batch task deadline expired.")
-        return value
-
+def configure_native_environment(spec: BatchSimulationSpec) -> None:
     os.environ.update(
         {
             "SOURCE_REVISION": spec.source_revision,
@@ -564,6 +564,19 @@ def run_native(spec, paths, directory, deadline) -> dict:
             "ACCEPT_EULA": "Y",
         }
     )
+
+
+def run_native(spec, paths, directory, deadline) -> dict:
+    from apps.api.models import EnvironmentRecord
+    from simulation.paused_configuration import OperatorPausedAuthority, paused_servo_sha256
+    from simulation.paused_profiles import paused_profile
+
+    def remaining():
+        value = deadline - time.monotonic()
+        require(value > 0, "The original Batch task deadline expired.")
+        return value
+
+    configure_native_environment(spec)
     profile = paused_profile(paused_servo_sha256(), spec.profile_id)
     require(
         profile.sha256 == spec.control_profile_sha256,

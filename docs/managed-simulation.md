@@ -1,5 +1,9 @@
 # Managed simulator jobs (Azure Batch)
 
+For a separately authorized real-model task, see
+[One managed learned-policy evaluation](managed-learned-evaluation.md).
+The reference entry points below remain unchanged.
+
 This source adapter executes **one explicitly authorized reference episode**, not an
 always-running bridge. It uses the existing `simulation.paused_probe` and
 `simulation.paused_acceptance` without changing physics, capture, task criteria or
