@@ -36,7 +36,7 @@ def spec():
                 "image_offer": "ubuntu-hpc",
                 "image_sku": "2404",
                 "image_version": "24.04.2026092501",
-                "driver_handler_version": "1.14.0.6",
+                "driver_handler_version": "1.14",
                 "container_image": "unit.azurecr.io/physicalai-simulator@sha256:" + "c" * 64,
             },
             "source_revision": "d" * 40,
@@ -108,6 +108,7 @@ def test_warmup_uses_single_task_pool_bounds_without_account_gated_job_propertie
         {"vm_size": "Standard_NC24ads_A100_v4"},
         {"container_image": "unit.azurecr.io/physicalai-simulator:latest"},
         {"driver_version": "latest"},
+        {"driver_handler_version": "1.14.0.6"},
     ],
 )
 def test_unreviewed_renderer_platforms_and_mutable_images_are_rejected(spec, change):

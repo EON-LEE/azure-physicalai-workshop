@@ -26,11 +26,17 @@ The East US 2 warm-up job and its single task were accepted. Batch then returned
 `AllocationFailed`: insufficient regional capacity for the requested LowPriority
 GPU size. No GPU node or `SimulationApp` ran. The original fixed allocation
 window ended with current and target nodes both zero. A private West US 2
-alternative was prepared using the existing connected network, but its Batch
-account has zero LowPriority-core quota; no GPU pool or job was submitted there.
-Both renderer compatibility and the full physical learning gates remain
-unverified. A supported available GPU allocation, or approved quota in the
-alternative region, is still required; source/image/CPU success cannot replace it.
+alternative was prepared using the existing connected network and initially
+had zero LowPriority-core quota.
+
+The next investigation found an important missing admission check: the actual
+regional Batch catalog reports `LowPriorityCapable=False` for this full-A10 SKU
+in East US 2, but `True` in West US 2. A large account quota cannot override that
+regional restriction. An official account-only request increased West US 2
+Spot quota to 36 without granting subscription-wide orchestration permissions.
+`capacity-check`, `warmup` and `submit` now read both the exact regional SKU and
+the account quota from ARM before submitting work. Passing this check permits
+an allocation request; it does not guarantee available capacity or RTX readiness.
 
 ## Explicit platform and permission prerequisites
 
@@ -50,12 +56,18 @@ Ubuntu-HPC 2204 candidate was unverified and is not selected.
 The pool pins one `Standard_NV36ads_A10_v5` LowPriority node at most, one task slot,
 no dedicated nodes, no public IP or configured inbound login endpoint, and no
 named user/password. Non-admin task-scoped auto-users run containers. The reviewed
-NVIDIA extension is `Microsoft.HpcCompute/NvidiaGpuDriverLinux`, handler
-`1.14.0.6`, with both upgrade flags disabled and these exact settings:
+NVIDIA extension is `Microsoft.HpcCompute/NvidiaGpuDriverLinux`, handler request
+`1.14`, with both upgrade flags disabled and these exact settings:
 
 ```json
 {"driverVersion":"570.237","installCUDA":false,"updateOS":false}
 ```
+
+The extension catalog lists a full package version such as `1.14.0.6`, but the
+actual Compute provider rejected that four-component value for
+`typeHandlerVersion`. The deployment uses the supported major/minor request
+`1.14`; it does not claim an immutable patch-package pin. Actual driver
+readback must still equal `570.237`, and Vulkan/RTX readiness remains mandatory.
 
 The image/extension requires compatible kernel, Moby/NVIDIA container integration,
 approved driver-download egress, and private Batch node-management/ACR/Blob
@@ -130,6 +142,7 @@ fixture resource identifiers. Replace it with the reviewed private configuration
 These commands are operator actions, **not** part of CPU verification:
 
 ```bash
+python -m simulation.batch capacity-check --platform /approved/platform.json
 python -m simulation.batch warmup-plan --platform /approved/platform.json \
   --warmup-id <explicit-new-warmup-uuid>
 python -m simulation.batch warmup --platform /approved/platform.json \

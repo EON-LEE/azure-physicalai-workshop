@@ -9,6 +9,6 @@
   "image_offer": "ubuntu-hpc",
   "image_sku": "2404",
   "image_version": "24.04.2026092501",
-  "driver_handler_version": "1.14.0.6",
+  "driver_handler_version": "1.14",
   "container_image": "unit.azurecr.io/physicalai-simulator@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 }

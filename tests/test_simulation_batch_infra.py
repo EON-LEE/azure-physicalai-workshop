@@ -51,7 +51,7 @@ def test_managed_simulator_pool_is_zero_default_single_low_priority_and_private(
     extension = vm["extensions"][0]
     assert extension["publisher"] == "Microsoft.HpcCompute"
     assert extension["type"] == "NvidiaGpuDriverLinux"
-    assert extension["typeHandlerVersion"] == "1.14.0.6"
+    assert extension["typeHandlerVersion"] == "1.14"
     assert extension["autoUpgradeMinorVersion"] is False
     assert extension["enableAutomaticUpgrade"] is False
     assert extension["settings"] == {

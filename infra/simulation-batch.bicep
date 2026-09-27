@@ -72,7 +72,7 @@ resource pool 'Microsoft.Batch/batchAccounts/pools@2025-06-01' = if (provisionPo
             name: 'nvidia-grid'
             publisher: 'Microsoft.HpcCompute'
             type: 'NvidiaGpuDriverLinux'
-            typeHandlerVersion: '1.14.0.6'
+            typeHandlerVersion: '1.14'
             autoUpgradeMinorVersion: false
             enableAutomaticUpgrade: false
             settings: {

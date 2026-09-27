@@ -4,17 +4,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 from datetime import UTC, datetime, timedelta
 from importlib.metadata import version
 from pathlib import Path
 from typing import Literal
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 from uuid import UUID
 
 from pydantic import Field, field_validator, model_validator
 
 from apps.api.models import Model, Revision
-from learning.common import canonical, digest, read_json, relative_path, require, sha256
+from learning.common import canonical, digest, parse_json, read_json, relative_path, require, sha256
 from simulation.paused_profiles import PausedProfileId
 
 BATCH_SDK_VERSION = "15.1.0"
@@ -78,7 +79,7 @@ class BatchPlatform(Model):
     image_offer: Literal["ubuntu-hpc"]
     image_sku: Literal["2404"]
     image_version: Literal["24.04.2026092501"]
-    driver_handler_version: Literal["1.14.0.6"]
+    driver_handler_version: Literal["1.14"]
     driver_version: Literal["570.237"] = GRID_DRIVER
     gpu_name: Literal["NVIDIA A10-24Q"] = GPU_NAME
     container_image: str = Field(
@@ -394,6 +395,116 @@ def allocation_formula(deadline: str) -> str:
     )
 
 
+def _management_account_id(platform: BatchPlatform) -> str:
+    resource_group = "/".join(platform.node_identity_resource_id.split("/")[:5])
+    account_name = urlsplit(platform.account_url).hostname.split(".")[0]
+    return f"{resource_group}/providers/Microsoft.Batch/batchAccounts/{account_name}"
+
+
+def validate_regional_capacity(platform: BatchPlatform, account: dict, catalog: dict) -> dict:
+    hostname = urlsplit(platform.account_url).hostname
+    region = hostname.split(".")[1]
+    properties = account.get("properties", {})
+    require(
+        account.get("id", "").lower() == _management_account_id(platform).lower()
+        and account.get("location", "").lower() == region
+        and properties.get("accountEndpoint", "").lower() == hostname
+        and properties.get("poolAllocationMode") == "BatchService"
+        and properties.get("provisioningState") == "Succeeded",
+        "Regional capacity evidence does not match the approved Batch service account.",
+    )
+    require(
+        isinstance(catalog.get("value"), list) and not catalog.get("nextLink"),
+        "A complete bounded regional SKU catalog is required.",
+    )
+    matching = [
+        item
+        for item in catalog["value"]
+        if item.get("name", "").lower() == platform.vm_size.lower()
+    ]
+    require(
+        len(matching) == 1, "The exact GPU SKU is absent or duplicated in the regional catalog."
+    )
+    values = matching[0].get("capabilities", [])
+    require(
+        isinstance(values, list) and len({item["name"] for item in values}) == len(values),
+        "Regional SKU capability metadata is ambiguous.",
+    )
+    capabilities = {item["name"]: item["value"] for item in values}
+    require(
+        capabilities.get("LowPriorityCapable") == "True",
+        f"{platform.vm_size} in {region} is not LowPriorityCapable; quota alone is insufficient.",
+    )
+    require(
+        capabilities.get("vCPUs") == "36" and capabilities.get("GPUs") == "1",
+        "The regional SKU is not the approved single-GPU 36-core renderer.",
+    )
+    quota = properties.get("lowPriorityCoreQuota")
+    require(
+        type(quota) is int and quota >= 36, "The Batch Spot core quota cannot admit one GPU node."
+    )
+    return {
+        "region": region,
+        "vm_size": platform.vm_size,
+        "low_priority_core_quota": quota,
+        "can_request_one_node": True,
+        "capacity_guaranteed": False,
+        "physical_episode_started": False,
+    }
+
+
+def _management_document(url: str, credential) -> dict:
+    import requests
+
+    require(
+        urlsplit(url).scheme == "https" and urlsplit(url).hostname == "management.azure.com",
+        "Capacity admission only reads Azure Resource Manager.",
+    )
+    token = credential.get_token("https://management.azure.com/.default")
+    deadline = time.monotonic() + 30
+    with requests.get(
+        url,
+        headers={"Authorization": "Bearer " + token.token},
+        timeout=(5, 20),
+        allow_redirects=False,
+        stream=True,
+    ) as response:
+        response.raise_for_status()
+        require(response.status_code == 200, "Capacity admission requires an actual ARM readback.")
+        body = bytearray()
+        for chunk in response.iter_content(65536):
+            body.extend(chunk)
+            require(
+                len(body) <= 2 * 1024**2 and time.monotonic() < deadline,
+                "Regional admission read exceeded its size or time budget.",
+            )
+    return parse_json(bytes(body))
+
+
+def check_regional_capacity(platform: BatchPlatform, credential) -> dict:
+    subscription = platform.node_identity_resource_id.split("/")[2]
+    region = urlsplit(platform.account_url).hostname.split(".")[1]
+    account = _management_document(
+        "https://management.azure.com"
+        + _management_account_id(platform)
+        + "?api-version=2025-06-01",
+        credential,
+    )
+    query = urlencode(
+        {
+            "api-version": "2025-06-01",
+            "maxresults": 100,
+            "$filter": "familyName eq 'StandardNVADSA10v5Family'",
+        }
+    )
+    catalog = _management_document(
+        f"https://management.azure.com/subscriptions/{subscription}/providers/"
+        f"Microsoft.Batch/locations/{region}/virtualMachineSkus?{query}",
+        credential,
+    )
+    return validate_regional_capacity(platform, account, catalog)
+
+
 def validate_pool(pool, platform: BatchPlatform) -> None:
     require(
         pool.vm_size.lower() == platform.vm_size.lower()
@@ -574,7 +685,16 @@ def read_status(client, spec: BatchSimulationSpec, read_completion) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "operation", choices=("plan", "warmup-plan", "warmup", "preflight", "submit", "status")
+        "operation",
+        choices=(
+            "plan",
+            "warmup-plan",
+            "capacity-check",
+            "warmup",
+            "preflight",
+            "submit",
+            "status",
+        ),
     )
     parser.add_argument("--spec", type=Path)
     parser.add_argument("--platform", type=Path)
@@ -583,7 +703,7 @@ def main() -> None:
     parser.add_argument("--confirm-submission", action="store_true")
     args = parser.parse_args()
     warming = args.operation in {"warmup-plan", "warmup"}
-    if warming or args.operation == "preflight":
+    if warming or args.operation in {"capacity-check", "preflight"}:
         require(args.platform is not None, "An approved platform file is required.")
         platform = BatchPlatform.model_validate(read_json(args.platform, max_bytes=1024**2))
         spec = None
@@ -625,6 +745,11 @@ def main() -> None:
     from azure.identity import DefaultAzureCredential
 
     with DefaultAzureCredential(exclude_interactive_browser_credential=True) as credential:
+        if args.operation in {"capacity-check", "warmup", "submit"}:
+            capacity = check_regional_capacity(platform, credential)
+            if args.operation == "capacity-check":
+                print(json.dumps(capacity, indent=2))
+                return
         with BatchClient(
             endpoint=platform.account_url,
             credential=credential,
