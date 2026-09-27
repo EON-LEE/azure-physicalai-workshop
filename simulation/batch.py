@@ -44,7 +44,8 @@ PROOF_LIMITS = {
     "raw-manifest.json": 4 * 1024**2,
 }
 CONTAINER_OPTIONS = (
-    "--entrypoint /isaac-sim/python.sh --cap-drop ALL --security-opt no-new-privileges "
+    "--entrypoint /isaac-sim/python.sh --runtime=nvidia "
+    "--cap-drop ALL --security-opt no-new-privileges "
     "--shm-size 2g --tmpfs /data:rw,nosuid,nodev,mode=1777,size=2147483648 "
     "--tmpfs /isaac-sim/.cache:rw,nosuid,nodev,mode=1777,size=2147483648 "
     "--tmpfs /isaac-sim/.nv/ComputeCache:rw,nosuid,nodev,mode=1777,size=536870912 "
@@ -287,6 +288,7 @@ def build_job_task(spec: BatchSimulationSpec, spec_url: str, spec_sha256: str):
         environment_settings=[
             models.EnvironmentSetting(name="PYTHONPATH", value="/app"),
             models.EnvironmentSetting(name="NVIDIA_DRIVER_CAPABILITIES", value="all"),
+            models.EnvironmentSetting(name="NVIDIA_VISIBLE_DEVICES", value="all"),
             models.EnvironmentSetting(
                 name="AZURE_CLIENT_ID", value=str(spec.platform.node_identity_client_id)
             ),
@@ -331,6 +333,7 @@ def build_warmup(platform: BatchPlatform, warmup_id: UUID):
         environment_settings=[
             models.EnvironmentSetting(name="PYTHONPATH", value="/app"),
             models.EnvironmentSetting(name="NVIDIA_DRIVER_CAPABILITIES", value="all"),
+            models.EnvironmentSetting(name="NVIDIA_VISIBLE_DEVICES", value="all"),
         ],
     )
     return job, task

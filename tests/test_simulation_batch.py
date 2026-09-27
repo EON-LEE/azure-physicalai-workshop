@@ -81,6 +81,8 @@ def test_sdk_payload_is_one_digest_pinned_job_task_with_no_retries(spec, batch_s
     assert task["containerSettings"]["imageName"] == spec.platform.container_image
     options = task["containerSettings"]["containerRunOptions"]
     assert "--entrypoint /isaac-sim/python.sh" in options
+    assert "--runtime=nvidia" in options
+    assert {"name": "NVIDIA_VISIBLE_DEVICES", "value": "all"} in task["environmentSettings"]
     assert "--gpus" not in options and "--privileged" not in options
     assert "simulation.batch_task" in task["commandLine"]
     assert "bootstrap_tls" not in task["commandLine"]
@@ -98,6 +100,11 @@ def test_warmup_uses_single_task_pool_bounds_without_account_gated_job_propertie
     assert "maxParallelTasks" not in job.as_dict()
     assert "allowTaskPreemption" not in job.as_dict()
     assert task.required_slots == 1
+    assert "--runtime=nvidia" in task.container_settings.container_run_options
+    assert any(
+        item.name == "NVIDIA_VISIBLE_DEVICES" and item.value == "all"
+        for item in task.environment_settings
+    )
     assert job.pool_info.pool_id == spec.platform.pool_id
 
 

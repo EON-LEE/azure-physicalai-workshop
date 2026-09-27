@@ -46,7 +46,7 @@ $tasks = $samples < 70 ? max(0, $PendingTasks.GetSample(1)) : max(0, max($Pendin
 $TargetLowPriorityNodes = time() < time("{0}") ? min(1, $tasks) : 0;
 $NodeDeallocationOption = terminate;
 ''', allocationDeadlineUtc)
-var containerOptions = '--entrypoint /usr/bin/timeout --cap-drop ALL --security-opt no-new-privileges --shm-size 2g --tmpfs /data:rw,nosuid,nodev,mode=1777,size=2147483648 --tmpfs /isaac-sim/.cache:rw,nosuid,nodev,mode=1777,size=2147483648 --tmpfs /isaac-sim/.nv/ComputeCache:rw,nosuid,nodev,mode=1777,size=536870912 --tmpfs /isaac-sim/.nvidia-omniverse/logs:rw,nosuid,nodev,mode=1777,size=134217728'
+var containerOptions = '--entrypoint /usr/bin/timeout --runtime=nvidia --cap-drop ALL --security-opt no-new-privileges --shm-size 2g --tmpfs /data:rw,nosuid,nodev,mode=1777,size=2147483648 --tmpfs /isaac-sim/.cache:rw,nosuid,nodev,mode=1777,size=2147483648 --tmpfs /isaac-sim/.nv/ComputeCache:rw,nosuid,nodev,mode=1777,size=536870912 --tmpfs /isaac-sim/.nvidia-omniverse/logs:rw,nosuid,nodev,mode=1777,size=134217728'
 var gridExtensions = [{
   name: 'nvidia-grid'
   publisher: 'Microsoft.HpcCompute'
@@ -70,6 +70,7 @@ var extensionStartTask = {
   environmentSettings: [
     { name: 'PYTHONPATH', value: '/app' }
     { name: 'NVIDIA_DRIVER_CAPABILITIES', value: 'all' }
+    { name: 'NVIDIA_VISIBLE_DEVICES', value: 'all' }
   ]
   userIdentity: {
     autoUser: {
