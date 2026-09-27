@@ -1,11 +1,20 @@
 # Azure-only runtime and staged deployment
 
+For code-only API/console updates with unchanged dependency manifests,
+`Dockerfile.api-code` accepts an explicitly digest-pinned `API_BASE_IMAGE` and
+the reviewed `apps/web/dist` build. It retains the existing interpreter,
+dependency environment and server command, replaces stale static assets, and
+runs as UID 10001. Dependency changes require the normal full image build;
+this overlay is not a dependency-upgrade shortcut.
+
 ## What runs where
 
 Production uses Azure Container Apps for the actual web/API, Microsoft Foundry
 for the deployed inspection agent, Cosmos DB for versioned state, Blob Storage
-for image evidence and licensed assets, Key Vault for simulator TLS, and a
-private Azure GPU VM for Isaac Sim. Azure Monitor/Application Insights receives
+for image evidence and licensed assets, and managed Azure Batch GPU tasks for
+the teaching/learning Isaac workflow. Key Vault and the separate private GPU
+VM describe the legacy HTTPS reference bridge, not the new managed task path.
+Azure Monitor/Application Insights receives
 application telemetry. No production memory store or fixture provider exists.
 
 WSL is only for authoring, dependency management and automated tests. The staged
