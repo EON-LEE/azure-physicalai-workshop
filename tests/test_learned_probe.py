@@ -94,3 +94,20 @@ def test_native_trace_hook_samples_before_runtime_preview_or_terminal_io(monkeyp
     runtime.trace = SimpleNamespace(observe=lambda: calls.append("measurement"))
     runtime._publish_policy_metrics()
     assert calls == ["metrics", "measurement"]
+
+
+def test_probe_persists_original_heartbeats_and_budget_without_reconstructing_them(learned):
+    trace = probe().LearnedTrace(learned.core, learned.cell, learned.request)
+    start(learned)
+    trace.observe()
+    for step in range(1, 7):
+        step_to(learned, step)
+        trace.observe()
+    stamps = list(trace.heartbeat_ns)
+    proof = trace.recording(end_ns=stamps[-1])
+    assert proof["heartbeat_ns"] == stamps
+    assert proof["episode_budget"]["started_ns"] == learned.cell.paused_driver.episode.started_ns
+    assert proof["episode_budget"]["wall_deadline_ns"] == (
+        learned.cell.paused_driver.episode.wall_deadline_ns
+    )
+    assert proof["task_states"] == [asdict(state) for state in trace.states]

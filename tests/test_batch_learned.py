@@ -155,3 +155,17 @@ def test_model_manifest_change_changes_whole_attempt_and_preserves_raw_spec_hash
     assert changed.job_id == learned_spec.job_id
     encoded = canonical(learned_spec.model_dump(mode="json", by_alias=True))
     assert adapter().BatchLearnedSpec.model_validate(json.loads(encoded)).sha256 == digest(encoded)
+
+
+def test_optional_pairing_hash_is_preexecution_bound_without_changing_standalone_wire(learned_spec):
+    original = learned_spec.model_dump(mode="json", by_alias=True)
+    assert "pairing_plan_sha256" not in original
+    paired = adapter().BatchLearnedSpec.model_validate(
+        {
+            **original,
+            "pairing_plan_sha256": "e" * 64,
+        }
+    )
+    assert paired.pairing_plan_sha256 == "e" * 64
+    assert paired.sha256 != learned_spec.sha256
+    assert paired.model_dump(mode="json", by_alias=True)["pairing_plan_sha256"] == "e" * 64

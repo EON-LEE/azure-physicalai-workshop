@@ -190,6 +190,8 @@ def evidence(authority, tmp_path):
             "simulation_steps": last.applied_action_count,
         },
         "task_states": [asdict(state) for state in states],
+        "heartbeat_ns": [state.monotonic_ns for state in states],
+        "episode_budget": metadata["budget"],
         "trial": trial,
         "final_images": {name: learned_probe.encode_image(image) for name, image in images.items()},
         "capture": {
@@ -273,7 +275,9 @@ def test_native_single_trial_rescores_measured_grasp_release_and_settle(evidence
     assert batch_learned.verify_evidence(spec, documents) == report["capture"]["receipt"]
 
 
-@pytest.mark.parametrize("changed", ["servo", "images", "unbound_timing", "actuator_model"])
+@pytest.mark.parametrize(
+    "changed", ["servo", "images", "unbound_timing", "actuator_model", "heartbeat", "budget"]
+)
 def test_accepted_flag_cannot_waive_measured_servo_camera_or_timing_proof(evidence, changed):
     spec, scene, profile, grant, report, _ = evidence
     if changed == "servo":
@@ -282,8 +286,12 @@ def test_accepted_flag_cannot_waive_measured_servo_camera_or_timing_proof(eviden
         report["final_images"] = {}
     elif changed == "unbound_timing":
         report["final_images"]["overview"]["monotonic_ns"] += 2_000_000_001
-    else:
+    elif changed == "actuator_model":
         report["metrics"]["applied_model_sha256"] = "f" * 64
+    elif changed == "heartbeat":
+        report["heartbeat_ns"][2] += 10_000_000
+    else:
+        report["episode_budget"]["started_ns"] += 1
     with pytest.raises(ValueError):
         learned_probe.rescore(report, spec, scene, profile, grant)
 

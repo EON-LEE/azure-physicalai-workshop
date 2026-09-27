@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, field_validator, model_serializer, model_validator
 
 from apps.api.models import Model, Revision
 from learning.common import canonical, digest, file_digest, read_json, relative_path, require
@@ -69,6 +69,14 @@ class BatchLearnedSpec(BatchSimulationSpec):
     model: ModelBundle
     backbone: ModelBundle
     model_runtime: BlobInput
+    pairing_plan_sha256: Revision | None = None
+
+    @model_serializer(mode="wrap")
+    def preserve_standalone_wire(self, handler):
+        value = handler(self)
+        if self.pairing_plan_sha256 is None:
+            value.pop("pairing_plan_sha256", None)
+        return value
 
     @model_validator(mode="after")
     def owner_scoped_models(self):
@@ -397,7 +405,7 @@ def download_bundle(store, bundle: ModelBundle, destination: Path, *, model: boo
     return metadata
 
 
-def verify_evidence(spec: BatchLearnedSpec, documents: dict[str, bytes]) -> dict:
+def rescore_evidence(spec: BatchLearnedSpec, documents: dict[str, bytes]) -> tuple[dict, dict]:
     from learning.common import parse_json
     from simulation.batch_task import validate_gpu_evidence
     from simulation.learned_probe import rescore
@@ -427,7 +435,7 @@ def verify_evidence(spec: BatchLearnedSpec, documents: dict[str, bytes]) -> dict
     report = parse_json(documents["probe.json"])
     acceptance = rescore(report, spec, scene, profile, grant)
     require(
-        acceptance["accepted"] is True and parse_json(documents["acceptance.json"]) == acceptance,
+        parse_json(documents["acceptance.json"]) == acceptance,
         "Native learned acceptance differs from independently recomputed task facts.",
     )
     manifest = parse_json(documents["raw-manifest.json"])
@@ -459,6 +467,12 @@ def verify_evidence(spec: BatchLearnedSpec, documents: dict[str, bytes]) -> dict
         and episode["frame_count"] * profile.hold_steps == acceptance["applied_action_count"],
         "Learned capture changed its actual model or physical episode.",
     )
+    return receipt, acceptance
+
+
+def verify_evidence(spec: BatchLearnedSpec, documents: dict[str, bytes]) -> dict:
+    receipt, acceptance = rescore_evidence(spec, documents)
+    require(acceptance["accepted"] is True, "The native learned physical trial was not accepted.")
     return receipt
 
 

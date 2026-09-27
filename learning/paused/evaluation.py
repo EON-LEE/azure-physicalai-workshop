@@ -295,20 +295,8 @@ def compare_trials(plan: dict, trials: list[dict], *, live_gpu_verified: bool = 
     return report
 
 
-def _evaluate(
-    plan: dict,
-    evidence_root: Path,
-    models: dict[str, Path],
-    *,
-    scope: Scope,
-    expected_plan_sha256: str,
-    expected_results_sha256: str,
-) -> dict:
+def validate_models(plan: dict, models: dict[str, Path], *, scope: Scope) -> dict:
     cases = validate_plan(plan)
-    require(
-        digest(canonical(plan)) == sha256(expected_plan_sha256) and plan["scope"] == asdict(scope),
-        "Frozen evaluation plan/scope changed",
-    )
     loaded = {}
     for role, path in models.items():
         model = validate_model(
@@ -339,6 +327,24 @@ def _evaluate(
             ),
             "Paired task or actual incremental model lineage differs",
         )
+    return loaded
+
+
+def _evaluate(
+    plan: dict,
+    evidence_root: Path,
+    models: dict[str, Path],
+    *,
+    scope: Scope,
+    expected_plan_sha256: str,
+    expected_results_sha256: str,
+) -> dict:
+    validate_plan(plan)
+    require(
+        digest(canonical(plan)) == sha256(expected_plan_sha256) and plan["scope"] == asdict(scope),
+        "Frozen evaluation plan/scope changed",
+    )
+    validate_models(plan, models, scope=scope)
     from learning.paused.rollout import verify_recording
 
     result = verify_recording(evidence_root, plan, scope, expected_results_sha256)

@@ -185,8 +185,10 @@ mixed-image GPU inference or policy learning quality. Actual execution and the
 complete frozen comparison remain operator-owned.
 
 The physical command/raw `episode_id` is the unique Batch `attempt_id`; the
-trial also retains the frozen seed/environment/revision and role. A later paired
-assembler must explicitly map logical cases to distinct physical episodes and
-verify that mapping. The existing all-attempt recorder assumes shared logical
-episode IDs across roles, so these single-trial files must not be passed off as
-its completed results or made to fit by rewriting raw capture IDs.
+trial also retains the frozen seed/environment/revision and role. The explicit
+[managed paired verifier](managed-paired-evaluation.md) predeclares all forty
+logical-case/role/physical-UUID assignments and binds its file hash through
+`pairing_plan_sha256` in each paired spec. It verifies complete private payloads,
+original heartbeats and native task rescore without rewriting raw IDs. Standalone
+specs omit that optional field and keep their original wire hash. Single-trial
+files still cannot be passed off as the old all-attempt recorder's results.

@@ -10,10 +10,10 @@ import time
 from dataclasses import asdict
 from pathlib import Path
 
-from learning.common import canonical, digest, file_digest, read_json, require
+from learning.common import canonical, digest, file_digest, integer, read_json, require
 from learning.contract import Scope
 from learning.paused import FrozenCameraSample
-from learning.paused.capture import validate_dataset
+from learning.paused.capture import PausedEpisodeBudget, validate_dataset
 from learning.paused.evaluation import _trial
 from learning.paused.rollout import derive_trial
 from learning.paused.task import TaskState, evaluate_task_states
@@ -80,6 +80,21 @@ class LearnedTrace:
         )
         state.validate()
         self.states.append(state)
+
+    def recording(self, *, end_ns: int) -> dict:
+        episode = self.hardware.paused_driver.episode
+        return {
+            "task_states": [asdict(state) for state in self.states],
+            "heartbeat_ns": [stamp for stamp in self.heartbeat_ns if stamp <= end_ns],
+            "episode_budget": asdict(
+                PausedEpisodeBudget(
+                    episode.started_ns,
+                    episode.wall_deadline_ns,
+                    episode.initial.physics_step,
+                    episode.initial.physics_step + episode.max_simulation_steps,
+                )
+            ),
+        }
 
 
 class MeasuredLearnedRuntime(SimulatorRuntime):
@@ -240,6 +255,35 @@ def rescore(report: dict, spec: BatchLearnedSpec, scene, profile, grant) -> dict
             < grant.authorization.wall_expires_at,
             "The actual final camera evidence differs from the native trial.",
         )
+    budget = PausedEpisodeBudget(**report["episode_budget"])
+    budget.validate(profile)
+    end = max(value["monotonic_ns"] for value in report["final_images"].values())
+    require(
+        budget.started_ns
+        <= first.monotonic_ns
+        <= last.monotonic_ns
+        <= end
+        <= budget.wall_deadline_ns
+        and first.physics_step == budget.initial_physics_step
+        and last.physics_step <= budget.simulation_step_deadline
+        and trial["wall_duration_ms"] == (end - budget.started_ns) / 1e6,
+        "Learned trial changed the original episode budget or measured duration.",
+    )
+    heartbeats = report.get("heartbeat_ns")
+    require(
+        isinstance(heartbeats, list) and 1 <= len(heartbeats) <= 1_000_000,
+        "Missing bounded original main-thread heartbeat samples.",
+    )
+    previous, gaps = budget.started_ns, []
+    for stamp in heartbeats:
+        integer(stamp, "original heartbeat", previous, end)
+        if stamp != previous:
+            gaps.append((stamp - previous) / 1e6)
+        previous = stamp
+    gaps.append((end - previous) / 1e6)
+    require(
+        gaps == trial["heartbeat_gap_ms"], "Declared heartbeat gaps differ from actual samples."
+    )
 
     require(
         grant.issued_at
@@ -412,7 +456,7 @@ def run(
             "metrics": result.simulation_runtime.model_dump(mode="json"),
             "learning_quality_proven": False,
             "initial_publication_record": publication.private_evidence(),
-            "task_states": [asdict(state) for state in trace.states],
+            **trace.recording(end_ns=max(image.monotonic_ns for image in final_images.values())),
             "final_images": {name: encode_image(image) for name, image in final_images.items()},
             "capture": capture.model_dump(mode="json") if capture is not None else None,
             "gripper_servo": hardware.paused_gripper_servo_evidence(),
@@ -434,7 +478,6 @@ def run(
                 ),
                 "Both actual learned cameras must remain 320x320.",
             )
-            end = max(image.monotonic_ns for image in final_images.values())
             report["trial"] = derive_trial(
                 raw,
                 trace.states,
@@ -443,7 +486,7 @@ def run(
                 model_sha256=spec.model.manifest.sha256,
                 profile=profile,
                 final_images=final_images,
-                heartbeat_ns=tuple(stamp for stamp in trace.heartbeat_ns if stamp <= end),
+                heartbeat_ns=tuple(report["heartbeat_ns"]),
                 destination_id=permit.task.goal_id,
                 failure_reason=str(result.error.message)[:512] if result.error else None,
             )
