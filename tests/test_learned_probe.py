@@ -90,7 +90,8 @@ def test_native_trace_hook_samples_before_runtime_preview_or_terminal_io(monkeyp
     monkeypatch.setattr(
         SimulatorRuntime, "_publish_policy_metrics", lambda self: calls.append("metrics")
     )
-    runtime = probe().MeasuredLearnedRuntime.__new__(probe().MeasuredLearnedRuntime)
+    runtime_type = probe().measured_runtime_type()
+    runtime = runtime_type.__new__(runtime_type)
     runtime.trace = SimpleNamespace(observe=lambda: calls.append("measurement"))
     runtime._publish_policy_metrics()
     assert calls == ["metrics", "measurement"]

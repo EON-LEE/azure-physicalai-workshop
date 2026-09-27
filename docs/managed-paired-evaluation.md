@@ -145,6 +145,11 @@ written inside attempt/model directories. A partial set produces
 forty assignments, and the actual received failure/proof inventories. It does
 not emit invented trials, partial success rates or a passing quality result.
 
+The live `SimulatorRuntime` subclass is loaded only when a native probe starts.
+Importing the offline verifier does not initialize the simulator or the Azure
+identity SDK's platform-probing subprocess; the production-locked worker smoke
+check exercises this complete cold-import path.
+
 For every scored attempt the verifier checks the exact spec/claim/completion
 binding, locked model/runtime/scope/profile/criteria, original grant chronology,
 frozen logical case's seed/environment/revision/poses, every private file hash,

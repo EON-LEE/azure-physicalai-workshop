@@ -22,7 +22,7 @@ def main():
     sys.addaudithook(offline_only)
     from azure.batch import BatchClient
 
-    from simulation import batch, batch_task
+    from simulation import batch, batch_learned, batch_task, paired_evaluation
 
     assert version("azure-batch") == "15.1.0"
     assert BatchClient.__name__ == "BatchClient"
@@ -35,7 +35,12 @@ def main():
             {
                 "azure_batch": version("azure-batch"),
                 "batch_client": f"{BatchClient.__module__}.{BatchClient.__name__}",
-                "controller_modules": [batch.__name__, batch_task.__name__],
+                "controller_modules": [
+                    batch.__name__,
+                    batch_task.__name__,
+                    batch_learned.__name__,
+                    paired_evaluation.__name__,
+                ],
                 "network_or_process_attempts": attempts,
                 "gpu_modules_loaded": [],
             },

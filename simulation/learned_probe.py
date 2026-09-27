@@ -19,7 +19,6 @@ from learning.paused.rollout import derive_trial
 from learning.paused.task import TaskState, evaluate_task_states
 from simulation.batch_learned import BatchLearnedSpec, load_inputs
 from simulation.paused_learned import PausedLearnedRuntime
-from simulation.run_isaac import SimulatorRuntime
 
 SCHEMA = "physicalai.paused-learned-attempt/v1"
 
@@ -97,13 +96,19 @@ class LearnedTrace:
         }
 
 
-class MeasuredLearnedRuntime(SimulatorRuntime):
-    trace: LearnedTrace | None = None
+def measured_runtime_type():
+    # Offline evidence verification must not import the live simulator lifecycle.
+    from simulation.run_isaac import SimulatorRuntime
 
-    def _publish_policy_metrics(self) -> None:
-        super()._publish_policy_metrics()
-        if self.trace is not None:
-            self.trace.observe()
+    class MeasuredLearnedRuntime(SimulatorRuntime):
+        trace: LearnedTrace | None = None
+
+        def _publish_policy_metrics(self) -> None:
+            super()._publish_policy_metrics()
+            if self.trace is not None:
+                self.trace.observe()
+
+    return MeasuredLearnedRuntime
 
 
 def encode_image(image: FrozenCameraSample) -> dict:
@@ -361,7 +366,7 @@ def run(
             tenant_id=str(grant.tenant_id),
             capture_status_reader=store.get,
         )
-        runtime = MeasuredLearnedRuntime(
+        runtime = measured_runtime_type()(
             core,
             hardware,
             heartbeat=output.with_suffix(".heartbeat"),
