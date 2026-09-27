@@ -23,6 +23,13 @@ import. This is CPU/ABI qualification; it is not CUDA policy execution or
 physical learned quality. New learned wrappers still need their own final
 image-source verification and actual model-bound GPU trial.
 
+Build each final code overlay directly from the qualified mixed **dependency**
+image, not from the previous code overlay. Repeatedly stacking code overlays
+eventually failed with Docker `max depth exceeded`. Reusing the qualified
+dependency digest retains its runtime configuration and libraries while adding
+only one current source layer group; it does not flatten or rewrite historical
+images and their proofs.
+
 The operator must assemble and independently qualify an immutable mixed image.
 The model runtime needs its real interpreter, base prefix, standard library,
 libpython and native ELF/CUDA dependencies, not merely a copied venv from
