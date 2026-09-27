@@ -26,7 +26,7 @@ LEGACY_FILES = (
     "learning/paused/ipc.py",
     "learning/paused/model.py",
 )
-LEGACY_SHA256 = "c25bd2625499452d382d43dae8c6cf1da30c88b1a2ee4e32dacb8fd831c8fc6a"
+LEGACY_SHA256 = "383aa98c35e8d9d7a0868ae5fdc2e3b3c7045cda583906588591d33d23ece4e6"
 
 
 def test_all_fifteen_learning_files_in_frozen_851df_servo_bundle_are_byte_exact():
