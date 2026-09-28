@@ -530,6 +530,26 @@ before/after trial and retry, including failures; no post-hoc favorable subset.
   all UUID, text, optimizer, project, dataset and release constraints after
   inference. SDK serialization tests do not replace actual Foundry registration
   or imply successful policy learning.
+  The high-priority coach instructions explicitly prohibit loosening/bypassing
+  safety guards, clipping model actions or changing physics as a debugging
+  workaround, held-out training/tuning, retry-until-success and unsupported
+  improvement claims in both Korean and English. Permitted review steps inspect
+  raw output, normalizer statistics, units, joint order and approved TRAIN
+  coverage while preserving the original limits. Guard rejection before action
+  application is not output clipping.
+  Newly extracted summaries also pass a bounded, deterministic phrase screen
+  after the existing type/scope/response-ID checks. Clear conflicting instructions
+  return HTTP 422 `learning_proposal_safety` before a proposal is recorded;
+  the existing request record becomes failed and is not automatically retried.
+  The screen does not rewrite the summary into acceptable-looking advice.
+  It distinguishes explicit negations and observations from selected unsafe
+  instructions, but is **not complete natural-language safety verification**.
+  It grants no new execution authority and does not replace controller limits,
+  native evidence validation, owner checks or separate human approval.
+  Previously stored responses/records remain unchanged for audit. Source changes
+  do not update a deployed Foundry agent: an authorized operator must register
+  and pin a new prompt version, deploy the API screen, and use a new request ID
+  for a real follow-up check. The original rejected/bad response is not relabeled.
 
 ## Empty-store first-policy bootstrap
 
