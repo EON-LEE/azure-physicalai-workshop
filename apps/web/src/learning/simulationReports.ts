@@ -4,6 +4,19 @@ import { pausedProfileSchema, pausedProfileSteps } from './pausedProfiles';
 export const MANAGED_REPORT_SCHEMA = 'physicalai.managed-paired-report/v1';
 const sha = z.string().regex(/^[a-f0-9]{64}$/);
 const count = z.number().int().nonnegative();
+export const commandModelAdmissionSchema = z.object({
+  admission_kind: z.literal('azureml_command_v3'),
+  artifact_schema: z.literal('physicalai.smolvla-checkpoint/v3'),
+  training_execution: z.literal('azureml_command'),
+  server_entrypoint: z.literal('learning.paused.command_model'),
+  provider_entrypoint: z.literal('simulation.command_policy_deployment.CommandPausedPolicyProvider'),
+  request_schema: z.literal('physicalai.smolvla-request/v2'),
+  response_schema: z.literal('physicalai.smolvla-response/v2'),
+  runtime_sha256: sha, legacy_servo_sha256: sha, control_profile_sha256: sha,
+  simulator_sources_sha256: sha, native_sources_sha256: sha,
+  simulator_image: z.string().regex(/^[a-z0-9]+\.azurecr\.io\/[a-z0-9_./-]+@sha256:[a-f0-9]{64}$/),
+  simulator_source_revision: z.string().regex(/^[a-f0-9]{40}$/),
+}).strict();
 const duration = z.number().nonnegative();
 const position = z.tuple([z.number(), z.number(), z.number()]);
 const role = z.enum(['before', 'after', 'reference', 'candidate']);
@@ -40,6 +53,7 @@ export const simulationReportBody = z.object({
   control_profile_sha256: sha, criteria_sha256: sha, frozen_plan_sha256: sha,
   evaluation_plan_sha256: sha, native_plan_sha256: sha, results_sha256: sha.optional(), runtime_sha256: sha,
   mapping_sha256: sha.optional(), evidence_sha256: sha.optional(),
+  model_admission: commandModelAdmissionSchema.optional(),
   report_sha256: sha, artifact_id: z.uuid(),
   before_model_sha256: sha.nullable(), after_model_sha256: sha.nullable(),
   candidate_model_sha256: sha.nullable(), reference_controller_sha256: sha.nullable(),
@@ -55,6 +69,10 @@ export const simulationReportBody = z.object({
 }).strict();
 export function consistentSimulationReport(report: Omit<z.infer<typeof simulationReportBody>, 'artifact_id'>, context: z.RefinementCtx) {
   const managed = report.native_schema === MANAGED_REPORT_SCHEMA;
+  if (report.model_admission && (!managed ||
+    report.model_admission.control_profile_sha256 !== report.control_profile_sha256)) {
+    context.addIssue({ code: 'custom', message: 'Command model admission must match the managed report profile.' });
+  }
   if (managed ? (
     report.comparison_kind !== 'paired_policy' || !report.mapping_sha256 || !report.evidence_sha256 ||
     report.results_sha256 !== undefined ||

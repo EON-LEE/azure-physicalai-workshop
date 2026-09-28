@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from test_api import api as api
 from test_api import headers
 from test_batch_learned import learned_spec as learned_spec
+from test_command_runtime_admission import command_runtime_value as command_runtime_value
 from test_learned_managed_lifecycle import authority as authority
 from test_learned_rescore import evidence as evidence
 from test_paired_artifacts import recording as recording
@@ -110,6 +111,39 @@ def test_complete_forty_native_rescores_keep_failures_and_physical_ids(managed_b
     assert len({row.logical_case_id for row in receipt.report.trials}) == 20
     assert receipt.report.results_sha256 is None
     assert inventory(bundle.root) == original
+
+
+def test_complete_command_pair_forwards_original_runtime_and_relays_only_verified_admission(
+    recording, command_runtime_value, tmp_path
+):
+    from apps.learning_worker.managed_reports import verify_local
+    from tests.managed_report_support import bundle as make_bundle
+    from tests.test_paired_artifacts import inventory
+
+    value = make_bundle(recording, tmp_path / "command-import", model_runtime=command_runtime_value)
+    original = inventory(value.root)
+    receipt = verify_local(value.verifier, ACTOR, value.context, value.root, value.models)
+    native = read_json(value.root / "report.json", max_bytes=32 * 1024**2)
+    assert receipt.report.model_admission.model_dump(mode="json") == native["model_admission"]
+    assert receipt.report.model_admission.runtime_sha256 == file_digest(
+        value.root / "model-runtime.json"
+    )
+    assert receipt.report.model_admission.artifact_schema == "physicalai.smolvla-checkpoint/v3"
+    assert len(receipt.report.trials) == 40 and receipt.report.quality_gate_passed is False
+    assert inventory(value.root) == original
+    path = value.root / "model-runtime.json"
+    missing = value.root.parent / "removed-runtime.json"
+    path.rename(missing)
+    try:
+        with pytest.raises(ValueError):
+            verify_local(value.verifier, ACTOR, value.context, value.root, value.models)
+    finally:
+        missing.rename(path)
+    altered = deepcopy(native)
+    altered["model_admission"]["runtime_sha256"] = "f" * 64
+    with rewritten(value.root / "report.json", altered), pytest.raises(Problem) as failure:
+        verify_local(value.verifier, ACTOR, repinned(value), value.root, value.models)
+    assert failure.value.code == "managed_import_rescore"
 
 
 def test_managed_study_window_is_explicit_bounded_and_separate_from_legacy_budget(managed_bundle):

@@ -24,11 +24,13 @@ from apps.api.learning_ports import JobSpecification
 from apps.api.models import Revision, utcnow
 from apps.api.simulation_reports import (
     MANAGED_REPORT_SCHEMA,
+    CommandModelAdmission,
     ManagedEvaluationReceipt,
     ManagedImportReference,
     SimulationReport,
     validate_report_binding,
 )
+from apps.learning_worker.candidate_provenance import verify_candidate_record
 from apps.learning_worker.paused_reports import compact_trial
 from learning.common import canonical, digest, file_digest, parse_json, read_json, safe_path, utc
 
@@ -263,8 +265,8 @@ def _models(verifier, actor, value, folder):
         index = verifier.registry.download(actor, record.artifact_id, roots[role])
         if index.get("manifest_sha256") != record.model_sha256:
             raise Problem(409, "managed_import_model", "Registered model manifest changed.")
-        model = verifier._model(
-            actor, roots[role], record.model_sha256, "smolvla", execution_timing="paused_simulation"
+        model = verifier.registered_model(
+            actor, record, roots[role], index, execution_timing="paused_simulation"
         )
         if (
             verifier._model_timing(model) != spec.project.timing_fields()
@@ -278,14 +280,13 @@ def _models(verifier, actor, value, folder):
             }
         ):
             raise Problem(409, "managed_import_model", "Actual model task or provenance differs.")
-        if isinstance(record, PolicyCandidate) and (
-            record.azure_job_id != model["training"]["azure_pipeline_job_id"]
-            or record.optimizer_steps != model["training"]["optimizer_steps"]
-            or record.parent_model_sha256 != model["training"]["parent_model_sha256"]
-            or record.source_commit != model["upstream"]["source_commit"]
-            or record.model_revision != model["upstream"]["model_revision"]
-        ):
-            raise Problem(409, "managed_import_model", "Actual native training metadata differs.")
+        if isinstance(record, PolicyCandidate):
+            try:
+                verify_candidate_record(record, model)
+            except Problem as exc:
+                raise Problem(
+                    409, "managed_import_model", "Actual native training metadata differs."
+                ) from exc
     return roots
 
 
@@ -329,6 +330,21 @@ def _project(value, mapping, verified):
         {key: item for key, item in scored.items() if key not in ("schema", "trials")}
     ) != canonical(verified["comparison"]):
         raise Problem(503, "managed_import_rescore", "Verified numeric projection differs.")
+    admission = None
+    if "model_admission" in verified:
+        admission = CommandModelAdmission.model_validate(verified["model_admission"])
+        provenance = mapping.runtime["provenance"]
+        if (
+            admission.runtime_sha256 != mapping.model_runtime_sha256
+            or admission.legacy_servo_sha256
+            != mapping.evaluation_plan["control_profile"]["servo_profile_sha256"]
+            or admission.control_profile_sha256 != spec.project.control_profile_sha256
+            or admission.simulator_image.split("@", 1)[1] != provenance["simulator_image_digest"]
+            or admission.simulator_source_revision != provenance["code_revision"]
+        ):
+            raise Problem(
+                503, "managed_import_runtime", "Verified model admission binding differs."
+            )
     retained = (
         "execution_timing",
         "real_time_admission",
@@ -358,6 +374,7 @@ def _project(value, mapping, verified):
         native_plan_sha256=verified["native_plan_sha256"],
         mapping_sha256=value.binding.mapping_sha256,
         evidence_sha256=value.completion.evidence_sha256,
+        model_admission=admission,
         report_sha256=value.completion.report_sha256,
         artifact_id=uuid5(
             NAMESPACE_URL,
@@ -381,17 +398,37 @@ def _project(value, mapping, verified):
     return ManagedEvaluationReceipt(**value.reference.model_dump(), report=report)
 
 
+def _model_runtime(root, mapping):
+    path = root / "model-runtime.json"
+    if not path.exists() and not path.is_symlink():
+        return None
+    path = safe_path(root, "model-runtime.json")
+    if path.stat().st_size > 65536:
+        raise Problem(
+            409, "managed_import_size", "Original model-runtime descriptor exceeds its bound."
+        )
+    content = path.read_bytes()
+    if digest(content) != mapping.model_runtime_sha256:
+        raise Problem(
+            409, "managed_import_runtime", "Original model-runtime descriptor checksum differs."
+        )
+    return content
+
+
 def verify_local(verifier, actor, value, root, model_roots):
     from simulation.paired_evaluation import PairingEvidence, PairingPlan, aggregate
 
     if value.reference.owner_key != actor.owner_key:
         raise Problem(403, "managed_import_scope", "Import belongs to another owner.")
-    if {path.name for path in root.iterdir()} != {
+    expected_files = {
         "mapping.json",
         "evidence.json",
         "report.json",
         "attempts",
-    }:
+    }
+    if (root / "model-runtime.json").exists() or (root / "model-runtime.json").is_symlink():
+        expected_files.add("model-runtime.json")
+    if {path.name for path in root.iterdir()} != expected_files:
         raise Problem(
             409, "managed_import_inventory", "Unexpected files outside the original snapshot."
         )
@@ -420,6 +457,7 @@ def verify_local(verifier, actor, value, root, model_roots):
     mapping = PairingPlan.model_validate(parse_json(mapping_bytes))
     evidence = PairingEvidence.model_validate(parse_json(evidence_bytes))
     _mapping_scope(value, mapping)
+    model_runtime = _model_runtime(root, mapping)
     if utc(evidence.snapshot_at_utc) > value.completion.created_at:
         raise Problem(409, "managed_import_snapshot", "Completion predates the evidence snapshot.")
     verified = aggregate(
@@ -430,6 +468,7 @@ def verify_local(verifier, actor, value, root, model_roots):
         evidence_sha256=value.completion.evidence_sha256,
         before_root=model_roots["before"],
         after_root=model_roots["after"],
+        **({"model_runtime": model_runtime} if model_runtime is not None else {}),
     )
     if canonical(parse_json(report_bytes)) != canonical(verified):
         raise Problem(409, "managed_import_rescore", "Declared report differs from actual rescore.")

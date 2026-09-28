@@ -124,6 +124,25 @@ class TrialCount(FrozenReport):
     success: int = Field(strict=True, ge=0, le=20)
 
 
+class CommandModelAdmission(FrozenReport):
+    admission_kind: Literal["azureml_command_v3"]
+    artifact_schema: Literal["physicalai.smolvla-checkpoint/v3"]
+    training_execution: Literal["azureml_command"]
+    server_entrypoint: Literal["learning.paused.command_model"]
+    provider_entrypoint: Literal["simulation.command_policy_deployment.CommandPausedPolicyProvider"]
+    request_schema: Literal["physicalai.smolvla-request/v2"]
+    response_schema: Literal["physicalai.smolvla-response/v2"]
+    runtime_sha256: Revision
+    legacy_servo_sha256: Revision
+    control_profile_sha256: Revision
+    simulator_sources_sha256: Revision
+    native_sources_sha256: Revision
+    simulator_image: str = Field(
+        pattern=r"^[a-z0-9]+\.azurecr\.io/[a-z0-9_./-]+@sha256:[a-f0-9]{64}$"
+    )
+    simulator_source_revision: str = Field(pattern=r"^[a-f0-9]{40}$")
+
+
 class SimulationReport(FrozenReport):
     execution_timing: Literal["paused_simulation"]
     real_time_admission: Literal[False]
@@ -142,6 +161,9 @@ class SimulationReport(FrozenReport):
     results_sha256: Revision | None = Field(default=None, exclude_if=lambda value: value is None)
     mapping_sha256: Revision | None = Field(default=None, exclude_if=lambda value: value is None)
     evidence_sha256: Revision | None = Field(default=None, exclude_if=lambda value: value is None)
+    model_admission: CommandModelAdmission | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     runtime_sha256: Revision
     report_sha256: Revision
     artifact_id: UUID
@@ -176,6 +198,13 @@ class SimulationReport(FrozenReport):
     @model_validator(mode="after")
     def complete_role_pair(self):
         managed = self.native_schema == MANAGED_REPORT_SCHEMA
+        if self.model_admission is not None and (
+            not managed
+            or self.model_admission.control_profile_sha256 != self.control_profile_sha256
+        ):
+            raise ValueError(
+                "Command model admission belongs only to its verified managed profile."
+            )
         if managed:
             if (
                 self.comparison_kind != "paired_policy"

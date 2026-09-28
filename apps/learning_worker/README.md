@@ -211,6 +211,17 @@ Thirty-nine trials, preemption, missing terminal files or a rehashed green
 summary cannot become a scorable report. Fully verified failed physical trials
 remain in each twenty-case denominator.
 
+An explicitly attested command-v3 pairing additionally includes the original
+`files/model-runtime.json` (at most 65536 bytes). Its exact file SHA must match
+the frozen mapping's `model_runtime_sha256`; the worker forwards these bytes
+unchanged to the native aggregate. Only its closed new runtime/admission-v2
+contract can select the new command model verifier/server/provider. An absent
+descriptor keeps the legacy v2 path; the controller's unchanged profile hash
+is not implicit v3 model admission. Do not reuse the old runtime descriptor.
+The compact report relays the native-verified `model_admission` object with
+its exact entrypoints, IPC versions, image/source and runtime checksums; it
+does not synthesize this evidence or infer physical quality from its presence.
+
 Only a complete forty-trial result becomes `report_committed` and a typed
 `ManagedEvaluationReceipt`. The compact API report explicitly keeps the managed
 schema, mapping/evidence hashes and both logical/physical IDs. It does not
@@ -308,6 +319,64 @@ precede paid submission. An ambiguous request is reconciled by the existing
 job name/tags. It is never retried with a new job name or an upsert of old work.
 Status/cancel remain read/reconcile operations for existing claims rather than
 requiring new model admission. Azure `Completed` alone is not a candidate.
+
+### Explicit single-command training provenance
+
+The separate paused, image-embedded, checkpoint-enabled command variant must
+declare the closed `job_execution` object in its original
+`physicalai.smolvla-azure/v2` configuration:
+
+```json
+{
+  "schema": "physicalai.smolvla-command-execution/v1",
+  "kind": "command",
+  "data_transport": "private_blob_mi"
+}
+```
+
+The actual Azure ML command name must equal the original `config.run_id`.
+Registered asset names, versions, URIs and manifest hashes remain reviewed
+configuration inputs, but are not submitted as Azure ML job inputs, code
+assets or custom mounted outputs. The native task transfers approved private
+artifacts with managed identity and publishes under the unchanged
+`output_prefix/<job-name>/model/` path. This is not a Batch training job.
+
+The worker accepts this variant only with a natively validated
+`physicalai.smolvla-checkpoint/v3` candidate declaring
+`training_execution: azureml_command`, plus the closed
+`physicalai.smolvla-command-training-result/v1` result. Both retain the one
+actual root `azure_job_id` and exact `azure_job_type: command`. Pipeline and
+component IDs must be absent, not copied from the root ID. Prepared parents
+and old pipeline candidates keep their existing v2 contracts and validators;
+the consumer never rewrites a v3 manifest into a v2 shape.
+It selects the new, v3-only `learning.paused.command_artifacts.validate_model`
+only after the original closed command configuration and actual root-job GET
+have been verified. Merely detecting a v3 schema is not admission. The legacy
+paused validator still rejects v3 and its controller-hashed bytes remain
+unchanged; the new model-server/provider layer needs its own complete runtime
+and image attestation, not a reused legacy descriptor.
+
+Candidate acceptance independently checks the original immutable job/config,
+model/data/backbone lineage, task/profile/criteria, new versus cumulative
+optimizer updates, checkpoint source and original UTC deadline. It computes
+the expected snapshot from the pinned static source and canonical config,
+then uses the native read-only root-job verifier with `expected_status=Completed`.
+The actual root must have the approved workspace/name, command type, managed
+identity, compute, immutable environment image, exact embedded command and
+source/config/deadline tags, with no parent, code, job inputs or custom outputs.
+Historical completion verification does not renew the expired execution lease.
+
+Reverification and managed paired-model import use the same original command
+result and root metadata. An API candidate's existing `azure_job_id` remains
+the real Azure ML ID; no synthetic pipeline identity, new status, public
+checkpoint selector or inference/release permission is introduced. Command
+checkpoint/resume provenance is checked in the operator-reviewed native config,
+not accepted as browser-supplied JSON. Existing stage/model admission defaults,
+physical evaluation criteria and release gates are unchanged.
+The private registered artifact index retains explicit `training_execution`,
+`azure_job_type` and the actual root ID for finding that original command
+registration. These fields alone grant no authority: missing, mixed or changed
+index/config/root metadata cannot select the new validator.
 
 ### Independent, default-OFF deadline reconciliation
 

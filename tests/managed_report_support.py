@@ -1,5 +1,6 @@
 """Construct independent CPU codec records. These are not simulated or measured GPU outcomes."""
 
+import base64
 import json
 import shutil
 from copy import deepcopy
@@ -34,7 +35,7 @@ from tests.test_paired_artifacts import encoded, inventory
 from tests.test_paused_learning_api import paused_project_payload
 
 
-def bundle(recording, destination):
+def bundle(recording, destination, *, model_runtime=None):
     _, template_dir, template_mapping, _, _, template_roots, template_spec, _ = recording
     base_report = read_json(template_dir / "probe.json")
     original_environment = read_json(template_dir / "inputs" / "environment.json")
@@ -85,6 +86,23 @@ def bundle(recording, destination):
             criteria_sha256=model["criteria_sha256"],
             frozen_plan_sha256=model["frozen_plan_sha256"],
         )
+        if model_runtime is not None:
+            model.update(
+                schema="physicalai.smolvla-checkpoint/v3", training_execution="azureml_command"
+            )
+            training = model["training"]
+            training["azure_job_id"] = training["azure_pipeline_job_id"] + "-" + role
+            training.pop("azure_pipeline_job_id")
+            training["azure_job_type"] = "command"
+            training["gpu"]["device_count"] = 1
+            training["episodes"] = [
+                {
+                    "episode_id": "cpu-training-10001",
+                    "environment_id": "cpu-training",
+                    "revision": "a" * 64,
+                    "seed": 10001,
+                }
+            ]
         if role == "after":
             model["training"]["parent_model_sha256"] = file_digest(roots["before"] / "model.json")
         (roots[role] / "model.json").write_bytes(encoded(model))
@@ -111,9 +129,27 @@ def bundle(recording, destination):
         )
     for index, assignment in enumerate(mapping["assignments"]):
         assignment["physical_attempt_id"] = str(UUID(int=1000 + index))
+    admission, runtime_bytes = None, None
+    if model_runtime is not None:
+        runtime = batch_learned.parse_model_runtime(
+            {
+                **model_runtime,
+                "legacy_servo_sha256": profile["servo_profile_sha256"],
+                "control_profile_sha256": native["control_profile_sha256"],
+                "simulator_image": template_spec.platform.container_image,
+                "simulator_source_revision": template_spec.source_revision,
+            }
+        )
+        runtime_bytes = encoded(runtime.model_dump(mode="json", by_alias=True))
+        mapping["model_runtime_sha256"] = digest(runtime_bytes)
+        admission = batch_learned.command_admission_proof(
+            runtime, runtime_sha256=mapping["model_runtime_sha256"]
+        )
     mapped = paired_evaluation.PairingPlan.model_validate(mapping)
     root = destination / "files"
     root.mkdir()
+    if runtime_bytes is not None:
+        (root / "model-runtime.json").write_bytes(runtime_bytes)
     (root / "mapping.json").write_bytes(encoded(mapping))
     mapping_sha = file_digest(root / "mapping.json")
     from learning.paused import PausedControlProfile
@@ -138,6 +174,10 @@ def bundle(recording, destination):
         value["model"]["manifest"]["name"] = f"{model_prefix}models/{assignment.role}/model.json"
         value["backbone"]["manifest"]["name"] = f"{model_prefix}backbone/backbone.json"
         value["model_runtime"]["name"] = f"{model_prefix}runtimes/model-runtime.json"
+        if runtime_bytes is not None:
+            value["model_runtime"].update(
+                sha256=digest(runtime_bytes), size_bytes=len(runtime_bytes)
+            )
         value["model"]["manifest"].update(
             sha256=file_digest(roots[assignment.role] / "model.json"),
             size_bytes=(roots[assignment.role] / "model.json").stat().st_size,
@@ -333,6 +373,8 @@ def bundle(recording, destination):
             trial=trial,
         )
         report["metrics"]["applied_model_sha256"] = spec.model.manifest.sha256
+        if admission is not None:
+            report["model_admission"] = admission
         report["capture"]["receipt"].update(
             episode_id=str(spec.attempt_id),
             manifest_sha256=raw.manifest_sha256,
@@ -346,6 +388,12 @@ def bundle(recording, destination):
         )
         preflight = read_json(template_dir / "preflight.json")
         preflight["model_process"]["model_sha256"] = spec.model.manifest.sha256
+        if runtime_bytes is not None:
+            preflight["model_process"].update(
+                runtime_sha256=digest(runtime_bytes),
+                admission=admission,
+                runtime_descriptor_base64=base64.b64encode(runtime_bytes).decode("ascii"),
+            )
         documents.update(
             {
                 "preflight.json": encoded(preflight),
@@ -406,6 +454,7 @@ def bundle(recording, destination):
         evidence_sha256=file_digest(root / "evidence.json"),
         before_root=roots["before"],
         after_root=roots["after"],
+        **({"model_runtime": runtime_bytes} if runtime_bytes is not None else {}),
     )
     (root / "report.json").write_bytes(encoded(output))
     request = paused_project_payload()
@@ -456,7 +505,9 @@ def bundle(recording, destination):
             manifest_sha256=file_digest(roots[role] / "model.json"),
             artifact_id=uuid4(),
             optimizer_steps=model["training"]["optimizer_steps"],
-            azure_job_id=model["training"]["azure_pipeline_job_id"],
+            azure_job_id=model["training"][
+                "azure_job_id" if runtime_bytes is not None else "azure_pipeline_job_id"
+            ],
             source_commit=model["upstream"]["source_commit"],
             model_revision=model["upstream"]["model_revision"],
             **project.timing_fields(),

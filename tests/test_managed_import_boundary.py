@@ -141,3 +141,65 @@ def test_verification_inventory_also_pins_registered_model_indexes():
     value["role"] = "different-role"
     registry.container.items[key] = json.dumps(value).encode(), etag
     assert _inventory(verifier, ACTOR, context) != original
+
+
+def test_original_model_runtime_bytes_are_optional_bounded_and_exactly_hash_pinned(tmp_path):
+    from types import SimpleNamespace
+
+    from apps.learning_worker.managed_reports import _model_runtime
+    from learning.common import digest
+
+    original = b'{ "schema": "descriptor-test-bytes-not-an-admission" }\n'
+    mapping = SimpleNamespace(model_runtime_sha256=digest(original))
+    assert _model_runtime(tmp_path, mapping) is None
+    path = tmp_path / "model-runtime.json"
+    path.write_bytes(original)
+    assert _model_runtime(tmp_path, mapping) == original
+    path.write_bytes(original + b"\n")
+    with pytest.raises(Problem) as failure:
+        _model_runtime(tmp_path, mapping)
+    assert failure.value.code == "managed_import_runtime"
+    path.write_bytes(b"x" * 65537)
+    with pytest.raises(Problem) as failure:
+        _model_runtime(tmp_path, mapping)
+    assert failure.value.code == "managed_import_size"
+
+
+def test_command_admission_is_explicit_and_cannot_be_added_to_legacy_report():
+    from apps.api.simulation_reports import CommandModelAdmission, SimulationReport
+    from tests.test_paused_report_projection import project_verified, specimen
+
+    spec, _, native, output = specimen()
+    report = project_verified(spec, native, output)
+    proof = {
+        "admission_kind": "azureml_command_v3",
+        "artifact_schema": "physicalai.smolvla-checkpoint/v3",
+        "training_execution": "azureml_command",
+        "server_entrypoint": "learning.paused.command_model",
+        "provider_entrypoint": "simulation.command_policy_deployment.CommandPausedPolicyProvider",
+        "request_schema": "physicalai.smolvla-request/v2",
+        "response_schema": "physicalai.smolvla-response/v2",
+        "runtime_sha256": "1" * 64,
+        "legacy_servo_sha256": "2" * 64,
+        "control_profile_sha256": report.control_profile_sha256,
+        "simulator_sources_sha256": "3" * 64,
+        "native_sources_sha256": "4" * 64,
+        "simulator_image": "test.azurecr.io/test@sha256:" + "5" * 64,
+        "simulator_source_revision": "6" * 40,
+    }
+    assert CommandModelAdmission.model_validate(proof).model_dump(mode="json") == proof
+    assert "model_admission" not in report.model_dump(mode="json")
+    with pytest.raises(ValidationError):
+        SimulationReport.model_validate(report.model_dump() | {"model_admission": proof})
+    for field in proof:
+        missing = dict(proof)
+        missing.pop(field)
+        with pytest.raises(ValidationError):
+            CommandModelAdmission.model_validate(missing)
+    for change in (
+        {"server_entrypoint": "learning.paused.model"},
+        {"simulator_image": "test.azurecr.io/test:latest"},
+        {"schema": "unapproved"},
+    ):
+        with pytest.raises(ValidationError):
+            CommandModelAdmission.model_validate(proof | change)

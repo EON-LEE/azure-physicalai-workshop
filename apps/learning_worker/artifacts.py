@@ -20,6 +20,17 @@ from apps.api.learning_models import (
 )
 from apps.api.models import DemonstrationResult, utcnow
 from apps.api.reference_models import ReferenceCollection
+from apps.learning_worker.candidate_provenance import (
+    VerifiedCommandJob,
+    command_config,
+    command_model,
+    read_command_result,
+    training_root_id,
+    verify_candidate_record,
+    verify_command_job,
+    verify_command_result,
+    verify_pipeline_result,
+)
 from apps.learning_worker.policies import implementation
 
 
@@ -47,12 +58,28 @@ class VerifiedArtifacts:
         return Scope(str(actor.tenant_id), actor.owner_key)
 
     def _model(
-        self, actor, root, expected_sha, policy_type, *, inference=True, execution_timing=None
+        self,
+        actor,
+        root,
+        expected_sha,
+        policy_type,
+        *,
+        inference=True,
+        execution_timing=None,
+        verified_command: VerifiedCommandJob | None = None,
     ):
         if policy_type not in self.allowed_policy_types:
             raise Problem(
                 503, "learning_policy_unapproved", "Model license and hardware are unapproved."
             )
+        if verified_command is not None and (
+            not isinstance(verified_command, VerifiedCommandJob)
+            or verified_command.owner_key != actor.owner_key
+            or execution_timing != "paused_simulation"
+            or policy_type != "smolvla"
+            or not inference
+        ):
+            raise Problem(503, "candidate_job_mismatch", "Verified command context is invalid.")
         module_name, _ = implementation(policy_type, model_use=True)
         if execution_timing is not None:
             if execution_timing != "paused_simulation" or policy_type != "smolvla":
@@ -60,8 +87,11 @@ class VerifiedArtifacts:
                     409, "model_timing_mismatch", "Model mode and family are not supported."
                 )
             module_name = "learning.paused"
+        module_path = f"{module_name}.artifacts"
+        if verified_command is not None:
+            module_path = "learning.paused.command_artifacts"
         try:
-            module = importlib.import_module(f"{module_name}.artifacts")
+            module = importlib.import_module(module_path)
         except ModuleNotFoundError as exc:
             raise unavailable("Pinned policy artifact validator") from exc
         try:
@@ -77,6 +107,14 @@ class VerifiedArtifacts:
             ) from exc
         if result["policy_type"] != policy_type:
             raise Problem(409, "model_family_mismatch", "Model versions cannot be relabeled.")
+        if verified_command is not None and (
+            not command_model(result)
+            or result["training"]["azure_job_id"] != verified_command.azure_job_id
+            or result["training"]["specification_sha256"] != verified_command.specification_sha256
+        ):
+            raise Problem(
+                503, "candidate_job_mismatch", "Model does not match the verified command."
+            )
         return result
 
     @staticmethod
@@ -451,7 +489,7 @@ class VerifiedArtifacts:
             )
             return dataset_id, digest
 
-    def _output(self, actor, specification, output_name, destination):
+    def _output_location(self, actor, specification, output_name):
         config = self.registry.job_configuration(actor, specification)
         if config is None:
             config = self.registry.approved_plan(actor, specification)["config"]
@@ -466,10 +504,29 @@ class VerifiedArtifacts:
         account = config["storage_account_name"]
         if not re.fullmatch(r"[a-z0-9]{3,24}", account):
             raise Problem(503, "invalid_output_account", "Azure output account is not approved.")
-        self._download_prefix(
+        if command_config(config) and (
+            config["run_id"] != specification.run.backend_job_name
+            or config["tenant_id"] != str(actor.tenant_id)
+            or config["specification_sha256"] != specification.run.specification_sha256
+        ):
+            raise Problem(
+                503, "candidate_configuration_mismatch", "Command output binding differs."
+            )
+        return (
+            config,
             f"https://{account}.blob.core.windows.net",
             config["blob_container"],
             f"{prefix.rstrip('/')}/{specification.run.backend_job_name}/{output_name}/",
+        )
+
+    def _output(self, actor, specification, output_name, destination):
+        config, account, container, prefix = self._output_location(
+            actor, specification, output_name
+        )
+        self._download_prefix(
+            account,
+            container,
+            prefix,
             destination,
         )
         return config
@@ -480,7 +537,11 @@ class VerifiedArtifacts:
         with TemporaryDirectory(prefix="physicalai-checkpoint-") as folder:
             output = Path(folder) / "model"
             config = self._output(actor, specification, "model", output)
-            result = self._read_json(output / "result.json")
+            result = (
+                read_command_result(output / "result.json")
+                if command_config(config)
+                else self._read_json(output / "result.json")
+            )
             if result.get("azure_job_id") != azure_job_id or not re.fullmatch(
                 r"candidates/step-[0-9]+", str(result.get("candidate", ""))
             ):
@@ -495,20 +556,37 @@ class VerifiedArtifacts:
                     "candidate_digest_mismatch",
                     "Final model manifest digest is missing or changed.",
                 )
+            verified_command = (
+                verify_command_job(self, actor, specification, config, azure_job_id)
+                if command_config(config)
+                else None
+            )
             model = self._model(
                 actor,
                 root,
                 expected,
                 specification.project.policy_type,
                 execution_timing=specification.project.execution_timing,
+                verified_command=verified_command,
             )
             training = model["training"]
+            if command_config(config):
+                verify_command_result(
+                    self,
+                    actor,
+                    specification,
+                    config,
+                    model,
+                    result,
+                    azure_job_id,
+                    verified_job=verified_command,
+                )
+            else:
+                verify_pipeline_result(model, result, azure_job_id)
             parent = specification.training_parent or specification.baseline
             if (
                 parent is None
                 or specification.dataset is None
-                or training["azure_pipeline_job_id"] != azure_job_id
-                or training["azure_job_id"] != result.get("azure_component_job_id")
                 or training["parent_model_sha256"] != parent.model_sha256
                 or training["raw_manifest_sha256"] != specification.dataset.manifest_sha256
                 or training["optimizer_steps"] != result["optimizer_steps"]
@@ -534,7 +612,19 @@ class VerifiedArtifacts:
                 actor,
                 candidate_id,
                 root,
-                {"manifest_sha256": expected, "role": "trained_candidate"},
+                {
+                    "manifest_sha256": expected,
+                    "role": "trained_candidate",
+                    **(
+                        {
+                            "training_execution": "azureml_command",
+                            "azure_job_type": "command",
+                            "azure_job_id": azure_job_id,
+                        }
+                        if verified_command is not None
+                        else {}
+                    ),
+                },
             )
             now = utcnow()
             candidate = PolicyCandidate(
@@ -568,7 +658,14 @@ class VerifiedArtifacts:
             key = f"jobs/{specification.run.backend_job_name}/candidate.json"
             existing = self.registry.get(actor, key)
             if existing is not None:
-                return PolicyCandidate.model_validate(existing)
+                original = PolicyCandidate.model_validate(existing)
+                if verified_command is not None and original.model_dump(
+                    exclude={"created_at", "updated_at"}
+                ) != candidate.model_dump(exclude={"created_at", "updated_at"}):
+                    raise Problem(
+                        503, "candidate_provenance_mismatch", "Existing command candidate differs."
+                    )
+                return original
             self.registry.put(actor, key, candidate.model_dump(mode="json"))
             return candidate
 
@@ -676,22 +773,141 @@ class VerifiedArtifacts:
     def verify_candidate(self, actor, project, run, candidate):
         with TemporaryDirectory(prefix="physicalai-verify-model-") as folder:
             root = Path(folder) / "candidate"
-            self.registry.download(actor, candidate.artifact_id, root)
-            model = self._model(
+            index = self.registry.download(actor, candidate.artifact_id, root)
+            model = self.registered_model(
                 actor,
+                candidate,
                 root,
-                candidate.manifest_sha256,
-                candidate.policy_type,
+                index,
                 execution_timing=project.execution_timing,
+                project=project,
+                run=run,
             )
+            verify_candidate_record(candidate, model)
             if (
-                model["training"]["azure_pipeline_job_id"] != run.azure_job_id
+                training_root_id(model) != run.azure_job_id
                 or self._model_timing(model) != project.timing_fields()
                 or not candidate.matches_timing(project)
             ):
                 raise Problem(
                     503, "candidate_job_mismatch", "Candidate references a different training run."
                 )
+
+    def registered_model(
+        self, actor, record, root, index, *, execution_timing, project=None, run=None
+    ):
+        if not any(
+            name in index for name in ("training_execution", "azure_job_type", "azure_job_id")
+        ):
+            return self._model(
+                actor,
+                root,
+                record.manifest_sha256,
+                record.policy_type,
+                execution_timing=execution_timing,
+            )
+        if (
+            index.get("training_execution") != "azureml_command"
+            or index.get("azure_job_type") != "command"
+            or index.get("role") != "trained_candidate"
+            or index.get("manifest_sha256") != record.manifest_sha256
+            or not isinstance(index.get("azure_job_id"), str)
+            or "azure_pipeline_job_id" in index
+            or "azure_component_job_id" in index
+        ):
+            raise Problem(
+                503, "candidate_job_mismatch", "Registered command provenance is incomplete."
+            )
+        job_name = index["azure_job_id"].rsplit("/", 1)[-1]
+        if not re.fullmatch(r"learning-[a-f0-9-]{1,91}", job_name):
+            raise Problem(503, "candidate_job_mismatch", "Registered command name is invalid.")
+        candidate = record
+        if not isinstance(record, PolicyCandidate):
+            original = self.registry.get(actor, f"jobs/{job_name}/candidate.json")
+            if original is None:
+                raise Problem(
+                    503, "candidate_job_mismatch", "Original command candidate is missing."
+                )
+            candidate = PolicyCandidate.model_validate(original)
+            if (
+                candidate.id != record.candidate_id
+                or candidate.model_sha256 != record.model_sha256
+                or candidate.artifact_id != record.artifact_id
+            ):
+                raise Problem(
+                    503, "candidate_job_mismatch", "Release and command candidate differ."
+                )
+        if candidate.azure_job_id != index["azure_job_id"]:
+            raise Problem(503, "candidate_job_mismatch", "Original command identity differs.")
+        specification = self.registry.job(actor, job_name)
+        if specification is None or (
+            specification.run.kind != "training"
+            or specification.run.id != candidate.training_run_id
+            or specification.run.backend_job_name != job_name
+            or specification.project.id != candidate.project_id
+            or candidate.dataset_id != specification.run.dataset_id
+            or candidate.owner_key != actor.owner_key
+            or candidate.tenant_id != actor.tenant_id
+            or candidate.parent_release_id != specification.run.parent_release_id
+            or candidate.pretrained_artifact_id != specification.run.pretrained_artifact_id
+            or (project is not None and specification.project != project)
+            or (
+                run is not None
+                and any(
+                    getattr(specification.run, field) != getattr(run, field)
+                    for field in (
+                        "id",
+                        "project_id",
+                        "backend_job_name",
+                        "specification_sha256",
+                        "deadline",
+                        "dataset_id",
+                        "optimizer_steps",
+                    )
+                )
+            )
+        ):
+            raise Problem(
+                503,
+                "candidate_job_mismatch",
+                "Original command candidate job registration differs.",
+            )
+        config, account, container, prefix = self._output_location(actor, specification, "model")
+        if not command_config(config):
+            raise Problem(
+                503, "candidate_job_mismatch", "Command model requires its original config."
+            )
+        verified_command = verify_command_job(
+            self, actor, specification, config, candidate.azure_job_id
+        )
+        model = self._model(
+            actor,
+            root,
+            candidate.manifest_sha256,
+            candidate.policy_type,
+            execution_timing=execution_timing,
+            verified_command=verified_command,
+        )
+        with TemporaryDirectory(prefix="physicalai-command-result-") as temporary:
+            path = Path(temporary) / "result.json"
+            self._download_file(account, container, prefix + "result.json", path)
+            result = read_command_result(path)
+        if result.get("model_manifest_sha256") != candidate.manifest_sha256:
+            raise Problem(
+                503, "candidate_digest_mismatch", "Original command result model differs."
+            )
+        verify_command_result(
+            self,
+            actor,
+            specification,
+            config,
+            model,
+            result,
+            candidate.azure_job_id,
+            verified_job=verified_command,
+        )
+        verify_candidate_record(candidate, model)
+        return model
 
     def verify_report(self, actor, project, run, report):
         from apps.api.simulation_reports import MANAGED_REPORT_SCHEMA, SimulationReport

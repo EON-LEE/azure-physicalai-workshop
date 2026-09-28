@@ -287,6 +287,16 @@ Incomplete/preempted slots cannot enter this complete-only DTO. Verified
 failed trials remain present, and unchanged native safety/quality gates
 control eligibility for a separately reviewed release.
 
+Only separately attested command-v3 pairings include the optional
+`model_admission` object. It is relayed from the independently regenerated
+native report and identifies the literal v3 artifact/model-server/provider,
+unchanged v2 IPC, and exact runtime, source, image and controller hashes.
+All fields are required when present; legacy reports omit the object.
+The native aggregate receives the original hash-pinned runtime descriptor
+bytes, not a browser-generated approval. This metadata neither changes
+quality thresholds nor turns training or import completion into physical
+success or release authority.
+
 The managed-only `before_candidate_id` and private specification
 `baseline_candidate` permit evaluation of two actual learned candidates
 before either is published. They are mutually exclusive with an existing

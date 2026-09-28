@@ -2,7 +2,7 @@ import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { evaluationSchema } from '../src/learning/contracts';
 import { LearningJobPanel } from '../src/learning/LearningJobPanel';
-import { simulationReportSchema } from '../src/learning/simulationReports';
+import { commandModelAdmissionSchema, simulationReportSchema } from '../src/learning/simulationReports';
 import { learningApi, learningFixture } from './fixtures/learning';
 import { simulationReportFixture } from './fixtures/simulation-report';
 
@@ -22,6 +22,33 @@ function mappedReport() {
 }
 
 describe('operator-bound managed evaluation imports', () => {
+  it('retains only the explicit separately pinned command-model admission shape', () => {
+    const original = mappedReport();
+    const admission = {
+      admission_kind: 'azureml_command_v3', artifact_schema: 'physicalai.smolvla-checkpoint/v3',
+      training_execution: 'azureml_command', server_entrypoint: 'learning.paused.command_model',
+      provider_entrypoint: 'simulation.command_policy_deployment.CommandPausedPolicyProvider',
+      request_schema: 'physicalai.smolvla-request/v2', response_schema: 'physicalai.smolvla-response/v2',
+      runtime_sha256: '1'.repeat(64), legacy_servo_sha256: '2'.repeat(64),
+      control_profile_sha256: original.control_profile_sha256,
+      simulator_sources_sha256: '3'.repeat(64), native_sources_sha256: '4'.repeat(64),
+      simulator_image: `test.azurecr.io/test@sha256:${'5'.repeat(64)}`,
+      simulator_source_revision: '6'.repeat(40),
+    };
+    expect(commandModelAdmissionSchema.parse(admission)).toEqual(admission);
+    expect(simulationReportSchema.parse({ ...original, model_admission: admission }).model_admission).toEqual(admission);
+    expect(simulationReportSchema.parse(original)).not.toHaveProperty('model_admission');
+    expect(() => simulationReportSchema.parse({
+      ...original, model_admission: { ...admission, control_profile_sha256: '7'.repeat(64) },
+    })).toThrow();
+    expect(() => simulationReportSchema.parse({
+      ...simulationReportFixture(), model_admission: admission,
+    })).toThrow();
+    expect(() => commandModelAdmissionSchema.parse({
+      ...admission, server_entrypoint: 'learning.paused.model',
+    })).toThrow();
+  });
+
   it('retains all physical and logical IDs without inventing an old results.json', () => {
     const report = simulationReportSchema.parse(mappedReport());
     expect(report.trials).toHaveLength(40);

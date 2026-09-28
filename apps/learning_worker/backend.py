@@ -23,6 +23,7 @@ from apps.api.learning_models import (
 from apps.api.learning_ports import BackendJob, JobSpecification
 from apps.api.models import utcnow
 from apps.api.simulation_reports import SimulationReport
+from apps.learning_worker.candidate_provenance import command_config
 from apps.learning_worker.policies import implementation
 from apps.learning_worker.registry import ReconciliationTarget
 
@@ -181,6 +182,15 @@ class PolicyLearningWorker:
                 409,
                 "worker_plan_mismatch",
                 "Register the exact approved immutable job specification.",
+            )
+        if command_config(config) and (
+            specification.run.kind != "training"
+            or config["run_id"] != specification.run.backend_job_name
+        ):
+            raise Problem(
+                409,
+                "worker_plan_mismatch",
+                "The approved command run_id must be the actual job name.",
             )
         if (
             config.get("policy_type", specification.project.policy_type)

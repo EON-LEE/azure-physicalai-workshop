@@ -45,6 +45,10 @@ export function SimulationComparison({ api, jobId, jobStatus, report, candidateI
       </div>
       <dl className="learning-metadata">
         <FieldValue label="평가된 시뮬레이션 프로파일"><code>{report.control_profile_id}</code></FieldValue>
+        {report.model_admission && <>
+          <FieldValue label="별도 모델 실행 승인 종류"><code>{report.model_admission.admission_kind}</code></FieldValue>
+          <FieldValue label="검증된 모델 runtime SHA"><code>{report.model_admission.runtime_sha256}</code></FieldValue>
+        </>}
         <FieldValue label="전체 실제 WALL 시간 (초)">{number(report.total_wall_duration_ms / 1000)}</FieldValue>
         <FieldValue label="전체 실제 SIM 시간 (초)">{number(report.total_simulation_duration_ms / 1000)}</FieldValue>
         <FieldValue label="전체 시도 수">{report.total_trial_count}</FieldValue>
