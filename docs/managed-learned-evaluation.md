@@ -287,3 +287,80 @@ logical-case/role/physical-UUID assignments and binds its file hash through
 original heartbeats and native task rescore without rewriting raw IDs. Standalone
 specs omit that optional field and keep their original wire hash. Single-trial
 files still cannot be passed off as the old all-attempt recorder's results.
+
+### Diagnostic-only rejection evidence
+
+The separately attested command-v3 server writes one
+`PHYSICALAI_COMMAND_DIAGNOSTIC <JSON>` line to its existing stderr capture
+(`probe.log`) when its guarded serving call fails. The record uses
+`physicalai.paused-command-diagnostic/v1`, with `diagnostic_only=true`, and is
+limited to **16 KiB including the prefix and newline**. There are no new CLI
+flags, sockets, prediction wrappers or model-artifact fields.
+
+A `kind=joint_guard_rejected` record is extracted only from the original
+`ContractError` traceback with the exact code objects of the unchanged
+`serve`, `make_response` and `bounded_joints`, in that order. The walk is capped
+at 64 frames. Its closed primitive fields are:
+
+| Field | Original evidence |
+| --- | --- |
+| `joint_guard` | Failing nine-target vector, joint name/index, value, nominal `low`/`high`, existing `1e-6` tolerance and label |
+| `horizon_index` within `joint_guard` | Zero-based index only when the original row object appears exactly once in the original 50-row action object; otherwise `null`/`unknown` |
+| `request` | Original request ID/sequence and model/profile/task/context/observation/freeze bindings |
+| `context` | Allowlisted validated scope, command/episode/environment/revision, approval and original absolute timing/step bindings |
+| `inference` | Original server `started_ns`, `ended_ns` and their actual elapsed milliseconds |
+
+All 50 horizon rows are still checked by the pinned guard before a response;
+a rejection does not imply that row zero failed. Missing or ambiguous frames,
+malformed/nonfinite values and oversized diagnostics produce an explicit
+`kind=unavailable`, never a reconstructed value, guessed row or clipped action.
+No arbitrary locals, policy/tensor representations, credentials or PNG payloads
+are copied. The original nonzero process exit is retained even if diagnostic I/O
+fails. This observes the guard; it does not catch it into a usable policy result.
+
+The learned probe snapshots the terminal `core.command` error/metrics and
+initial/terminal observed states **before** optional final-camera collection.
+For failure it logs `PHYSICALAI_LEARNED_DIAGNOSTIC <JSON>` and retains optional
+`diagnostics` in `probe.json`, schema
+`physicalai.paused-learned-diagnostics/v1`. The log line is also capped at
+16 KiB; a failed diagnostic read is explicitly unavailable. A terminal snapshot
+may share the initial physics step while showing a later prediction count. It
+is **not appended** to the per-tick `task_states` array. A missing terminal
+readback is `null`, not an invented zero-action measurement.
+
+The original command error remains in `probe.json.error`; camera, capture,
+teardown and receipt errors are recorded separately. If camera finalization
+fails, `final_images` stays `null`: no final PNG or RAW manifest is fabricated.
+The receipt is saved before application teardown; any later teardown error is
+logged separately without rewriting that immutable receipt. A failed receipt
+write leaves the earlier terminal snapshot in the existing captured log, not a
+success-shaped publication.
+
+The Batch wrapper reads available original evidence even when the model exits
+or the probe times out. On failure, `completion.json.diagnostics` preserves
+the command error/metrics, separate model exit code and secondary errors. It can
+report a bound original joint rejection as the primary diagnostic, reading at
+most the last **1 MiB** of `probe.log` and accepting exactly one bounded record
+matching the attempt/model/owner/task/profile. Absent, malformed, duplicate or
+foreign records remain unavailable; a bounded-log miss is not proof that no
+inference occurred.
+
+This does **not** admit a new kind of failed trial. The old model-exit/timeout
+barrier still prevents native acceptance/raw-manifest publication. A zero-action
+rejection still lacks the required two complete RAW frames and sequential
+per-tick evidence, so it remains **incomplete and unscorable**. Complete normal
+trial wire/defaults and all native scoring, safety counts and frozen criteria
+are unchanged. Old incomplete attempts cannot be upgraded by these diagnostics.
+
+There is deliberately **no new initial-RGB persistence or exact pre-prediction
+wire-packet capture**: no existing observer callback guarantees durable storage
+without adding timing risk to the unchanged 2-second stage, 5-second interval
+and 600-second authority bounds. Request/observation hashes are bindings, not
+input-image proof.
+
+These logging/wrapper changes require a **new inference image and full source
+runtime descriptor**; descriptor `591c5d...` and its old image cannot attest the
+changed bytes. All 39 legacy control/IPC/model-reader/prediction files and the
+`d72db9...`/`851df4...` identities remain unchanged. Existing P0/P1 training images,
+training context identities, archives and import certificates are not rewritten
+or forced to upgrade merely because their unused server logging differs.

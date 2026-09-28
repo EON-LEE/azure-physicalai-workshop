@@ -30,6 +30,8 @@ from simulation.batch_learned import (
 from simulation.paused_learned import PausedLearnedRuntime
 
 SCHEMA = "physicalai.paused-learned-attempt/v1"
+DIAGNOSTIC_SCHEMA = "physicalai.paused-learned-diagnostics/v1"
+DIAGNOSTIC_PREFIX = "PHYSICALAI_LEARNED_DIAGNOSTIC "
 
 
 class LearnedTrace:
@@ -38,10 +40,8 @@ class LearnedTrace:
         self.states: list[TaskState] = []
         self.heartbeat_ns: list[int] = []
 
-    def observe(self) -> None:
+    def _measured(self):
         driver = self.hardware.paused_driver
-        if driver is None:
-            return
         require(
             isinstance(driver, PausedLearnedRuntime)
             and driver.request == self.request
@@ -58,6 +58,13 @@ class LearnedTrace:
             == (self.request.model_sha256 if metrics.applied_action_count else None),
             "Actual learned model or reference-route binding changed.",
         )
+        return measured, metrics
+
+    def observe(self) -> None:
+        driver = self.hardware.paused_driver
+        if driver is None:
+            return
+        measured, metrics = self._measured()
         now = self.core.clock_ns()
         self.heartbeat_ns.append(now)
         require(len(self.heartbeat_ns) <= 1_000_000, "Bounded heartbeat trace exhausted.")
@@ -71,6 +78,13 @@ class LearnedTrace:
         )
         if not self.states:
             require(metrics.policy_predict_calls == 0, "Task trace started after model actuation.")
+        self.states.append(self._task_state(measured, metrics, now))
+
+    def terminal_state(self) -> TaskState:
+        measured, metrics = self._measured()
+        return self._task_state(measured, metrics, self.core.clock_ns())
+
+    def _task_state(self, measured, metrics, now) -> TaskState:
         state = TaskState(
             captured_at_utc=self.core.clock_utc().isoformat().replace("+00:00", "Z"),
             monotonic_ns=now,
@@ -87,7 +101,7 @@ class LearnedTrace:
             applied_model_sha256=metrics.applied_model_sha256,
         )
         state.validate()
-        self.states.append(state)
+        return state
 
     def recording(self, *, end_ns: int) -> dict:
         episode = self.hardware.paused_driver.episode
@@ -103,6 +117,69 @@ class LearnedTrace:
                 )
             ),
         }
+
+
+def diagnostic_error(phase: str, error: BaseException) -> dict:
+    return {"phase": phase, "type": type(error).__name__, "message": str(error)[:512]}
+
+
+def terminal_diagnostics(report: dict, trace: LearnedTrace | None) -> dict:
+    value = {
+        "schema": DIAGNOSTIC_SCHEMA,
+        "diagnostic_only": True,
+        **{
+            key: report.get(key)
+            for key in (
+                "command_id",
+                "environment_id",
+                "revision",
+                "model_sha256",
+                "operator_grant_sha256",
+                "source_revision",
+                "simulator_image_digest",
+                "control_profile_sha256",
+                "physical_status",
+                "metrics",
+            )
+        },
+        "command_error": report.get("error"),
+        "initial_task_state": asdict(trace.states[0]) if trace and trace.states else None,
+        "terminal_task_state": None,
+        "secondary_errors": [],
+    }
+    if trace is not None:
+        try:
+            terminal = (
+                trace.states[-1]
+                if report.get("physical_status") == "succeeded" and trace.states
+                else trace.terminal_state()
+            )
+            value["terminal_task_state"] = asdict(terminal)
+        except (ValueError, RuntimeError, TypeError, OSError) as exc:
+            value["secondary_errors"].append(diagnostic_error("terminal_observation", exc))
+    return value
+
+
+def emit_diagnostics(value: dict) -> bool:
+    line = DIAGNOSTIC_PREFIX + canonical(value).decode("ascii") + "\n"
+    if len(line) > 16 * 1024:
+        line = (
+            DIAGNOSTIC_PREFIX
+            + canonical(
+                {
+                    "schema": DIAGNOSTIC_SCHEMA,
+                    "diagnostic_only": True,
+                    "reason": "diagnostic_size_limit",
+                }
+            ).decode("ascii")
+            + "\n"
+        )
+    try:
+        require(sys.stderr.write(line) == len(line), "Incomplete learned diagnostic write")
+        sys.stderr.flush()
+    except (OSError, ValueError):
+        return False
+    return True
 
 
 def measured_runtime_type():
@@ -387,8 +464,19 @@ def run(
             catalogue_path, file_digest(catalogue_path), profile
         )
     application = hardware = runtime = core = trace = None
-    report = None
+    report = diagnostics = None
     phase = "asset_preparation"
+
+    def secondary(phase: str, error: BaseException) -> None:
+        nonlocal diagnostics
+        if diagnostics is None:
+            diagnostics = terminal_diagnostics(report, trace)
+        diagnostics["secondary_errors"].append(diagnostic_error(phase, error))
+        report["diagnostics"] = diagnostics
+        report.pop("native_acceptance", None)
+        if not emit_diagnostics(diagnostics):
+            diagnostics["logging_status"] = "unavailable"
+
     try:
         initialize_probe_assets()
         phase = "application_initialization"
@@ -464,21 +552,7 @@ def run(
             runtime.tick()
             time.sleep(0.001)
         result = core.command(permit.owner, request.command_id)
-        phase = "final_frozen_cameras"
-        final = hardware._paused_publication(
-            core, deadline_ns=core.monotonic_deadlines[(permit.owner, request.command_id)]
-        )
-        final_images = dict(final.images)
-        phase = "capture_publication"
         capture = core.captures.get((permit.owner, request.command_id))
-        while capture is not None and capture.status not in {"ready", "invalid"}:
-            if core.clock_utc() >= request.wall_expires_at:
-                runtime.capture_worker.invalidate(
-                    "Original learned grant expired before publication."
-                )
-            runtime.tick()
-            capture = core.capture(permit.owner, request.command_id)
-            time.sleep(0.001)
         report = {
             "schema": SCHEMA,
             **({"model_admission": admission} if admission is not None else {}),
@@ -502,12 +576,37 @@ def run(
             "metrics": result.simulation_runtime.model_dump(mode="json"),
             "learning_quality_proven": False,
             "initial_publication_record": publication.private_evidence(),
-            **trace.recording(end_ns=max(image.monotonic_ns for image in final_images.values())),
-            "final_images": {name: encode_image(image) for name, image in final_images.items()},
+            "final_images": None,
             "capture": capture.model_dump(mode="json") if capture is not None else None,
-            "gripper_servo": hardware.paused_gripper_servo_evidence(),
             "error": result.error.model_dump() if result.error else None,
         }
+        report.update(trace.recording(end_ns=core.clock_ns()))
+        diagnostics = terminal_diagnostics(report, trace)
+        if result.status != "succeeded":
+            report["diagnostics"] = diagnostics
+            if not emit_diagnostics(diagnostics):
+                diagnostics["logging_status"] = "unavailable"
+        phase = "final_frozen_cameras"
+        final = hardware._paused_publication(
+            core, deadline_ns=core.monotonic_deadlines[(permit.owner, request.command_id)]
+        )
+        final_images = dict(final.images)
+        report["final_images"] = {name: encode_image(image) for name, image in final_images.items()}
+        phase = "capture_publication"
+        while capture is not None and capture.status not in {"ready", "invalid"}:
+            if core.clock_utc() >= request.wall_expires_at:
+                runtime.capture_worker.invalidate(
+                    "Original learned grant expired before publication."
+                )
+            runtime.tick()
+            capture = core.capture(permit.owner, request.command_id)
+            time.sleep(0.001)
+        report.update(
+            trace.recording(end_ns=max(image.monotonic_ns for image in final_images.values()))
+        )
+        report["capture"] = capture.model_dump(mode="json") if capture is not None else None
+        report["gripper_servo"] = hardware.paused_gripper_servo_evidence()
+        phase = "native_evidence"
         if capture is not None and capture.status == "ready":
             raw = validate_dataset(
                 Path("/data/demonstrations") / spec.owner_id / str(request.command_id),
@@ -538,11 +637,14 @@ def run(
             )
             report["native_acceptance"] = rescore(report, spec, scene, profile, grant)
         return report
+    except (ValueError, RuntimeError, TypeError, OSError) as exc:
+        if report is None:
+            raise
+        secondary(phase, exc)
+        return report
     finally:
         error = sys.exc_info()[1]
         try:
-            if runtime is not None:
-                runtime.close()
             if report is None:
                 report = {
                     "schema": "physicalai.paused-learned-failure/v1",
@@ -554,13 +656,30 @@ def run(
                     "learning_quality_proven": False,
                     "task_states": [asdict(state) for state in trace.states] if trace else [],
                 }
+            if runtime is not None:
+                try:
+                    runtime.close()
+                except (ValueError, RuntimeError, TypeError, OSError) as exc:
+                    secondary("runtime_close", exc)
             if hardware is not None:
-                report["gripper_servo"] = hardware.paused_gripper_servo_evidence()
-                report["camera_publication_evidence"] = hardware.paused_camera_evidence()
-            _persist_receipt(output, report)
+                for key, readback in (
+                    ("gripper_servo", hardware.paused_gripper_servo_evidence),
+                    ("camera_publication_evidence", hardware.paused_camera_evidence),
+                ):
+                    try:
+                        report[key] = readback()
+                    except (ValueError, RuntimeError, TypeError, OSError) as exc:
+                        secondary(key, exc)
+            try:
+                _persist_receipt(output, report)
+            except (ValueError, RuntimeError, TypeError, OSError) as exc:
+                secondary("receipt_publication", exc)
         finally:
             if application is not None:
-                _close_application(application, error or sys.exc_info()[1])
+                try:
+                    _close_application(application, error or sys.exc_info()[1])
+                except (ValueError, RuntimeError, TypeError, OSError, SystemExit) as exc:
+                    secondary("application_close", exc)
 
 
 def main() -> None:

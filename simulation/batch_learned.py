@@ -23,11 +23,15 @@ from learning.common import (
     canonical,
     digest,
     file_digest,
+    finite,
+    integer,
     parse_json,
     read_json,
     relative_path,
     require,
     sha256,
+    token,
+    vector,
 )
 from simulation.batch import (
     BATCH_TOKEN_SCOPE,
@@ -699,11 +703,153 @@ class LearnedArtifacts(PrivateArtifacts):
         return verify_evidence(self.spec, documents)
 
 
+def read_model_diagnostic(path: Path, spec: BatchLearnedSpec, grant) -> dict:
+    from learning.contract import JOINT_LOWER, JOINT_NAMES, JOINT_UPPER, Scope
+    from learning.paused.command_model import (
+        DIAGNOSTIC_PREFIX,
+        DIAGNOSTIC_SCHEMA,
+        MAX_DIAGNOSTIC_BYTES,
+        diagnostic_context,
+    )
+    from learning.paused.contract import PausedControlContext
+    from learning.paused.ipc import BINDINGS
+
+    def unavailable(reason):
+        return {
+            "schema": DIAGNOSTIC_SCHEMA,
+            "diagnostic_only": True,
+            "kind": "unavailable",
+            "reason": reason,
+        }
+
+    try:
+        with path.open("rb") as stream:
+            stream.seek(0, os.SEEK_END)
+            start = max(0, stream.tell() - 1024**2)
+            stream.seek(start)
+            payload = stream.read(1024**2)
+        lines = payload.splitlines()
+        if start:
+            lines = lines[1:]
+        prefix = DIAGNOSTIC_PREFIX.encode("ascii")
+        records = [line for line in lines if line.startswith(prefix)]
+        if len(records) != 1:
+            return unavailable("missing_or_ambiguous_bounded_log")
+        require(len(records[0]) + 1 <= MAX_DIAGNOSTIC_BYTES, "Diagnostic exceeds its byte bound")
+        value = parse_json(records[0][len(prefix) :])
+        require(
+            value.get("schema") == DIAGNOSTIC_SCHEMA and value.get("diagnostic_only") is True,
+            "Unknown model diagnostic",
+        )
+        if value.get("kind") == "unavailable":
+            return unavailable(token(value["reason"], "diagnostic reason"))
+        require(
+            set(value)
+            == {
+                "schema",
+                "diagnostic_only",
+                "kind",
+                "message",
+                "joint_guard",
+                "request",
+                "context",
+                "inference",
+            }
+            and value["kind"] == "joint_guard_rejected",
+            "Not the closed joint diagnostic",
+        )
+        request, context, guard, timing = (
+            value[name] for name in ("request", "context", "joint_guard", "inference")
+        )
+        require(
+            all(type(item) is dict for item in (request, context, guard, timing)),
+            "Diagnostic fields must be objects",
+        )
+        checked_context = diagnostic_context(
+            PausedControlContext(**{**context, "scope": Scope(**context["scope"])})
+        )
+        require(context == checked_context, "Unknown context fields")
+        require(set(request) == BINDINGS, "Incomplete original request binding")
+        for key, item in request.items():
+            if key == "sequence":
+                integer(item, key)
+            elif key.endswith("_sha256"):
+                sha256(item, key)
+            else:
+                token(item, key)
+        require(
+            context["scope"]
+            == {"tenant_id": str(spec.platform.tenant_id), "owner_id": spec.owner_id}
+            and context["command_id"] == context["episode_id"] == str(spec.attempt_id)
+            and context["environment_id"] == grant.authorization.environment_id
+            and context["revision"] == grant.authorization.revision
+            and context["destination_id"] == grant.authorization.task.goal_id
+            and request["task_sha256"] == digest(canonical(grant.authorization.task.model_dump()))
+            and request["model_sha256"] == context["model_sha256"] == spec.model.manifest.sha256
+            and request["control_profile_sha256"]
+            == context["control_profile_sha256"]
+            == spec.control_profile_sha256
+            and request["context_sha256"] == digest(canonical(context))
+            and request["observation_sha256"] == context["observation_sha256"]
+            and request["freeze_id"] == context["freeze_id"],
+            "Foreign command/model diagnostic",
+        )
+        require(
+            set(guard)
+            == {
+                "label",
+                "joint",
+                "joint_index",
+                "value",
+                "targets",
+                "low",
+                "high",
+                "tolerance",
+                "horizon_index",
+                "horizon_index_status",
+            },
+            "Unknown joint diagnostic fields",
+        )
+        index = integer(guard["joint_index"], "joint index", 0, 8)
+        targets = vector(guard["targets"], 9, "original rejected targets")
+        low, high = (finite(guard[key], key) for key in ("low", "high"))
+        require(
+            guard["label"] == "paused Smol action"
+            and guard["joint"] == JOINT_NAMES[index]
+            and finite(guard["value"], "original rejected value") == targets[index]
+            and (low, high) == (JOINT_LOWER[index], JOINT_UPPER[index])
+            and finite(guard["tolerance"], "original tolerance") == 1e-6
+            and not low - 1e-6 <= targets[index] <= high + 1e-6
+            and value["message"]
+            == f"paused Smol action: {JOINT_NAMES[index]} outside reference limits",
+            "Changed original joint rejection",
+        )
+        if guard["horizon_index_status"] == "unique_identity":
+            integer(guard["horizon_index"], "original horizon index", 0, 49)
+        else:
+            require(
+                guard["horizon_index_status"] == "unknown" and guard["horizon_index"] is None,
+                "Guessed horizon index",
+            )
+        require(set(timing) == {"started_ns", "ended_ns", "latency_ms"}, "Unknown timing fields")
+        started = integer(timing["started_ns"], "original inference start")
+        ended = integer(timing["ended_ns"], "original inference end", started)
+        require(
+            finite(timing["latency_ms"], "original inference latency") == (ended - started) / 1e6,
+            "Changed original inference latency",
+        )
+        return value
+    except (KeyError, TypeError, ValueError):
+        return unavailable("invalid_or_foreign_diagnostic")
+    except OSError:
+        return unavailable("log_read_unavailable")
+
+
 def run_native(spec: BatchLearnedSpec, paths, directory: Path, deadline: float, *, store) -> dict:
     from learning.contract import Scope
     from learning.smolvla.artifacts import validate_backbone
     from simulation.batch_task import configure_native_environment, gpu_preflight, run_bounded
-    from simulation.learned_probe import rescore
+    from simulation.learned_probe import DIAGNOSTIC_SCHEMA, diagnostic_error, rescore
 
     configure_native_environment(spec)
     _, scene, profile, grant = load_inputs(spec, paths)
@@ -755,6 +901,7 @@ def run_native(spec: BatchLearnedSpec, paths, directory: Path, deadline: float, 
     socket_path = ipc / "policy.sock"
     remaining(preparation_deadline)
     preflight = gpu_preflight()
+    process = process_error = None
     with (
         (directory / "probe.log").open("xb") as log,
         model_process(
@@ -792,38 +939,39 @@ def run_native(spec: BatchLearnedSpec, paths, directory: Path, deadline: float, 
         (directory / "preflight.json").write_bytes(canonical(preflight) + b"\n")
         spec_path = directory / "learned-spec.json"
         spec_path.write_bytes(canonical(spec.model_dump(mode="json", by_alias=True)))
-        process = run_bounded(
-            [
-                "/isaac-sim/python.sh",
-                "-m",
-                "simulation.learned_probe",
-                "--spec",
-                str(spec_path),
-                "--inputs",
-                str(directory / "inputs"),
-                "--model-root",
-                str(model_root),
-                "--socket-path",
-                str(socket_path),
-                "--model-runtime",
-                str(descriptor_path),
-                "--output",
-                str(directory / "probe.json"),
-            ],
-            cwd="/app",
-            log=log,
-            timeout=remaining(deadline),
-        )
-        require(server.poll() is None, "The real model process exited during learned execution.")
+        try:
+            process = run_bounded(
+                [
+                    "/isaac-sim/python.sh",
+                    "-m",
+                    "simulation.learned_probe",
+                    "--spec",
+                    str(spec_path),
+                    "--inputs",
+                    str(directory / "inputs"),
+                    "--model-root",
+                    str(model_root),
+                    "--socket-path",
+                    str(socket_path),
+                    "--model-runtime",
+                    str(descriptor_path),
+                    "--output",
+                    str(directory / "probe.json"),
+                ],
+                cwd="/app",
+                log=log,
+                timeout=remaining(deadline),
+            )
+        except (ValueError, RuntimeError, OSError, subprocess.SubprocessError) as exc:
+            process_error = diagnostic_error("probe_process", exc)
+        server_exit = server.poll()
     report_path = directory / "probe.json"
-    if not report_path.is_file():
-        return {
-            "accepted": False,
-            "outcome": "incomplete",
-            "native_acceptance": "missing",
-            "probe_exit_code": process.returncode,
-        }
-    report = read_json(report_path, max_bytes=8 * 1024**2)
+    report, read_error = {}, None
+    try:
+        if report_path.is_file():
+            report = read_json(report_path, max_bytes=8 * 1024**2)
+    except (ValueError, OSError) as exc:
+        read_error = diagnostic_error("probe_report", exc)
     capture = report.get("capture") or {}
     receipt = capture.get("receipt") or {}
     passed = False
@@ -833,29 +981,95 @@ def run_native(spec: BatchLearnedSpec, paths, directory: Path, deadline: float, 
         "native_acceptance": "rejected",
         "controller": "learned",
         "model_sha256": spec.model.manifest.sha256,
-        "probe_exit_code": process.returncode,
+        "probe_exit_code": process.returncode if process is not None else None,
         "physical_status": report.get("physical_status"),
         "capture_status": capture.get("status"),
         "raw_manifest": receipt or None,
     }
-    if capture.get("status") == "ready" and receipt.get("status") == "uploaded":
-        raw_root = Path("/data/demonstrations") / spec.owner_id / str(spec.attempt_id)
-        manifest = raw_root / "manifest.json"
-        require(
-            file_digest(manifest) == receipt["manifest_sha256"], "Learned raw manifest changed."
-        )
-        (directory / "raw-manifest.json").write_bytes(manifest.read_bytes())
-        acceptance = rescore(report, spec, scene, profile, grant)
-        passed = process.returncode == 0 and acceptance["accepted"]
-    else:
-        acceptance = {"accepted": False, "failure": "No complete native learned capture."}
-    (directory / "acceptance.json").write_bytes(canonical(acceptance) + b"\n")
-    (directory / "acceptance.log").write_text(json.dumps(acceptance) + "\n")
+    complete = False
+    acceptance = {"accepted": False, "failure": "No complete native learned capture."}
+    evidence_error = None
+    process_failed = server_exit is not None or process_error is not None or read_error is not None
+    if (
+        not process_failed
+        and capture.get("status") == "ready"
+        and receipt.get("status") == "uploaded"
+        and isinstance(report.get("trial"), dict)
+        and isinstance(report.get("final_images"), dict)
+    ):
+        try:
+            raw_root = Path("/data/demonstrations") / spec.owner_id / str(spec.attempt_id)
+            manifest = raw_root / "manifest.json"
+            require(
+                file_digest(manifest) == receipt["manifest_sha256"], "Learned raw manifest changed."
+            )
+            (directory / "raw-manifest.json").write_bytes(manifest.read_bytes())
+            acceptance = rescore(report, spec, scene, profile, grant)
+            complete = True
+            passed = (
+                process is not None
+                and process.returncode == 0
+                and server_exit is None
+                and acceptance["accepted"]
+            )
+        except (ValueError, RuntimeError, KeyError, TypeError, OSError) as exc:
+            evidence_error = diagnostic_error("native_evidence", exc)
+    publication_error = None
+    if not process_failed and evidence_error is None:
+        try:
+            (directory / "acceptance.json").write_bytes(canonical(acceptance) + b"\n")
+            (directory / "acceptance.log").write_text(json.dumps(acceptance) + "\n")
+        except (ValueError, OSError) as exc:
+            publication_error = diagnostic_error("acceptance_publication", exc)
+            passed = False
     verdict.update(
         accepted=passed,
-        outcome="accepted" if passed else "failed",
-        native_acceptance="accepted" if passed else "rejected",
+        outcome="accepted"
+        if passed
+        else "failed"
+        if complete and publication_error is None
+        else "incomplete",
+        native_acceptance="accepted"
+        if passed
+        else "rejected"
+        if complete and publication_error is None
+        else "missing",
     )
+    if not passed:
+        diagnostics = {
+            **(report.get("diagnostics") or {}),
+            "schema": DIAGNOSTIC_SCHEMA,
+            "diagnostic_only": True,
+            "command_error": report.get("error"),
+            "metrics": report.get("metrics"),
+            "model_server_exit_code": server_exit,
+            "secondary_errors": list((report.get("diagnostics") or {}).get("secondary_errors", [])),
+            "model_diagnostic": read_model_diagnostic(directory / "probe.log", spec, grant),
+        }
+        diagnostics["secondary_errors"].extend(
+            item
+            for item in (read_error, process_error, evidence_error, publication_error)
+            if item is not None
+        )
+        model_error = diagnostics["model_diagnostic"]
+        command_error = report.get("error") or {}
+        verdict["diagnostics"] = diagnostics
+        verdict["failure"] = (
+            model_error["message"]
+            if model_error["kind"] == "joint_guard_rejected"
+            else command_error.get("message")
+            or report.get("failure")
+            or (process_error or read_error or evidence_error or publication_error or {}).get(
+                "message"
+            )
+            or (
+                "The real model process exited during learned execution."
+                if server_exit is not None
+                else acceptance.get(
+                    "failure", "The native learned physical trial was not accepted."
+                )
+            )
+        )
     return verdict
 
 

@@ -112,3 +112,26 @@ def test_probe_persists_original_heartbeats_and_budget_without_reconstructing_th
         learned.cell.paused_driver.episode.wall_deadline_ns
     )
     assert proof["task_states"] == [asdict(state) for state in trace.states]
+
+
+def test_terminal_snapshot_keeps_rejected_predict_count_without_inventing_a_physics_tick(learned):
+    from runtime_support import ACTOR
+
+    trace = probe().LearnedTrace(learned.core, learned.cell, learned.request)
+    learned.model.offset = 10.0
+    start(learned)
+    trace.observe()
+    initial = asdict(trace.states[0])
+    learned.runtime.tick()
+    assert learned.model.entered.wait(2)
+    learned.runtime.paused_policy_worker.thread.join(2)
+    learned.runtime.tick()
+    result = learned.core.command(ACTOR.owner_key, learned.request.command_id)
+    assert result.status == "failed" and result.error is not None
+    terminal = trace.terminal_state()
+    assert terminal.physics_step == initial["physics_step"]
+    assert terminal.policy_predict_calls == result.simulation_runtime.policy_predict_calls == 1
+    assert terminal.applied_action_count == terminal.reference_route_calls == 0
+    assert terminal.applied_model_sha256 is None
+    assert not learned.cell.robot.actions
+    assert [asdict(state) for state in trace.states] == [initial]
