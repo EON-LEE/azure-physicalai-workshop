@@ -126,6 +126,150 @@ def test_running_command_has_one_actual_job_identity_and_no_fabricated_parent(mo
     assert calls == [value["run_id"]]
 
 
+@pytest.mark.parametrize("representation", ["name", "azureml", "arm"])
+def test_command_accepts_exact_approved_compute_readback_forms(representation):
+    from learning.paused.command import validate_command_job
+
+    value = command_config()
+    job = live_job(value)
+    job.compute = {
+        "name": value["compute"],
+        "azureml": "azureml:" + value["compute"],
+        "arm": workspace_id(value) + "/computes/" + value["compute"],
+    }[representation]
+    result = validate_command_job(
+        SimpleNamespace(), value, job, snapshot_sha256="b" * 64, expected_status="Running"
+    )
+    assert result["azure_job_id"] == job.id
+
+
+@pytest.mark.parametrize("change", ["other-name", "other-workspace", "suffix", "case", "none"])
+def test_compute_readback_compatibility_does_not_admit_other_resources(change):
+    from learning.paused.command import validate_job
+
+    value = command_config()
+    job = live_job(value)
+    job.compute = {
+        "other-name": value["compute"] + "-other",
+        "other-workspace": workspace_id(value) + "-other/computes/" + value["compute"],
+        "suffix": value["compute"] + "/",
+        "case": value["compute"].upper(),
+        "none": None,
+    }[change]
+    with pytest.raises(ContractError, match="compute"):
+        validate_job(job, value)
+
+
+def test_bare_compute_does_not_hide_a_foreign_job_workspace():
+    from learning.paused.command import validate_job
+
+    value = command_config()
+    job = live_job(value)
+    job.compute = value["compute"]
+    job.id = workspace_id(value) + "-other/jobs/" + value["run_id"]
+    with pytest.raises(ContractError, match="standalone command"):
+        validate_job(job, value)
+
+
+@pytest.mark.parametrize("representation", ["arm", "versioned-name"])
+def test_command_resolves_exact_versioned_environment_from_public_sdk_get(representation):
+    from learning.paused.command import validate_command_job
+
+    value = command_config()
+    job = live_job(value)
+    job.environment = (
+        workspace_id(value) + "/environments/native-image/versions/1"
+        if representation == "arm"
+        else "native-image:1"
+    )
+    calls = []
+
+    def get(name, *, version):
+        calls.append((name, version))
+        return SimpleNamespace(image=value["environment_image"])
+
+    validate_command_job(
+        SimpleNamespace(environments=SimpleNamespace(get=get)),
+        value,
+        job,
+        snapshot_sha256="b" * 64,
+        expected_status="Running",
+    )
+    assert calls == [("native-image", "1")]
+
+
+@pytest.mark.parametrize(
+    "reference",
+    [
+        "native-image",
+        "native-image@latest",
+        "native-image:1:extra",
+        "native-image:1?query=1",
+        "native-image:1/other",
+        "https://unapproved.example/native:1",
+        "azureml://registries/other/environments/native-image/versions/1",
+    ],
+)
+def test_invalid_environment_references_fail_before_an_environment_read(reference):
+    from learning.paused.command import validate_command_job
+
+    value = command_config()
+    job = live_job(value)
+    job.environment = reference
+    with pytest.raises(ContractError):
+        validate_command_job(
+            SimpleNamespace(
+                environments=SimpleNamespace(
+                    get=lambda *args, **kwargs: pytest.fail("Unapproved environment read")
+                )
+            ),
+            value,
+            job,
+            snapshot_sha256="b" * 64,
+            expected_status="Running",
+        )
+
+
+def test_foreign_environment_arm_id_is_not_reduced_to_a_local_name():
+    from learning.paused.command import validate_command_job
+
+    value = command_config()
+    job = live_job(value)
+    job.environment = workspace_id(value) + "-other/environments/native-image/versions/1"
+    with pytest.raises(ContractError):
+        validate_command_job(
+            SimpleNamespace(
+                environments=SimpleNamespace(
+                    get=lambda *args, **kwargs: pytest.fail("Foreign environment read")
+                )
+            ),
+            value,
+            job,
+            snapshot_sha256="b" * 64,
+            expected_status="Running",
+        )
+
+
+def test_short_environment_reference_still_requires_the_exact_approved_image():
+    from learning.paused.command import validate_command_job
+
+    value = command_config()
+    job = live_job(value)
+    job.environment = "native-image:1"
+    with pytest.raises(ContractError, match="image digest"):
+        validate_command_job(
+            SimpleNamespace(
+                environments=SimpleNamespace(
+                    get=lambda *args, **kwargs: SimpleNamespace(image="unapproved:latest")
+                )
+            ),
+            value,
+            job,
+            snapshot_sha256="b" * 64,
+            expected_status="Running",
+        )
+
+
 @pytest.mark.parametrize(
     "change",
     [

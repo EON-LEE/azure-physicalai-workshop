@@ -889,6 +889,15 @@ accepts only the observed exact
 `azureml://datastores/workspaceartifactstore/ExperimentRun/dcid.<actual-job-name>`,
 `uri_folder`, `rw_mount` presentation, never an arbitrary mount named `default`.
 
+The pinned SDK's **public** `jobs.get()` normalizes workspace-local references:
+compute becomes its exact bare name, and an environment becomes `name:version`.
+Admission accepts those forms alongside the existing exact ARM references,
+after checking the job's workspace/name, and resolves the environment version
+through the scoped client to verify its immutable image. Other compute names,
+foreign ARM resources and malformed/unversioned environments still fail.
+The offline SDK check exercises `jobs.get()` and its reference resolver, not
+only the lower-level REST deserializer that missed this behavior.
+
 Export a fresh static payload, then have the parent/operator build and qualify
 it under separate authority. These are commands for that operator, not an
 automatic cloud build:

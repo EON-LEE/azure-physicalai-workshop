@@ -29,9 +29,8 @@ from learning.smolvla.image_bootstrap import BOOTSTRAP_RELATIVE, materialize_sou
 
 
 def run() -> dict:
-    from azure.ai.ml import load_job
+    from azure.ai.ml import MLClient, load_job
     from azure.ai.ml._restclient.arm_ml_service.models import UriFolderJobOutput
-    from azure.ai.ml.entities import Command
     from azure.ai.ml.operations import JobOperations
 
     require(version("azure-ai-ml") == "1.35.0", "Use the pinned Azure ML SDK")
@@ -105,7 +104,19 @@ def run() -> dict:
                 mode="ReadWriteMount",
             ),
         }
-        actual = Command._load_from_rest_job(wire)
+        client = MLClient(
+            SimpleNamespace(get_token=lambda *args, **kwargs: require(False, "Unexpected token")),
+            config["subscription_id"],
+            config["resource_group"],
+            config["workspace"],
+        )
+        with patch.object(client.jobs, "_get_job", return_value=wire) as fetch:
+            actual = client.jobs.get(config["run_id"])
+        fetch.assert_called_once_with(config["run_id"])
+        require(
+            actual.compute == config["compute"] and actual.environment == "offline-native:1",
+            "Actual public SDK GET did not exercise workspace-local reference normalization",
+        )
         environment_reads = []
 
         def environment(name, *, version):
@@ -228,6 +239,9 @@ def run() -> dict:
             "actual_sdk_wire_custom_inputs": 0,
             "actual_sdk_wire_custom_outputs": 0,
             "actual_sdk_get_roundtrip_job_type": binding["azure_job_type"],
+            "actual_public_sdk_get_exercised": True,
+            "actual_sdk_compute_reference": actual.compute,
+            "actual_sdk_environment_reference": actual.environment,
             "native_materialized_imports_verified": True,
             "overridden_cwd_verified": True,
             "cold_expired_deadline_rejected": True,

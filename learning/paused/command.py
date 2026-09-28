@@ -104,6 +104,7 @@ def validate_job(job, config: dict, *, snapshot_sha256: str | None = None) -> No
     require(
         compute
         in (
+            config["compute"],
             f"azureml:{config['compute']}",
             workspace_id(config) + "/computes/" + config["compute"],
         ),
@@ -164,14 +165,18 @@ def validate_command_job(
     environment = getattr(job, "environment", None)
     if isinstance(environment, str):
         prefix = workspace_id(config) + "/environments/"
-        require(
-            environment.startswith(prefix), "Command environment is not from the approved workspace"
-        )
-        parts = environment[len(prefix) :].split("/")
-        require(len(parts) == 3 and parts[1] == "versions", "Unversioned command environment")
-        token(parts[0], "environment name")
-        token(parts[2], "environment version")
-        environment = client.environments.get(parts[0], version=parts[2])
+        if environment.startswith(prefix):
+            parts = environment[len(prefix) :].split("/")
+            require(len(parts) == 3 and parts[1] == "versions", "Unversioned command environment")
+            name, version = parts[0], parts[2]
+        else:
+            # jobs.get() shortens only workspace-local IDs to name:version.
+            parts = environment.split(":")
+            require(len(parts) == 2, "Command environment is not an exact versioned reference")
+            name, version = parts
+        token(name, "environment name")
+        token(version, "environment version")
+        environment = client.environments.get(name, version=version)
     require(
         getattr(environment, "image", None) == config["environment_image"],
         "Actual command image digest differs from its approved config",
