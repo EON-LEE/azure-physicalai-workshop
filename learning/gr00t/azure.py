@@ -298,6 +298,11 @@ def job_tags(config: dict, snapshot_sha256: str, *, policy_type: str = POLICY_TY
             data_transport="private_blob_mi",
             runtime_config_sha256=digest(canonical(config)),
         )
+    if "training_cohort" in config:
+        tags.update(
+            training_cohort=config["training_cohort"]["kind"],
+            training_cohort_schema=config["training_cohort"]["schema"],
+        )
     return tags
 
 

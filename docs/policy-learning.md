@@ -948,8 +948,8 @@ There are four bounded download workers. These limits admit the actual TRAIN20
 model/backbone, not a 1,024-file model-only cap. Signed raw frame streams determine
 the exact PNG inventory before image transfer; unknown/missing/unsafe paths,
 wrong hashes, missing ETags and changed counts fail. Every object uses bounded
-ETag-conditional reads and SHA verification. Raw validation still requires all
-twenty TRAIN seeds 10001..10020, actual live provenance, complete frames and the
+ETag-conditional reads and SHA verification. Default P0 raw validation still
+requires all twenty TRAIN seeds 10001..10020, actual live provenance, complete frames and the
 unchanged physical profile/task/criteria. Conversion retains every original
 episode/frame identity; fixtures and held-out/G0 seeds cannot train.
 
@@ -1032,6 +1032,80 @@ They do not build an image, contact Azure, train a model or prove GPU/model qual
 Final image/39-file/runtime-descriptor qualification, fresh live AML optimization,
 checkpoint persistence, validation and all forty held-out trials remain separate
 parent-authorized checks.
+
+#### Explicit additional TRAIN20 for P1
+
+The optional selector below is the only way to train P1 on the originally
+predeclared **additional** reference cohort. Omitting it preserves the exact P0
+config/wire/tag behavior and admits only seeds 10001..10020; data or parent
+metadata never selects a cohort implicitly.
+
+```json
+{
+  "training_cohort": {
+    "schema": "physicalai.smolvla-training-cohort/v1",
+    "kind": "p1_additional20"
+  }
+}
+```
+
+Use this only with the existing paused, image-embedded, direct `private_blob_mi`
+training variant. Set `parameters.resume_mode="weights_only"` and retain the
+bounded checkpoint publication policy with **`checkpointing.resume=null`**.
+This is a new optimizer initialized from the actual P0 model weights, with the
+existing fresh TRAIN-only normalization; it does not restore P0 optimizer,
+scheduler, RNG or sampler state. `full_state`, a resume checkpoint input, no
+checkpointing policy, unknown selectors and configurable seed ranges are
+rejected. Existing P0 checkpoint-resume semantics remain separate.
+
+The new raw input must contain exactly twenty unique original live, complete
+**reference-controller** demonstrations with seeds **11001..11020**. Native raw
+and conversion validators remain unchanged. The parent must pass the existing
+strict v3 model validator, contain exactly the twenty P0 seeds 10001..10020, and
+match the approved owner, workspace, task, control profile, criteria and frozen
+conditions. All new episode IDs/seeds must be disjoint from that ancestry; copied
+P0 manifests, relabeled old episode IDs, learned-policy captures and held-out/G0
+seeds fail. Before model work, the native trainer also reads the actual **Completed**
+P0 command root and matches its original source/specification/scope tags, without
+substituting the P1 source or inventing a parent pipeline. The new command ID must
+be distinct.
+
+The existing candidate v3/result/checkpoint schemas are unchanged. P1 records the
+real P0 parent manifest/weights SHA, all forty old-plus-new episode identities,
+one actual new command ID, new optimizer updates and cumulative updates. Its
+checkpoint-resume fields remain null and `optimizer_state_restored` and
+`bitwise_continuation_claimed` remain false. The unchanged v3 model reader accepts
+this ancestry; training changes do not require an inference image update or
+authorize modified runtime files under an old runtime descriptor.
+
+The selector is bound by the canonical config, embedded command, complete source
+snapshot and `training_cohort`/`training_cohort_schema` job tags. Export the updated
+74-file training payload from the final integrated tree and qualify a **new**
+training image before constructing the new config/plan:
+
+```bash
+python -m learning.smolvla.embedded_source --direct-command --output "$NEW_P1_CONTEXT"
+python -m learning.smolvla.azure --config "$NEW_APPROVED_P1_CONFIG" \
+  --plan-dir "$NEW_P1_PLAN" --job-name "$NEW_P1_RUN_ID"
+python -m learning.checks.command_job_check --p1-additional20 --report "$P1_OFFLINE_REPORT"
+```
+
+Use the existing separately authorized build/submission sequence above. The P1
+config's registered raw asset must refer to the actual newly collected additional
+cohort and `parent_model` to the actual trained P0 candidate, not its train-only
+prepared ancestor. Its folder root is the sealed `candidates/step-N/` directory
+containing `model.json` and `checkpoint/`, not the outer `model/result.json` folder.
+This source change collects no data and submits no job.
+
+Historical P0 verification must read the **original approved** plan archive:
+`learning.smolvla.azure.read_plan(extracted / "plan")` validates its archived
+`code/`, config, static binding and full snapshot without executing archived
+source. The unchanged P0 wire builder and 74-name source allowlist keep that
+archive valid after adding P1. Never replace a historical snapshot with the
+current worker's source inventory. The external import consumer separately binds
+the current verifier source while retaining the original approved P0 plan/hash.
+No quality threshold, physical control fingerprint, held-out trial, runtime grant
+or old job deadline changes with this selector.
 
 ### Paused evaluation evidence and release boundaries
 

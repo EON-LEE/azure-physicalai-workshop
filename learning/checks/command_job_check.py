@@ -19,7 +19,7 @@ from unittest.mock import patch
 from learning.checks.smolvla_aml_check import example_config
 from learning.common import canonical, digest, read_json, require, write_json
 from learning.gr00t.azure import workspace_id
-from learning.paused.command import EXECUTION, validate_command_job
+from learning.paused.command import EXECUTION, P1_TRAINING_COHORT, validate_command_job
 from learning.paused.contract import PausedControlProfile
 from learning.smolvla import azure
 from learning.smolvla.checkpoint_runner import POLICY_SCHEMA
@@ -28,7 +28,7 @@ from learning.smolvla.embedded_source import prepare_context
 from learning.smolvla.image_bootstrap import BOOTSTRAP_RELATIVE, materialize_source
 
 
-def run() -> dict:
+def run(*, p1_additional20: bool = False) -> dict:
     from azure.ai.ml import MLClient, load_job
     from azure.ai.ml._restclient.arm_ml_service.models import UriFolderJobOutput
     from azure.ai.ml.operations import JobOperations
@@ -66,6 +66,9 @@ def run() -> dict:
                 "resume": None,
             },
         )
+        if p1_additional20:
+            config["training_cohort"] = dict(P1_TRAINING_COHORT)
+            config["parameters"]["resume_mode"] = "weights_only"
         plan_dir = root / "plan"
         azure.create_plan(config, plan_dir, deterministic_job_name=config["run_id"])
         plan = azure.read_plan(plan_dir)
@@ -230,6 +233,7 @@ def run() -> dict:
             "check": "actual-aml-sdk-1.35-command-and-native-python-3.11-source",
             "test_only": True,
             "fixture_config": True,
+            "training_cohort": config.get("training_cohort"),
             "static_file_count": receipt["file_count"],
             "static_sha256": receipt["static_sha256"],
             "snapshot_sha256": plan["snapshot_sha256"],
@@ -258,8 +262,9 @@ def run() -> dict:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--report", type=Path)
+    parser.add_argument("--p1-additional20", action="store_true")
     args = parser.parse_args()
-    report = run()
+    report = run(p1_additional20=args.p1_additional20)
     if args.report is not None:
         write_json(args.report, report)
     print(json.dumps(report, indent=2))

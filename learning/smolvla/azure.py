@@ -80,6 +80,11 @@ def validate_config(config: dict) -> None:
         "Unsupported SmolVLA Azure configuration schema",
     )
     base = dict(config)
+    if "training_cohort" in config:
+        from learning.paused.command import validate_training_cohort
+
+        validate_training_cohort(config)
+        base.pop("training_cohort")
     if "job_execution" in config:
         from learning.paused.command import validate_execution
 

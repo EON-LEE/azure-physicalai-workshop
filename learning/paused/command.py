@@ -18,6 +18,10 @@ EXECUTION = {
 MODEL_SCHEMA = "physicalai.smolvla-checkpoint/v3"
 CHECKPOINT_SCHEMA = "physicalai.smolvla-training-checkpoint/v2"
 RESULT_SCHEMA = "physicalai.smolvla-command-training-result/v1"
+P1_TRAINING_COHORT = {
+    "schema": "physicalai.smolvla-training-cohort/v1",
+    "kind": "p1_additional20",
+}
 
 
 class CommandDeadline(JobDeadline):
@@ -68,6 +72,147 @@ def validate_execution(config: dict) -> None:
     require(
         config["output_prefix"] == retained or config["output_prefix"].startswith(retained + "/"),
         "Standalone training output must use the approved retained owner prefix",
+    )
+
+
+def validate_training_cohort(config: dict) -> None:
+    require(
+        config.get("training_cohort") == P1_TRAINING_COHORT,
+        "Unknown explicit additional training cohort",
+    )
+    validate_execution(config)
+    require(
+        config["parameters"].get("resume_mode") == "weights_only"
+        and "resume" in config["checkpointing"]
+        and config["checkpointing"]["resume"] is None,
+        "P1 requires P0 weights with a fresh optimizer, not checkpoint continuation",
+    )
+
+
+def validate_training_episodes(config: dict, episodes: list[dict]) -> None:
+    additional = "training_cohort" in config
+    if additional:
+        validate_training_cohort(config)
+    expected = set(range(11001, 11021)) if additional else set(range(10001, 10021))
+    require(
+        isinstance(episodes, list)
+        and len(episodes) == 20
+        and {episode["seed"] for episode in episodes} == expected
+        and all(episode["split"] == "train" for episode in episodes),
+        "Standalone training requires exactly the explicitly approved twenty TRAIN seeds",
+    )
+    if additional:
+        require(
+            len({episode["episode_id"] for episode in episodes}) == 20
+            and all(
+                episode["demonstration"]["kind"] == "reference_controller" for episode in episodes
+            ),
+            "P1 requires twenty unique reference demonstrations, not learned/relabeled data",
+        )
+
+
+def validate_p1_training(config: dict, data: dict, parent: dict) -> None:
+    """Check native-validated data/model bindings; never infer a selector from data."""
+    from learning.gr00t.azure import workspace_id
+    from learning.paused.contract import PausedControlProfile
+
+    validate_training_cohort(config)
+    validate_training_episodes(config, data["episodes"])
+    training = parent.get("training")
+    require(
+        parent.get("schema") == MODEL_SCHEMA
+        and parent.get("role") == "candidate"
+        and parent.get("training_execution") == "azureml_command"
+        and isinstance(training, dict)
+        and training.get("azure_job_type") == "command",
+        "P1 must warm-start the genuine command-trained P0 candidate",
+    )
+    expected_scope = {"tenant_id": config["tenant_id"], "owner_id": config["owner_id"]}
+    require(
+        data["scope"] == parent["scope"] == expected_scope
+        and parent["control_profile"] == data["control_profile"]
+        and PausedControlProfile(**data["control_profile"]).sha256
+        == config["control_profile_sha256"]
+        and all(
+            data[name] == parent[name] == config[name]
+            for name in ("criteria_sha256", "frozen_plan_sha256")
+        ),
+        "P1 data/parent scope, profile or frozen conditions changed",
+    )
+    require(
+        digest(canonical(parent["task"])) == config["task_sha256"]
+        and all(
+            {name: episode["demonstration"][name] for name in ("task_id", "instruction", "goal_id")}
+            == parent["task"]
+            for episode in data["episodes"]
+        ),
+        "P1 original reference task differs from the P0 parent",
+    )
+    prior = training["episodes"]
+    require(
+        len(prior) == 20
+        and {episode["seed"] for episode in prior} == set(range(10001, 10021))
+        and len({episode["episode_id"] for episode in prior}) == 20,
+        "P1 parent must contain exactly the original P0 TRAIN20 lineage",
+    )
+    require(
+        {episode["episode_id"] for episode in prior}.isdisjoint(
+            episode["episode_id"] for episode in data["episodes"]
+        )
+        and {episode["seed"] for episode in prior}.isdisjoint(
+            episode["seed"] for episode in data["episodes"]
+        )
+        and training["raw_manifest_sha256"] != config["inputs"]["demonstrations"]["sha256"],
+        "Additional P1 data overlaps or relabels the original P0 data",
+    )
+    job = training["azure_job_id"]
+    workspace = workspace_id(config) + "/jobs/"
+    require(
+        isinstance(job, str)
+        and job.startswith(workspace)
+        and re.fullmatch(r"[A-Za-z0-9_.-]+", job[len(workspace) :])
+        and job != workspace + config["run_id"],
+        "P0 parent must be a distinct actual command in the approved workspace",
+    )
+    if "raw_manifest_sha256" in data:
+        require(
+            data["raw_manifest_sha256"] == config["inputs"]["demonstrations"]["sha256"],
+            "P1 converted data is not the approved additional raw manifest",
+        )
+
+
+def validate_p1_parent_job(client, config: dict, parent: dict) -> None:
+    """Confirm the actual completed P0 root without substituting its historical config/source."""
+    training = parent["training"]
+    job_id = training["azure_job_id"]
+    name = job_id.rsplit("/", 1)[-1]
+    actual = client.jobs.get(name)
+    require(
+        actual.id == job_id
+        and actual.name == name
+        and actual.type == "command"
+        and actual.status == "Completed"
+        and not getattr(actual, "parent_job_name", None),
+        "P1 parent is not the actual completed standalone P0 command",
+    )
+    expected = {
+        "scope_tenant": config["tenant_id"],
+        "scope_owner": config["owner_id"],
+        "job_execution": "command",
+        "policy_type": "smolvla",
+        "execution_timing": "paused_simulation",
+        "real_time_admission": "false",
+        "specification_sha256": training["specification_sha256"],
+        "code_snapshot_sha256": training["code_snapshot_sha256"],
+        "control_profile_sha256": config["control_profile_sha256"],
+        "task_sha256": config["task_sha256"],
+        "criteria_sha256": config["criteria_sha256"],
+        "frozen_plan_sha256": config["frozen_plan_sha256"],
+    }
+    require(
+        all((actual.tags or {}).get(key) == value for key, value in expected.items())
+        and "training_cohort" not in (actual.tags or {}),
+        "P0 parent job scope/source/provenance does not match the approved trained model",
     )
 
 
@@ -305,13 +450,7 @@ def _download_inputs(transfer, config: dict, root: Path) -> tuple[Path, Path, Pa
         "Private raw dataset is not the exact approved paused TRAIN data",
     )
     episodes = raw["episodes"]
-    require(
-        isinstance(episodes, list)
-        and len(episodes) == 20
-        and {episode["seed"] for episode in episodes} == set(range(10001, 10021))
-        and all(episode["split"] == "train" for episode in episodes),
-        "Standalone bootstrap requires exactly TRAIN10001..10020; no G0/hold-out/fixture",
-    )
+    validate_training_episodes(config, episodes)
     require(
         all(
             digest(
@@ -377,12 +516,14 @@ def _download_inputs(transfer, config: dict, root: Path) -> tuple[Path, Path, Pa
     transfer.download_files(
         parent_prefix, parent_files, parent_root, metadata={"model.json": parent_bytes}
     )
-    validate_parent(
+    validated_parent = validate_parent(
         parent_root,
         expected_scope=scope,
         expected_model_sha256=assets["parent_model"]["sha256"],
         for_inference=False,
     )
+    if "training_cohort" in config:
+        validate_p1_training(config, raw, validated_parent)
     backbone_prefix = input_prefix(config, "backbone")
     backbone, backbone_bytes = transfer.manifest(
         backbone_prefix, "backbone.json", assets["backbone"]["sha256"]

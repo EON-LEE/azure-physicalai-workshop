@@ -22,11 +22,11 @@ from tests.learning.test_paused_capture import shifted_sample, writer
 from tests.learning.test_training_checkpoints import native_bundle
 
 
-def raw_cohort(tmp_path):
+def raw_cohort(tmp_path, *, seeds=range(10001, 10021)):
     from learning.paused.capture import assemble_dataset
 
     roots = []
-    for seed in range(10001, 10021):
+    for seed in seeds:
         name = f"codec-unit-{seed}"
         root = tmp_path / name
         capture = writer(root, episode_id=name, seed=seed)

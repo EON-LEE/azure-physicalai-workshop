@@ -215,6 +215,16 @@ def _run_training(
         for_inference=False,
     )
     deadline.check()
+    if "training_cohort" in config:
+        from learning.paused.command import validate_p1_parent_job, validate_p1_training
+
+        require(
+            resume_checkpoint is None and options.resume_mode == "weights_only",
+            "P1 additional data uses a fresh optimizer initialized from the P0 model weights",
+        )
+        validate_p1_training(config, converted, parent)
+        validate_p1_parent_job(client, config, parent)
+        deadline.check()
     if resume_checkpoint is None:
         require(
             config.get("checkpointing", {}).get("resume") is None,

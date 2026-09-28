@@ -242,6 +242,20 @@ def _configuration(encoded: str, checksum: str, static_sha256: str) -> tuple[dic
         _require(
             config["job_execution"] == COMMAND_EXECUTION, "Unapproved standalone job execution"
         )
+    if "training_cohort" in config:
+        _require(
+            config.get("job_execution") == COMMAND_EXECUTION
+            and config["training_cohort"]
+            == {
+                "schema": "physicalai.smolvla-training-cohort/v1",
+                "kind": "p1_additional20",
+            }
+            and config.get("parameters", {}).get("resume_mode") == "weights_only"
+            and isinstance(config.get("checkpointing"), dict)
+            and "resume" in config["checkpointing"]
+            and config["checkpointing"]["resume"] is None,
+            "Additional P1 source admission requires the closed weights-only cohort authority",
+        )
     return config, payload
 
 
