@@ -6,7 +6,6 @@ import tempfile
 from uuid import UUID
 
 from azure.core.exceptions import AzureError
-from azure.identity import ManagedIdentityCredential
 from azure.storage.blob import BlobServiceClient
 
 from apps.api.artifact_models import ArtifactResult
@@ -83,6 +82,8 @@ def execute(operation_id, actor_id, claim_id, settings):
         raise Problem(
             403, "artifact_owner_unapproved", "Resident artifact operation is not approved."
         )
+    from azure.identity import ManagedIdentityCredential
+
     with ManagedIdentityCredential(
         client_id=str(settings.managed_identity_client_id)
     ) as credential:

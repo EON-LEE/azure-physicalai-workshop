@@ -22,7 +22,12 @@ def main():
     sys.addaudithook(offline_only)
     from azure.batch import BatchClient
 
-    from apps.learning_worker import candidate_provenance, external_training, managed_reports
+    from apps.learning_worker import (
+        artifact_task,
+        candidate_provenance,
+        external_training,
+        managed_reports,
+    )
     from simulation import batch, batch_learned, batch_task, paired_evaluation
 
     assert version("azure-batch") == "15.1.0"
@@ -46,6 +51,7 @@ def main():
                     managed_reports.__name__,
                     candidate_provenance.__name__,
                     external_training.__name__,
+                    artifact_task.__name__,
                 ],
                 "network_or_process_attempts": attempts,
                 "gpu_modules_loaded": [],

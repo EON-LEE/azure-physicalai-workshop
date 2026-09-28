@@ -370,7 +370,7 @@ def test_private_api_import_uses_bounded_worker_and_creates_no_api_training_or_r
         paused_training_enabled=True,
     )
     monkeypatch.setattr(
-        artifact_task, "ManagedIdentityCredential", lambda **kwargs: nullcontext(None)
+        "azure.identity.ManagedIdentityCredential", lambda **kwargs: nullcontext(None)
     )
     monkeypatch.setattr(artifact_task, "BlobRegistry", lambda *args, **kwargs: sample.registry)
 

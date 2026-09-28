@@ -461,7 +461,7 @@ def test_protected_api_to_private_artifact_worker_imports_only_after_actual_resc
     monkeypatch.setattr(artifact_task, "BlobServiceClient", BlobService)
     monkeypatch.setattr(artifact_task, "BlobRegistry", lambda *args, **kwargs: registry)
     monkeypatch.setattr(
-        artifact_task, "ManagedIdentityCredential", lambda **kwargs: nullcontext(None)
+        "azure.identity.ManagedIdentityCredential", lambda **kwargs: nullcontext(None)
     )
     verifier = VerifiedArtifacts(
         registry, None, registry.client.url, "demonstrations", allowed_policy_types=("smolvla",)
