@@ -190,6 +190,10 @@ The post-hoc request has this closed shape (descriptions are not valid values):
 File hashes cover original bytes including whitespace. Canonical specification/
 configuration hashes retain their native semantics. Uploading a retained
 specification after training does not make its upload time an old approval.
+For `project_sha256`, use the API fingerprint of the protected GET response's
+`item`: UTF-8 JSON with `sort_keys=True`, `separators=(',', ':')`,
+`ensure_ascii=False`, and `allow_nan=False`. This is not the native configuration
+canonicalizer, which escapes non-ASCII characters.
 The verifier reads server `Last-Modified` and ETag from the same Blob download:
 qualification/archive may share the approval's one-second timestamp, but the
 end of the approval's timestamp interval must precede the original claim, and
