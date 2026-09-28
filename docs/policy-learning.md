@@ -1172,6 +1172,8 @@ Observation uses only ARM/Batch reads. It records the actual node,
 `startup/stderr.txt` and `startup/wd/preflight.json` while the node exists.
 Each log includes captured bytes/hash/range and an explicit truncation flag;
 404, DNS, TLS and timeout failures stay unavailable/unknown, never ready.
+Node metadata is capped at 256 KiB and each captured log at 64 KiB; an oversized
+node record or truncated GPU proof cannot authorize transition.
 The observer publishes create-only, ETag/readback-verified snapshots under
 `tenants/<tenant>/owners/<owner>/learning/pool-preparation/<operation_id>/`.
 Only after the last snapshot and ready result publish successfully is the local

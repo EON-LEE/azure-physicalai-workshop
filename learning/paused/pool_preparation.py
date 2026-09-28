@@ -31,6 +31,7 @@ OBSERVATION_SCHEMA = "physicalai.batch-pool-preparation-observation/v1"
 TRANSITION_SCHEMA = "physicalai.batch-pool-preparation-transition/v1"
 LOG_PATHS = ("startup/stdout.txt", "startup/stderr.txt", "startup/wd/preflight.json")
 MAX_LOG_BYTES = 65536
+MAX_NODE_BYTES = 256 * 1024
 CONFIG_KEYS = {
     "operation_id",
     "warmup_id",
@@ -493,7 +494,7 @@ def observe(plan: dict, *, arm, batch, clock=None) -> dict:
         result["state"] = "not_ready"
         if nodes:
             node = nodes[0]
-            result["node"] = {
+            node_record = {
                 "id": node.id,
                 "state": _state(node.state),
                 "is_dedicated": node.is_dedicated,
@@ -502,6 +503,16 @@ def observe(plan: dict, *, arm, batch, clock=None) -> dict:
                 "errors": [item.as_dict() for item in (getattr(node, "errors", None) or [])],
                 "raw": node.as_dict(),
             }
+            node_bytes = canonical(node_record)
+            if len(node_bytes) > MAX_NODE_BYTES:
+                result["node"] = {
+                    "id": node.id,
+                    "metadata_state": "oversized",
+                    "bytes": len(node_bytes),
+                    "sha256": digest(node_bytes),
+                }
+                raise ContractError("Actual node metadata exceeds its bounded evidence limit")
+            result["node"] = node_record
             result["logs"] = _read_logs(batch, pool_id, node.id)
             if (
                 result["node"]["state"] in ("starttaskfailed", "unusable", "preempted")

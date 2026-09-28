@@ -742,3 +742,22 @@ def test_operator_transport_cannot_expand_a_transition_into_an_arbitrary_pool_ch
     transport = PoolArm(scenario.plan, credential, allow_transition=True)
     with pytest.raises(ContractError, match="exact original canonical formula"):
         transport.patch({"properties": {"vmSize": "unapproved"}}, etag='"original"')
+
+
+def test_oversized_node_metadata_is_bounded_rejected_and_cannot_advance(
+    scenario, monkeypatch, tmp_path
+):
+    monkeypatch.setattr(type(scenario.node), "as_dict", lambda self: {"unexpected": "x" * 300000})
+    evidence = prep.observe(scenario.plan, arm=scenario.arm, batch=scenario.batch)
+    assert evidence["state"] == "rejected"
+    assert evidence["node"]["metadata_state"] == "oversized"
+    assert len(canonical(evidence)) < 8192
+    with pytest.raises(ContractError):
+        prep.transition(
+            scenario.plan,
+            evidence,
+            arm=scenario.arm,
+            journal=tmp_path / "intent.json",
+            approved_plan_sha256=scenario.plan["plan_sha256"],
+        )
+    assert scenario.arm.patches == []
