@@ -153,6 +153,53 @@ def test_existing_deterministic_large_dataset_is_verified_and_reused_without_per
     ), "Existing payloads must be read back, not trusted because their index is unchanged."
 
 
+def test_payload_reuse_matches_unquoted_list_etags_to_quoted_http_etags(tmp_path, monkeypatch):
+    registry, blobs = setup()
+    artifact_id = uuid4()
+    entries, value = source_tree(tmp_path)
+    install(registry, artifact_id, entries, value)
+    listing = blobs.list_blobs
+
+    def unquoted_list(**kwargs):
+        for item in listing(**kwargs):
+            yield SimpleNamespace(name=item.name, size=item.size, etag=item.etag[1:-1])
+
+    monkeypatch.setattr(blobs, "list_blobs", unquoted_list)
+    registry.upload(
+        ACTOR, artifact_id, tmp_path, {key: value[key] for key in ("role", "manifest_sha256")}
+    )
+    assert blobs.writes == []
+    payload_reads = [options for name, options in blobs.download_options if "/files/" in name]
+    assert len(payload_reads) == len(entries)
+    assert all(
+        options["etag"].startswith('"') and options["etag"].endswith('"')
+        for options in payload_reads
+    )
+
+
+@pytest.mark.parametrize(
+    "etag", ['W/"version"', '"unfinished', '"a"b"', "bad space", "bad\r\nheader"]
+)
+def test_invalid_payload_etags_fail_before_any_payload_read(tmp_path, monkeypatch, etag):
+    registry, blobs = setup()
+    artifact_id = uuid4()
+    entries, value = source_tree(tmp_path)
+    install(registry, artifact_id, entries, value)
+    listing = blobs.list_blobs
+
+    def invalid_list(**kwargs):
+        for item in listing(**kwargs):
+            yield SimpleNamespace(name=item.name, size=item.size, etag=etag)
+
+    monkeypatch.setattr(blobs, "list_blobs", invalid_list)
+    with pytest.raises(Problem):
+        registry.upload(
+            ACTOR, artifact_id, tmp_path, {key: value[key] for key in ("role", "manifest_sha256")}
+        )
+    assert not any("/files/" in name for name, _ in blobs.download_options)
+    assert blobs.writes == []
+
+
 @pytest.mark.parametrize(
     "mutation",
     ["changed-payload", "missing-payload", "extra-payload", "changed-metadata", "missing-index"],

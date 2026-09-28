@@ -489,6 +489,16 @@ class BlobRegistry:
             raise unavailable("Scoped immutable artifact index")
         return result.value
 
+    @staticmethod
+    def _payload_etag(value):
+        if not isinstance(value, str) or not value or value.startswith("W/"):
+            raise Problem(409, "artifact_payload_changed", "A strong payload ETag is required.")
+        if value.startswith('"') and value.endswith('"'):
+            value = value[1:-1]
+        if not value or re.fullmatch(r"[!#-~]+", value) is None:
+            raise Problem(409, "artifact_payload_changed", "Payload ETag syntax is invalid.")
+        return f'"{value}"'
+
     def _payload_inventory(self, prefix):
         result, total = {}, 0
         budget = getattr(self, "budget", None)
@@ -518,7 +528,7 @@ class BlobRegistry:
                     raise Problem(
                         503, "artifact_budget_exceeded", "Payload inventory exceeds 20 GiB."
                     )
-                result[name] = (blob.size, blob.etag)
+                result[name] = (blob.size, self._payload_etag(blob.etag))
         except AzureError as exc:
             raise unavailable("Private artifact payload inventory") from exc
         return result
@@ -543,7 +553,7 @@ class BlobRegistry:
                     max_concurrency=1,
                     retry_total=0,
                 )
-                if getattr(download.properties, "etag", None) != etag:
+                if self._payload_etag(getattr(download.properties, "etag", None)) != etag:
                     raise Problem(
                         409, "artifact_payload_changed", "Payload version changed during readback."
                     )

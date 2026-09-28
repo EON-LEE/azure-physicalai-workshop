@@ -291,6 +291,9 @@ import completion is not model quality, a release, or public improvement.
 The original command deadline is never renewed. The separate import CPU wall
 budget still includes queue time and is at most 1,800 seconds; aggregate
 transfer stays at most 20 GiB/100,000 files and actual free disk may be smaller.
+Payload reuse compares strong ETag values across the storage list and HTTP
+representations, sends a quoted `If-Match`, and still verifies every byte's size
+and SHA. Weak, malformed, empty or whitespace-bearing ETags are rejected.
 Large real imports can therefore fail resource-budget checks and require
 explicit operator sizing. No successful production import is implied by CPU
 fixtures or source tests.
