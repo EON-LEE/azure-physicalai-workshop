@@ -45,8 +45,8 @@ class ImportBlobs(ConditionalBlobs):
         self.modified[name] = utcnow()
         return receipt
 
-    def download_blob(self, name):
-        result = super().download_blob(name)
+    def download_blob(self, name, **kwargs):
+        result = super().download_blob(name, **kwargs)
         body = result.readall()
         result.chunks = lambda: iter((body,))
         result.properties.last_modified = self.modified[name]

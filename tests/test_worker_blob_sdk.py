@@ -57,6 +57,9 @@ class OfflineResponse(HttpResponse):
     def body(self):
         return self._body
 
+    def read(self):
+        return self._body
+
     def stream_download(self, pipeline, **kwargs):
         return OfflineStream(self)
 

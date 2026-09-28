@@ -157,6 +157,8 @@ class ConditionalBlobs:
         )
 
     def _upload(self, name, data, overwrite, *, etag=None, match_condition=None, **kwargs):
+        if hasattr(data, "read"):
+            data = data.read()
         with self.lock:
             prior = self.items.get(name)
             if prior is not None and not overwrite:
@@ -171,12 +173,31 @@ class ConditionalBlobs:
             self.writes.append((name, overwrite, etag, match_condition))
             return {"etag": tag}
 
-    def download_blob(self, name):
+    def download_blob(
+        self,
+        name,
+        *,
+        offset=0,
+        length=None,
+        etag=None,
+        match_condition=None,
+        max_concurrency=1,
+        retry_total=None,
+    ):
         with self.lock:
             if name not in self.items:
                 raise ResourceNotFoundError(status_code=404)
-            data, etag = self.items[name]
-            return SimpleNamespace(readall=lambda: data, properties=SimpleNamespace(etag=etag))
+            data, version = self.items[name]
+            if etag is not None:
+                assert match_condition == MatchConditions.IfNotModified
+                if version != etag:
+                    raise ResourceModifiedError(status_code=412)
+            body = data[offset:] if length is None else data[offset : offset + length]
+            return SimpleNamespace(
+                readall=lambda: body,
+                chunks=lambda: (body[i : i + 65536] for i in range(0, len(body), 65536)),
+                properties=SimpleNamespace(etag=version, size=len(data)),
+            )
 
     def list_blobs(self, *, name_starts_with):
         with self.lock:

@@ -1,6 +1,7 @@
 """Post-hoc native training imports use CPU fixtures, never actual training/quality claims."""
 
 import json
+from datetime import timedelta
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -101,6 +102,91 @@ def test_full_posthoc_import_verifies_original_native_artifacts_without_api_trai
     )
     assert checked == imported
     assert not any("/jobs/" in name for name in sample.registry.container.items)
+
+
+def test_new_import_reuses_original_artifacts_after_index_publication_failure(
+    native_import, monkeypatch
+):
+    from uuid import NAMESPACE_URL, uuid5
+
+    from apps.api.artifact_models import ArtifactWork
+    from apps.api.models import utcnow
+    from apps.learning_worker import external_training
+    from apps.learning_worker.artifact_operations import ArtifactBudget
+
+    sample = native_import
+    dataset_id = uuid5(
+        NAMESPACE_URL,
+        f"{ACTOR.owner_key}:external-dataset:{sample.project.id}:"
+        f"{sample.config['inputs']['demonstrations']['sha256']}",
+    )
+    candidate_id = uuid5(NAMESPACE_URL, f"{ACTOR.owner_key}:external-candidate:{sample.work.id}")
+    read_index = sample.registry.artifact_index
+
+    def former_generic_limit(actor, artifact_id):
+        if artifact_id == dataset_id:
+            raise Problem(503, "registry_document_size", "Reproduced old generic index limit.")
+        return read_index(actor, artifact_id)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(sample.registry, "artifact_index", former_generic_limit)
+        with pytest.raises(Problem) as failure:
+            external_training.complete(sample.verifier, ACTOR, sample.work)
+    assert failure.value.code == "registry_document_size"
+    assert sample.registry.get(ACTOR, f"{sample.context.prefix}/verified.json") is None
+    prefixes = tuple(
+        sample.registry.key(ACTOR, f"artifacts/{artifact_id}/")
+        for artifact_id in (dataset_id, candidate_id)
+    )
+    original = {
+        key: value
+        for key, value in sample.registry.container.items.items()
+        if key.startswith(prefixes)
+    }
+    assert sample.registry.key(ACTOR, f"artifacts/{dataset_id}/index.json") in original
+    assert sample.registry.key(ACTOR, f"artifacts/{candidate_id}/index.json") in original
+    new_id = uuid4()
+    new_prefix = external_training.prefix(sample.project.id, new_id)
+    now = utcnow()
+    request = sample.request.model_copy(update={"import_id": new_id, "created_at": now})
+    for name in ("run-config.json", "specification.json"):
+        source = sample.registry.key(ACTOR, f"{sample.context.prefix}/files/{name}")
+        sample.registry.container.upload_blob(
+            sample.registry.key(ACTOR, f"{new_prefix}/files/{name}"),
+            sample.registry.container.items[source][0],
+            overwrite=False,
+        )
+    sample.registry.put(
+        ACTOR, f"{new_prefix}/completion.json", request.model_dump(mode="json", by_alias=True)
+    )
+    context = external_training.context(sample.registry, ACTOR, sample.project, new_id)
+    work = ArtifactWork.model_validate(
+        sample.work.model_dump()
+        | {
+            "id": new_id,
+            "target_id": new_id,
+            "created_at": now,
+            "deadline": now + timedelta(seconds=1800),
+            "external_import": context.reference,
+        }
+    )
+    sample.verifier.budget = sample.registry.budget = ArtifactBudget(
+        work.deadline, max_bytes=work.max_bytes, max_files=work.max_files
+    )
+    sample.registry.container.writes.clear()
+    imported = external_training.complete(sample.verifier, ACTOR, work)
+    assert imported.dataset.id == dataset_id
+    assert imported.candidate.id != candidate_id
+    assert imported.record.id == new_id
+    assert all(sample.registry.container.items[key] == value for key, value in original.items())
+    assert not any(key.startswith(prefixes) for key, *_ in sample.registry.container.writes)
+    assert sample.registry.get(ACTOR, f"{sample.context.prefix}/verified.json") is None
+    assert (
+        external_training.verified_result(
+            sample.verifier, ACTOR, sample.project, context.reference
+        )[0]
+        == imported
+    )
 
 
 @pytest.mark.parametrize(

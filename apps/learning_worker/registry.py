@@ -25,6 +25,28 @@ from apps.api.learning_ports import JobSpecification
 from apps.api.models import Model, Principal, Revision, Stored, utcnow
 
 log = logging.getLogger(__name__)
+ARTIFACT_INDEX_MAX_BYTES = 16 * 1024**2
+ARTIFACT_MAX_FILES = 100000
+ARTIFACT_MAX_BYTES = 20 * 1024**3
+_INDEX_FIELDS = frozenset(
+    {
+        "owner_key",
+        "manifest_sha256",
+        "files",
+        "role",
+        "training_execution",
+        "azure_job_type",
+        "azure_job_id",
+        "training_origin",
+        "external_import_id",
+        "project_id",
+    }
+)
+
+
+class ArtifactIndex(NamedTuple):
+    value: dict
+    etag: str
 
 
 class ImportBlob(NamedTuple):
@@ -338,11 +360,258 @@ class BlobRegistry:
             raise Problem(404, "training_parent_missing", "Train-only artifact is not registered.")
         return TrainingParent.model_validate(value)
 
-    def artifact_index(self, actor, artifact_id):
-        value = self.get(actor, f"artifacts/{artifact_id}/index.json")
-        if not isinstance(value, dict) or value.get("owner_key") != actor.owner_key:
-            raise unavailable("Scoped immutable artifact index")
+    def _artifact_prefix(self, actor, artifact_id):
+        try:
+            identifier = UUID(str(artifact_id))
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise Problem(422, "invalid_artifact_id", "Artifact identity must be a UUID.") from exc
+        return self.key(actor, f"artifacts/{identifier}/")
+
+    @staticmethod
+    def _artifact_path(name):
+        from learning.common import relative_path
+
+        try:
+            if not isinstance(name, str) or len(name) > 1024:
+                raise ValueError("Invalid artifact path type or length")
+            return relative_path(name)
+        except ValueError as exc:
+            raise Problem(
+                503, "invalid_artifact_path", "Artifact paths must be bounded and relative."
+            ) from exc
+
+    def _validate_artifact_index(self, actor, value):
+        if (
+            not isinstance(value, dict)
+            or value.keys() - _INDEX_FIELDS
+            or value.get("owner_key") != actor.owner_key
+            or not isinstance(value.get("manifest_sha256"), str)
+            or re.fullmatch(r"[a-f0-9]{64}", value["manifest_sha256"]) is None
+            or not isinstance(value.get("files"), dict)
+            or not 1 <= len(value["files"]) <= ARTIFACT_MAX_FILES
+        ):
+            raise Problem(
+                503, "artifact_index_invalid", "Artifact index scope or structure is invalid."
+            )
+        for name in value.keys() - {"files", "owner_key", "manifest_sha256"}:
+            if not isinstance(value[name], str) or not value[name] or len(value[name]) > 2048:
+                raise Problem(
+                    503, "artifact_index_invalid", "Artifact metadata has an invalid type."
+                )
+        files = value["files"]
+        for name, checksum in files.items():
+            path = self._artifact_path(name)
+            if (
+                not isinstance(checksum, str)
+                or re.fullmatch(r"[a-f0-9]{64}", checksum) is None
+                or any(str(parent) in files for parent in path.parents if str(parent) != ".")
+            ):
+                raise Problem(
+                    503, "artifact_index_invalid", "Artifact file hashes or paths conflict."
+                )
+        if not any(
+            files.get(name) == value["manifest_sha256"]
+            for name in (
+                "manifest.json",
+                "model.json",
+                "report.json",
+                "backbone.json",
+                "checkpoint.json",
+            )
+        ):
+            raise Problem(
+                503, "artifact_index_invalid", "The declared artifact manifest is missing."
+            )
         return value
+
+    def _read_artifact_index(self, actor, artifact_id, *, etag=None):
+        from learning.common import parse_json
+
+        key = self._artifact_prefix(actor, artifact_id) + "index.json"
+        conditional = (
+            {}
+            if etag is None
+            else {
+                "etag": etag,
+                "match_condition": MatchConditions.IfNotModified,
+            }
+        )
+        try:
+            budget = getattr(self, "budget", None)
+            if budget:
+                budget.consume(0, files=1)
+            download = self.container.download_blob(
+                key,
+                offset=0,
+                length=ARTIFACT_INDEX_MAX_BYTES + 1,
+                max_concurrency=1,
+                retry_total=0,
+                **conditional,
+            )
+            actual_etag = getattr(download.properties, "etag", None)
+            if (
+                not isinstance(actual_etag, str)
+                or not actual_etag
+                or (etag is not None and actual_etag != etag)
+            ):
+                raise Problem(
+                    409, "artifact_index_changed", "Artifact index version is unconfirmed."
+                )
+            content = bytearray()
+            for chunk in download.chunks():
+                if budget:
+                    budget.consume(len(chunk))
+                if len(content) + len(chunk) > ARTIFACT_INDEX_MAX_BYTES:
+                    raise Problem(
+                        503, "artifact_index_size", "Artifact index exceeds its 16 MiB bound."
+                    )
+                content.extend(chunk)
+            value = self._validate_artifact_index(actor, parse_json(bytes(content)))
+            return ArtifactIndex(value, actual_etag)
+        except ResourceNotFoundError as exc:
+            if etag is not None:
+                raise Problem(
+                    409, "artifact_index_changed", "The original artifact index disappeared."
+                ) from exc
+            return None
+        except ResourceModifiedError as exc:
+            raise Problem(
+                409, "artifact_index_changed", "The original artifact index changed."
+            ) from exc
+        except AzureError as exc:
+            raise unavailable("Bounded private artifact index") from exc
+        except ValueError as exc:
+            raise Problem(503, "artifact_index_invalid", "Artifact index JSON is invalid.") from exc
+
+    def artifact_index(self, actor, artifact_id):
+        result = self._read_artifact_index(actor, artifact_id)
+        if result is None:
+            raise unavailable("Scoped immutable artifact index")
+        return result.value
+
+    def _payload_inventory(self, prefix):
+        result, total = {}, 0
+        budget = getattr(self, "budget", None)
+        try:
+            for blob in self.container.list_blobs(name_starts_with=prefix):
+                if budget:
+                    budget.check()
+                if not isinstance(blob.name, str) or not blob.name.startswith(prefix):
+                    raise Problem(
+                        503, "artifact_inventory_invalid", "Payload inventory escaped its prefix."
+                    )
+                name = blob.name[len(prefix) :]
+                self._artifact_path(name)
+                if (
+                    name in result
+                    or len(result) >= ARTIFACT_MAX_FILES
+                    or type(blob.size) is not int
+                    or blob.size < 0
+                    or not isinstance(blob.etag, str)
+                    or not blob.etag
+                ):
+                    raise Problem(
+                        503, "artifact_inventory_invalid", "Payload inventory is invalid."
+                    )
+                total += blob.size
+                if total > ARTIFACT_MAX_BYTES:
+                    raise Problem(
+                        503, "artifact_budget_exceeded", "Payload inventory exceeds 20 GiB."
+                    )
+                result[name] = (blob.size, blob.etag)
+        except AzureError as exc:
+            raise unavailable("Private artifact payload inventory") from exc
+        return result
+
+    def _verify_payloads(self, prefix, files, sizes):
+        observed = self._payload_inventory(prefix)
+        if {name: size for name, (size, _) in observed.items()} != sizes:
+            raise Problem(409, "artifact_payload_mismatch", "Existing payload inventory differs.")
+        budget = getattr(self, "budget", None)
+        for name, expected in files.items():
+            size, etag = observed[name]
+            digest, received = hashlib.sha256(), 0
+            try:
+                if budget:
+                    budget.consume(0, files=1)
+                download = self.container.download_blob(
+                    prefix + name,
+                    offset=0,
+                    length=size + 1,
+                    etag=etag,
+                    match_condition=MatchConditions.IfNotModified,
+                    max_concurrency=1,
+                    retry_total=0,
+                )
+                if getattr(download.properties, "etag", None) != etag:
+                    raise Problem(
+                        409, "artifact_payload_changed", "Payload version changed during readback."
+                    )
+                for chunk in download.chunks():
+                    if budget:
+                        budget.consume(len(chunk))
+                    received += len(chunk)
+                    if received > size:
+                        raise Problem(
+                            409,
+                            "artifact_payload_mismatch",
+                            "Payload readback exceeds its original size.",
+                        )
+                    digest.update(chunk)
+            except (ResourceModifiedError, ResourceNotFoundError) as exc:
+                raise Problem(
+                    409, "artifact_payload_changed", "Original payload disappeared or changed."
+                ) from exc
+            except AzureError as exc:
+                raise unavailable("Private immutable artifact readback") from exc
+            if received != size or digest.hexdigest() != expected:
+                raise Problem(
+                    409, "artifact_payload_mismatch", "Payload readback checksum or size differs."
+                )
+        if observed != self._payload_inventory(prefix):
+            raise Problem(
+                409, "artifact_payload_changed", "Payload inventory changed during verification."
+            )
+
+    def _source_inventory(self, root):
+        if not root.is_dir() or root.is_symlink():
+            raise Problem(422, "artifact_symlink", "The artifact source must be a real directory.")
+        files, sizes, total = {}, {}, 0
+        budget = getattr(self, "budget", None)
+        for path in root.rglob("*"):
+            if budget:
+                budget.check()
+            if path.is_symlink():
+                raise Problem(
+                    422, "artifact_symlink", "Symlinks are not allowed in registered artifacts."
+                )
+            if not path.is_file():
+                continue
+            name = path.relative_to(root).as_posix()
+            self._artifact_path(name)
+            size = path.stat().st_size
+            total += size
+            if len(files) >= ARTIFACT_MAX_FILES or total > ARTIFACT_MAX_BYTES:
+                raise Problem(
+                    503, "artifact_budget_exceeded", "Artifact source exceeds its file/byte bounds."
+                )
+            digest, received = hashlib.sha256(), 0
+            with path.open("rb") as stream:
+                while chunk := stream.read(1024 * 1024):
+                    if budget:
+                        budget.check()
+                    received += len(chunk)
+                    if received > size:
+                        raise Problem(
+                            409, "artifact_source_changed", "Artifact source changed while hashing."
+                        )
+                    digest.update(chunk)
+            if received != size:
+                raise Problem(
+                    409, "artifact_source_changed", "Artifact source size changed while hashing."
+                )
+            files[name], sizes[name] = digest.hexdigest(), size
+        return files, sizes
 
     def download(self, actor, artifact_id, destination: Path, max_bytes=20 * 1024**3):
         index = self.artifact_index(actor, artifact_id)
@@ -396,50 +665,98 @@ class BlobRegistry:
         return index
 
     def upload(self, actor, artifact_id, root: Path, metadata: dict):
-        files = {}
-        for path in sorted(root.rglob("*")):
-            if path.is_symlink():
+        prefix = self._artifact_prefix(actor, artifact_id)
+        if not isinstance(metadata, dict) or {"owner_key", "files"} & metadata.keys():
+            raise Problem(
+                422, "artifact_index_invalid", "Artifact metadata cannot replace owner or files."
+            )
+        files, sizes = self._source_inventory(root)
+        value = self._validate_artifact_index(
+            actor, {**metadata, "owner_key": actor.owner_key, "files": files}
+        )
+        payload = bytearray()
+        encoder = json.JSONEncoder(sort_keys=True, separators=(",", ":"), allow_nan=False)
+        for fragment in encoder.iterencode(value):
+            chunk = fragment.encode()
+            if len(payload) + len(chunk) > ARTIFACT_INDEX_MAX_BYTES:
                 raise Problem(
-                    422, "artifact_symlink", "Symlinks are not allowed in registered artifacts."
+                    503, "artifact_index_size", "Artifact index exceeds its 16 MiB bound."
                 )
-            if not path.is_file():
-                continue
-            name = path.relative_to(root).as_posix()
-            digest = hashlib.sha256()
-            budget = getattr(self, "budget", None)
-            if budget:
-                budget.consume(path.stat().st_size, files=1)
-            with path.open("rb") as stream:
-                while chunk := stream.read(1024 * 1024):
-                    if budget:
-                        budget.check()
-                    digest.update(chunk)
-            files[name] = digest.hexdigest()
+            payload.extend(chunk)
+        original = self._read_artifact_index(actor, artifact_id)
+        if original is not None:
+            if original.value != value:
+                raise Problem(
+                    409,
+                    "immutable_registry_conflict",
+                    "The complete existing artifact index differs.",
+                )
+            self._verify_payloads(prefix + "files/", files, sizes)
+            if self._read_artifact_index(actor, artifact_id, etag=original.etag) != original:
+                raise Problem(
+                    409, "artifact_index_changed", "Artifact index changed during readback."
+                )
+            return
+        if self._payload_inventory(prefix + "files/"):
+            raise Problem(
+                409,
+                "artifact_exists",
+                "Partial payloads without a completed index cannot be reused.",
+            )
+        budget = getattr(self, "budget", None)
+        for name in sorted(files):
+            path = root.joinpath(*self._artifact_path(name).parts)
             try:
+                if budget:
+                    budget.consume(sizes[name], files=1)
                 with path.open("rb") as stream:
-                    self.container.upload_blob(
-                        name=self.key(actor, f"artifacts/{artifact_id}/files/{name}"),
+                    self.container.get_blob_client(prefix + "files/" + name).upload_blob(
                         data=stream,
                         overwrite=False,
+                        max_concurrency=1,
+                        retry_total=0,
                     )
             except ResourceExistsError as exc:
-                # Never silently accept an unverified pre-existing partial artifact.
-                index = self.get(actor, f"artifacts/{artifact_id}/index.json")
-                if not isinstance(index, dict) or index.get("files", {}).get(name) != files[name]:
-                    raise Problem(
-                        409, "artifact_exists", "Artifact upload requires a new registration ID."
-                    ) from exc
+                raise Problem(
+                    409, "artifact_exists", "A concurrent partial upload cannot be adopted."
+                ) from exc
             except AzureError as exc:
                 raise unavailable("Private artifact upload") from exc
-        self.put(
-            actor,
-            f"artifacts/{artifact_id}/index.json",
-            {
-                **metadata,
-                "owner_key": actor.owner_key,
-                "files": files,
-            },
-        )
+        self._verify_payloads(prefix + "files/", files, sizes)
+        try:
+            if budget:
+                budget.consume(len(payload), files=1)
+            self.container.get_blob_client(prefix + "index.json").upload_blob(
+                data=bytes(payload),
+                overwrite=False,
+                retry_total=0,
+                content_settings=ContentSettings(content_type="application/json"),
+            )
+        except ResourceExistsError as exc:
+            concurrent = self._read_artifact_index(actor, artifact_id)
+            if concurrent is None or concurrent.value != value:
+                raise Problem(
+                    409,
+                    "immutable_registry_conflict",
+                    "Concurrent artifact index publication differs.",
+                ) from exc
+            self._verify_payloads(prefix + "files/", files, sizes)
+            if self._read_artifact_index(actor, artifact_id, etag=concurrent.etag) != concurrent:
+                raise Problem(
+                    409,
+                    "artifact_index_changed",
+                    "Concurrent artifact index changed during verification.",
+                ) from exc
+            return
+        except AzureError as exc:
+            raise unavailable("Private artifact index publication") from exc
+        published = self._read_artifact_index(actor, artifact_id)
+        if published is None or published.value != value:
+            raise Problem(
+                409,
+                "artifact_index_changed",
+                "Published artifact index differs from verified payloads.",
+            )
 
     def close(self):
         self.client.close()

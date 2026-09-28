@@ -139,6 +139,48 @@ python -m pytest tests/test_learning_worker_infra.py -q
 
 ## Durable claims and SDK adapter
 
+### Bounded artifact indexes and immutable retry
+
+Artifact payload indexes use the dedicated
+`artifacts/<UUID>/index.json` reader, not generic registry metadata reads.
+The index is limited to **16 MiB of UTF-8 JSON and 100,000 file entries**;
+both bounds apply, so unusually long inventories may reach the byte cap first.
+Generic `get`/`put` behavior and the ordinary **2 MiB** metadata and **64 KiB**
+lifecycle-read limits are unchanged.
+
+Index downloads request only bytes `0..16777216` (16 MiB plus one sentinel
+byte), consume chunks with a hard limit before parsing, and reject an oversized
+response. Validation requires the exact owner, an artifact UUID, a nonempty
+file-to-lowercase-SHA256 map, a matching root manifest, known metadata fields
+with string values, and safe relative paths up to 1,024 characters. Duplicate
+JSON keys, non-finite values, file/directory prefix collisions, escaping paths
+and invalid hashes are rejected. Index publication uses the same byte/count
+bounds and remains create-only; it never falls through generic metadata's
+conflict reader.
+
+An upload retry reads a complete existing index once, compares the whole index
+and requested metadata, and checks the exact remote payload inventory. Every
+payload is read back with the listed ETag as `If-Match`, bounded to its expected
+size plus one byte, and checked for exact size and SHA256. The inventory is
+rechecked, then the original index is read conditionally against its ETag.
+Thus a normal completed-artifact retry makes **two index reads**, not one large
+index read per payload, and performs no writes. There is no cross-call cache
+that could authorize stale bytes.
+
+Fresh uploads also verify payload readback before publishing the final index.
+An index-publication race can reuse only an identical complete index after
+readback; a conflicting index is never overwritten. Payloads without a complete
+index, missing/extra files, changed ETags/hashes/sizes, or mismatched metadata
+fail explicitly. The worker does not repair, delete, or change artifact IDs.
+This lets a newly authorized external-import operation reuse the deterministic
+dataset artifact left by an earlier failed import without replaying that
+expired operation.
+
+All index and payload transfers, including readback, remain charged to the
+existing artifact byte/file/deadline budget. The 20 GiB/100,000-file/1,800-second
+ceilings, actual free-disk checks, single-process runner and admission flags
+are not increased; the dedicated metadata limit is not a capacity promise.
+
 ### Post-hoc external-native training imports
 
 An operator-native UUID-named Azure ML command is **not** an API `TrainingRun`.

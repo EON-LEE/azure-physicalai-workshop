@@ -609,8 +609,8 @@ def registry_for(bundle):
             self.modified[name] = utcnow()
             return result
 
-        def download_blob(self, name):
-            value = super().download_blob(name)
+        def download_blob(self, name, **kwargs):
+            value = super().download_blob(name, **kwargs)
             data = value.readall()
             value.chunks = lambda: iter((data,))
             value.properties.last_modified = self.modified[name]
