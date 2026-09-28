@@ -453,7 +453,7 @@ class CosmosStore:
         query = "SELECT TOP 50 * FROM c WHERE c.kind = @kind"
         parameters = [{"name": "@kind", "value": f"learning:{kind}"}]
         if project_id is not None:
-            query += " AND c.value.project_id = @project"
+            query += ' AND c["value"].project_id = @project'
             parameters.append({"name": "@project", "value": str(project_id)})
         query += " ORDER BY c.updated_at DESC"
         items = _cosmos(

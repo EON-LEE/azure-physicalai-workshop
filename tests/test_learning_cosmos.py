@@ -143,6 +143,8 @@ def test_list_is_bounded_and_owner_partitioned_without_cross_partition_enumerati
     actual.list_learning(ACTOR.owner_key, "training", project_request().request_id)
     query = actual.container.queries[0]
     assert "TOP 50" in query["query"]
+    assert 'c["value"].project_id = @project' in query["query"]
+    assert "c.value" not in query["query"]
     assert query["partition_key"] == ACTOR.owner_key
     assert "enable_cross_partition_query" not in query
     assert any(param["name"] == "@project" for param in query["parameters"])
