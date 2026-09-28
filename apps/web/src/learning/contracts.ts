@@ -108,13 +108,14 @@ export const datasetSchema = z.object({
 }).superRefine(consistentTiming);
 export const artifactOperationSchema = z.object({
   ...base, kind: z.literal('artifact_operation'), project_id: id, target_id: id,
-  operation: z.enum(['capture', 'dataset', 'managed_evaluation']), work_sha256: sha,
+  operation: z.enum(['capture', 'dataset', 'managed_evaluation', 'external_training']), work_sha256: sha,
   deadline: date, max_bytes: count, max_files: count,
   status: z.enum(['queued', 'running', 'ready', 'failed', 'timed_out', 'uncertain']),
-  phase: z.enum(['queued', 'processing', 'manifest_committed', 'report_committed', 'stopped']),
+  phase: z.enum(['queued', 'processing', 'manifest_committed', 'report_committed', 'import_committed', 'stopped']),
   result: z.object({
     artifact_id: id, manifest_sha256: sha, capture: captureSchema.nullable(),
     managed_evaluation: managedImportReceiptSchema.optional(),
+    external_training: z.lazy(() => externalTrainingResultSchema).optional(),
   }).nullable(),
   error_code: z.string().nullable(), message: z.string().nullable(),
 }).refine((value) => (value.status === 'ready') === (value.result !== null))
@@ -124,7 +125,14 @@ export const artifactOperationSchema = z.object({
       value.result.managed_evaluation.report.report_sha256 === value.result.manifest_sha256 &&
       value.result.managed_evaluation.report.artifact_id === value.result.artifact_id &&
       value.result.capture === null
-    : value.result.managed_evaluation === undefined));
+    : value.result.managed_evaluation === undefined))
+  .refine((value) => !value.result || (value.operation === 'external_training'
+    ? value.result.external_training?.record.id === value.target_id &&
+      value.result.external_training.record.project_id === value.project_id &&
+      value.result.external_training.candidate.artifact_id === value.result.artifact_id &&
+      value.result.external_training.candidate.manifest_sha256 === value.result.manifest_sha256 &&
+      value.result.capture === null
+    : value.result.external_training === undefined));
 export type ArtifactOperation = z.infer<typeof artifactOperationSchema>;
 export const teachingSchema = z.object({
   ...timingMetadata,
@@ -267,12 +275,42 @@ export const evaluationSchema = z.object({
 });
 export const candidateSchema = z.object({
   ...timingMetadata,
-  ...base, kind: z.literal('candidate'), project_id: id, dataset_id: id, training_run_id: id,
+  ...base, kind: z.literal('candidate'), project_id: id, dataset_id: id, training_run_id: id.nullable(),
+  training_origin: z.enum(['api_training_run', 'external_native_import']).optional(),
+  external_import_id: id.optional(),
   parent_release_id: id.nullable(), pretrained_artifact_id: id.nullable(), policy_type: z.enum(['gr00t_n1_5', 'gr00t_n1_7', 'smolvla', 'act_auxiliary']),
   model_sha256: sha, parent_model_sha256: sha, processor_sha256: sha, manifest_sha256: sha,
   artifact_id: id, optimizer_steps: count, azure_job_id: z.string(),
   source_commit: z.string(), model_revision: z.string(), control_profile_id: timingProfile,
-}).superRefine(consistentTiming);
+}).superRefine(consistentTiming).refine((value) => value.training_origin === 'external_native_import'
+  ? value.training_run_id === null && value.external_import_id !== undefined &&
+    value.parent_release_id === null && value.pretrained_artifact_id === null &&
+    value.policy_type === 'smolvla' && value.execution_timing === 'paused_simulation'
+  : value.training_run_id !== null && value.external_import_id === undefined);
+export const externalTrainingImportSchema = z.object({
+  ...base, ...timingMetadata, kind: z.literal('external_import'),
+  schema: z.literal('physicalai.external-training-import/v1'),
+  project_id: id, imported_at: date, native_job_name: id, azure_job_id: z.string(),
+  azure_job_type: z.literal('command'), native_created_at: date, job_deadline_utc: date,
+  approval_sha256: sha, plan_sha256: sha, plan_archive_sha256: sha, configuration_sha256: sha,
+  specification_sha256: sha, image_qualification_sha256: sha, environment_image: z.string(),
+  managed_identity_client_id: id, code_snapshot_sha256: sha, static_source_sha256: sha,
+  completion_sha256: sha, result_sha256: sha, transfer_sha256: sha, model_sha256: sha, parent_model_sha256: sha,
+  backbone_sha256: sha, raw_manifest_sha256: sha, candidate_id: id, dataset_id: id,
+  optimizer_steps: count.positive(), learning_quality_verified: z.literal(false),
+}).superRefine(consistentTiming).refine((value) =>
+  value.execution_timing === 'paused_simulation' &&
+  Date.parse(value.imported_at) > Date.parse(value.native_created_at) &&
+  value.created_at === value.imported_at && value.updated_at === value.imported_at &&
+  value.azure_job_id.endsWith(`/jobs/${value.native_job_name}`));
+const externalTrainingResultSchema = z.object({
+  record: externalTrainingImportSchema, candidate: candidateSchema, dataset: datasetSchema,
+}).refine((value) => value.candidate.external_import_id === value.record.id &&
+  value.candidate.training_origin === 'external_native_import' &&
+  value.candidate.id === value.record.candidate_id && value.dataset.id === value.record.dataset_id &&
+  value.candidate.dataset_id === value.dataset.id && value.candidate.azure_job_id === value.record.azure_job_id &&
+  value.candidate.model_sha256 === value.record.model_sha256 &&
+  value.dataset.manifest_sha256 === value.record.raw_manifest_sha256);
 export const releaseSchema = z.object({
   ...timingMetadata,
   ...base, kind: z.literal('release'), project_id: id, candidate_id: id, evaluation_run_id: id,
@@ -316,7 +354,7 @@ export const coachSchema = z.object({
   }),
 });
 export const jobSchema = z.discriminatedUnion('kind', [trainingSchema, evaluationSchema]);
-export const recordSchema = z.discriminatedUnion('kind', [projectSchema, teachingSchema, referenceCollectionSchema, datasetSchema, trainingSchema, evaluationSchema, candidateSchema, releaseSchema]);
+export const recordSchema = z.discriminatedUnion('kind', [projectSchema, teachingSchema, referenceCollectionSchema, datasetSchema, trainingSchema, evaluationSchema, candidateSchema, releaseSchema, externalTrainingImportSchema]);
 export const resource = <T extends z.ZodType>(item: T) => z.object({ item, etag: z.string().min(1) });
 export const resourceList = <T extends z.ZodType>(item: T) => z.object({ items: z.array(resource(item)).max(50) });
 export type Project = z.infer<typeof projectSchema>;

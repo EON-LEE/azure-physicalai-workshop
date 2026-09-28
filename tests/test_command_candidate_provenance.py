@@ -160,7 +160,7 @@ def command_result():
         "criteria_sha256": "d" * 64,
         "frozen_plan_sha256": "e" * 64,
         "optimizer_steps": 1,
-        "candidate": "candidates/step-1",
+        "candidate": "candidates/step-000001",
         "model_manifest_sha256": "f" * 64,
         "learning_quality_verified": False,
     }
@@ -456,7 +456,7 @@ def command_fixture(tmp_path, *, full_state=False):
             conversion_sha256="7" * 64,
         )
     (sample.root / "model.json").write_bytes(canonical(model))
-    candidate_path = "candidates/step-11" if full_state else "candidates/step-2"
+    candidate_path = "candidates/step-000011" if full_state else "candidates/step-000002"
     sample.root.rename(sample.output / candidate_path)
     sample.root = sample.output / candidate_path
     result = command_result() | {

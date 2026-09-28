@@ -27,6 +27,20 @@ def learning_publication(configuration, learning):
             503, "learning_publication_unavailable", "The approved comparison is not verified."
         )
     candidate = learning.get(actor, "candidate", evaluation.candidate_id).value
+    if candidate.training_origin == "external_native_import":
+        raise Problem(
+            503,
+            "external_learning_not_publishable",
+            "External native training is private; no API training publication is implied.",
+        )
+    if evaluation.before_candidate_id is not None:
+        before = learning.get(actor, "candidate", evaluation.before_candidate_id).value
+        if before.training_origin == "external_native_import":
+            raise Problem(
+                503,
+                "external_learning_not_publishable",
+                "External candidate pairing has no public publication contract.",
+            )
     training = learning.get(actor, "training", candidate.training_run_id).value
     dataset = learning.get(actor, "dataset", candidate.dataset_id).value
     if (

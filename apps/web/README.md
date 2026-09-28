@@ -240,6 +240,11 @@ The controls below belong to the separately protected operator area.
   submit Batch jobs or offer an Azure ML cancellation action for these records.
   Import verification and native physical quality remain separate; release and
   public publication are never automatic.
+- **Externally trained candidates:** Authenticated project records explicitly
+  label `external_import` as training performed externally and verified after
+  execution. They display the original Azure ML command ID and import time,
+  not a fabricated API training run. Public learning stays blocked for this
+  provenance; the UI neither imports arbitrary URLs nor starts/retries jobs.
 - **REFERENCE generation:** The separately admitted NRT path says
   `reference_controller · 수동 시연 아님`. It requires an explicit case selection
   and motion checkbox, sends only the request/case/approval, and uses a

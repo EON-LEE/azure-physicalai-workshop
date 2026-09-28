@@ -38,6 +38,16 @@ def estimate_input_size(work, registry, credential, settings):
             (settings.registry_account_url, settings.registry_container, location)
             for location in input_locations(registry, work.actor, value)
         ]
+    elif work.operation == "external_training":
+        from apps.learning_worker.external_training import context, input_locations
+
+        value = context(
+            registry, work.actor, work.project, work.target_id, expected=work.external_import
+        )
+        locations = [
+            (settings.registry_account_url, settings.registry_container, location)
+            for location in input_locations(registry, work.actor, value)
+        ]
     else:
         locations = [
             (
@@ -82,6 +92,14 @@ def execute(operation_id, actor_id, claim_id, settings):
         try:
             ops = ArtifactOperations(registry)
             work = ops.work(actor, operation_id)
+            if work.operation == "external_training" and (
+                not settings.paused_training_enabled
+                or actor_id not in settings.bootstrap_owner_ids
+                or "smolvla" not in settings.allowed_policy_types
+            ):
+                raise Problem(
+                    403, "external_import_unapproved", "External training import is not admitted."
+                )
             if work.operation == "managed_evaluation" and not settings.paused_evaluation_enabled:
                 raise Problem(503, "paused_learning_unavailable", "Managed import is not admitted.")
             if (
@@ -147,6 +165,15 @@ def execute(operation_id, actor_id, claim_id, settings):
                     manifest_sha256=receipt.report.report_sha256,
                     managed_evaluation=receipt,
                 )
+            elif work.operation == "external_training":
+                from apps.learning_worker.external_training import complete
+
+                imported = complete(verifier, actor, work)
+                result = ArtifactResult(
+                    artifact_id=imported.candidate.artifact_id,
+                    manifest_sha256=imported.candidate.manifest_sha256,
+                    external_training=imported,
+                )
             else:
                 artifact_id, digest = verifier.seal_dataset(
                     actor, work.project, work.target_id, work.captures
@@ -163,7 +190,9 @@ def execute(operation_id, actor_id, claim_id, settings):
                 },
             )
             return (
-                "report_committed"
+                "import_committed"
+                if work.operation == "external_training"
+                else "report_committed"
                 if work.operation == "managed_evaluation"
                 else "manifest_committed"
             )

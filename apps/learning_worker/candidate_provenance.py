@@ -39,9 +39,16 @@ class CommandTrainingResult(Model):
     criteria_sha256: Revision
     frozen_plan_sha256: Revision
     optimizer_steps: int = Field(strict=True, ge=1, le=100000)
-    candidate: str = Field(pattern=r"^candidates/step-[1-9][0-9]*\Z", max_length=64)
+    candidate: str = Field(pattern=r"^candidates/step-[0-9]{6}\Z", max_length=64)
     model_manifest_sha256: Revision
     learning_quality_verified: Literal[False]
+
+    @field_validator("candidate")
+    @classmethod
+    def positive_checkpoint_step(cls, value):
+        if not 1 <= int(value.rsplit("-", 1)[1]) <= 100000:
+            raise ValueError("Candidate path must use a positive six-digit native checkpoint step.")
+        return value
 
     @field_validator("real_time_admission", "learning_quality_verified", mode="before")
     @classmethod
@@ -294,7 +301,7 @@ def verify_command_result(
         or receipt.optimizer_steps > run.optimizer_steps
         or training["checkpoint_step"] > options.max_steps
         or training["resume_mode"] != options.resume_mode
-        or receipt.candidate != f"candidates/step-{training['checkpoint_step']}"
+        or receipt.candidate != f"candidates/step-{training['checkpoint_step']:06d}"
         or receipt.real_time_admission is not False
         or result["learning_quality_verified"] is not False
         or verifier._model_timing(model) != project.timing_fields()

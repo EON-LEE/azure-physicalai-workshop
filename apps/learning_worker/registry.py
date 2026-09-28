@@ -6,7 +6,7 @@ import logging
 import re
 from datetime import datetime
 from pathlib import Path, PurePosixPath
-from typing import Literal
+from typing import Literal, NamedTuple
 from uuid import UUID
 
 from azure.core import MatchConditions
@@ -25,6 +25,12 @@ from apps.api.learning_ports import JobSpecification
 from apps.api.models import Model, Principal, Revision, Stored, utcnow
 
 log = logging.getLogger(__name__)
+
+
+class ImportBlob(NamedTuple):
+    content: bytes
+    modified_at: datetime
+    etag: str
 
 
 class ReconciliationTarget(Frozen):
@@ -153,6 +159,10 @@ class BlobRegistry:
 
     def import_document(self, actor, suffix, *, max_bytes=2 * 1024**2):
         """Read exact private bytes and the same download's server modification timestamp."""
+        result = self.import_blob(actor, suffix, max_bytes=max_bytes)
+        return result.content, result.modified_at
+
+    def import_blob(self, actor, suffix, *, max_bytes=2 * 1024**2):
         try:
             download = self.container.download_blob(self.key(actor, suffix))
             content = bytearray()
@@ -166,15 +176,18 @@ class BlobRegistry:
                     budget.consume(len(chunk))
                 content.extend(chunk)
             modified = getattr(download.properties, "last_modified", None)
+            etag = getattr(download.properties, "etag", None)
             if (
                 not isinstance(modified, datetime)
                 or modified.tzinfo is None
                 or modified.utcoffset() is None
+                or not isinstance(etag, str)
+                or not etag
             ):
                 raise Problem(
                     503, "managed_import_timestamp", "Blob-observed UTC modification is required."
                 )
-            return bytes(content), modified
+            return ImportBlob(bytes(content), modified, etag)
         except ResourceNotFoundError as exc:
             raise Problem(
                 404, "managed_import_missing", "The original private import record is missing."

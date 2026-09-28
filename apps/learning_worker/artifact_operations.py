@@ -63,6 +63,8 @@ class ArtifactOperations:
         dataset_bytes=20 * 1024**3,
         maximum_files=100000,
         managed_evaluations_enabled=False,
+        external_training_enabled=False,
+        external_operator_ids=frozenset(),
         verifier=None,
     ):
         self.registry = registry
@@ -72,6 +74,8 @@ class ArtifactOperations:
         self.capture_bytes, self.dataset_bytes = capture_bytes, dataset_bytes
         self.maximum_files = maximum_files
         self.managed_evaluations_enabled = managed_evaluations_enabled
+        self.external_training_enabled = external_training_enabled
+        self.external_operator_ids = external_operator_ids
         self.verifier = verifier
 
     def _state(self, actor, operation_id):
@@ -124,6 +128,19 @@ class ArtifactOperations:
             )
         if actor.object_id not in self.actor_ids or actor != work.actor:
             raise Problem(403, "artifact_owner_unapproved", "Artifact owner is not allowlisted.")
+        if work.operation == "external_training":
+            if (
+                not self.external_training_enabled
+                or actor.object_id not in self.external_operator_ids
+            ):
+                raise Problem(
+                    403, "external_import_unapproved", "External import operator is not admitted."
+                )
+            from apps.learning_worker.external_training import context
+
+            context(
+                self.registry, actor, work.project, work.target_id, expected=work.external_import
+            )
         if work.operation == "managed_evaluation":
             if not self.managed_evaluations_enabled:
                 raise Problem(
@@ -259,6 +276,17 @@ class ArtifactOperations:
                     result.capture is None or result.managed_evaluation is not None
                 ):
                     raise ValueError("Original capture receipt is missing")
+                if current.value.operation == "external_training":
+                    from apps.learning_worker.external_training import verified_result
+
+                    work = self.work(actor, operation_id)
+                    if self.verifier is None or result.external_training is None:
+                        raise ValueError("Verified external import result is missing")
+                    if (
+                        verified_result(self.verifier, actor, work.project, work.external_import)[0]
+                        != result.external_training
+                    ):
+                        raise ValueError("Original external import receipt differs")
                 if current.value.operation == "managed_evaluation":
                     from apps.learning_worker.managed_reports import verified_receipt
 
@@ -274,7 +302,9 @@ class ArtifactOperations:
                 raise unavailable("Verified artifact completion metadata") from exc
             index = self.registry.artifact_index(actor, result.artifact_id)
             document = (
-                "report.json"
+                "model.json"
+                if current.value.operation == "external_training"
+                else "report.json"
                 if current.value.operation == "managed_evaluation"
                 else "manifest.json"
             )
@@ -290,10 +320,14 @@ class ArtifactOperations:
                 status="ready",
                 phase="report_committed"
                 if current.value.operation == "managed_evaluation"
+                else "import_committed"
+                if current.value.operation == "external_training"
                 else "manifest_committed",
                 result=result,
                 error_code=None,
-                message="The complete managed report is verified; physical quality is separate."
+                message="External native training was verified and imported after execution."
+                if current.value.operation == "external_training"
+                else "The complete managed report is verified; physical quality is separate."
                 if current.value.operation == "managed_evaluation"
                 else "The verified artifact manifest is committed.",
             )

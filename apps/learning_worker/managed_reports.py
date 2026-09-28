@@ -220,6 +220,11 @@ def _inventory(verifier, actor, value):
         ):
             raise Problem(409, "managed_import_model", "Original registered model index differs.")
         inventory[f"model-index:{role}"] = fingerprint(index)
+        if index.get("training_origin") == "external_native_import":
+            from apps.learning_worker.external_training import registered_import
+
+            imported, _ = registered_import(verifier, actor, record, index)
+            inventory[f"external-import:{role}"] = fingerprint(imported.model_dump(mode="json"))
     return fingerprint(inventory)
 
 

@@ -11,6 +11,7 @@ from apps.api.auth import EntraTokens
 from apps.api.errors import Problem, unavailable
 from apps.api.learning_models import (
     BootstrapReport,
+    ExternalTrainingResult,
     LearningProject,
     PairedReport,
     PolicyCandidate,
@@ -68,6 +69,16 @@ class WorkerEnvelope(Model):
     payload: dict
 
 
+class ExternalReferenceRequest(Model):
+    project: LearningProject
+    import_id: UUID
+
+
+class ExternalVerificationRequest(Model):
+    project: LearningProject
+    receipt: ExternalTrainingResult
+
+
 def create_worker(settings: WorkerSettings | None = None, operations=None, identity=None):
     configuration = settings or WorkerSettings()
     authorizer = identity or EntraTokens(configuration.tenant_id, configuration.audience)
@@ -118,6 +129,8 @@ def create_worker(settings: WorkerSettings | None = None, operations=None, ident
                 dataset_bytes=configuration.artifact_dataset_bytes,
                 maximum_files=configuration.artifact_max_files,
                 managed_evaluations_enabled=configuration.paused_evaluation_enabled,
+                external_training_enabled=configuration.paused_training_enabled,
+                external_operator_ids=configuration.bootstrap_owner_ids,
                 verifier=artifacts,
             )
             runner = ArtifactRunner(app.state.artifact_operations, configuration.tenant_id)
@@ -215,6 +228,50 @@ def create_worker(settings: WorkerSettings | None = None, operations=None, ident
         if operations is None:
             raise unavailable("Resident artifact operation processor")
         return operations.policy(actor)
+
+    @app.post("/v1/learning/external-import-reference", dependencies=[Depends(controller)])
+    def external_reference(request: Request, body: Annotated[WorkerEnvelope, Depends(post_actor)]):
+        if (
+            not configuration.paused_training_enabled
+            or body.actor.object_id not in configuration.bootstrap_owner_ids
+        ):
+            raise Problem(
+                403, "external_import_unapproved", "External import operator is not admitted."
+            )
+        operations = request.app.state.artifact_operations
+        if operations is None:
+            raise unavailable("Resident artifact processor")
+        operations.policy(body.actor)
+        payload = ExternalReferenceRequest.model_validate(body.payload)
+        from apps.learning_worker.external_training import context
+
+        return context(
+            request.app.state.worker.registry, body.actor, payload.project, payload.import_id
+        ).reference
+
+    @app.post("/v1/learning/artifacts/external-training", dependencies=[Depends(controller)])
+    def verify_external(request: Request, body: Annotated[WorkerEnvelope, Depends(post_actor)]):
+        from apps.api.learning_models import ExternalImportReference
+        from apps.learning_worker.external_training import verified_result
+
+        payload = ExternalVerificationRequest.model_validate(body.payload)
+        project, receipt = payload.project, payload.receipt
+        reference = ExternalImportReference(
+            import_id=receipt.record.id,
+            project_id=project.id,
+            owner_key=body.actor.owner_key,
+            completion_sha256=receipt.record.completion_sha256,
+        )
+        actual, _ = verified_result(
+            request.app.state.worker.artifacts, body.actor, project, reference
+        )
+        if actual != receipt:
+            raise Problem(409, "external_import_certificate", "Original verified import differs.")
+        return {
+            "verified": True,
+            "owner_key": body.actor.owner_key,
+            "sha256": reference.completion_sha256,
+        }
 
     @app.get(
         "/v1/learning/projects/{project_id}/managed-evaluations/{evaluation_id}",

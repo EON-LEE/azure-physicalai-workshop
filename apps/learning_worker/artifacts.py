@@ -771,6 +771,10 @@ class VerifiedArtifacts:
             raise unavailable("Private immutable document") from exc
 
     def verify_candidate(self, actor, project, run, candidate):
+        if candidate.training_origin != "api_training_run":
+            raise Problem(
+                409, "external_import_required", "External candidates use their import receipt."
+            )
         with TemporaryDirectory(prefix="physicalai-verify-model-") as folder:
             root = Path(folder) / "candidate"
             index = self.registry.download(actor, candidate.artifact_id, root)
@@ -796,6 +800,24 @@ class VerifiedArtifacts:
     def registered_model(
         self, actor, record, root, index, *, execution_timing, project=None, run=None
     ):
+        if index.get("training_origin") == "external_native_import":
+            if execution_timing != "paused_simulation" or run is not None:
+                raise Problem(
+                    409, "external_import_required", "External import is not an API training run."
+                )
+            from apps.learning_worker.external_training import registered_model
+
+            return registered_model(self, actor, record, root, index, project=project)
+        if getattr(record, "training_origin", "api_training_run") == "external_native_import":
+            raise Problem(
+                409, "external_import_certificate", "Original external artifact index is required."
+            )
+        if "training_origin" in index or "external_import_id" in index:
+            raise Problem(
+                409,
+                "external_import_certificate",
+                "Unknown or partial external artifact provenance.",
+            )
         if not any(
             name in index for name in ("training_execution", "azure_job_type", "azure_job_id")
         ):

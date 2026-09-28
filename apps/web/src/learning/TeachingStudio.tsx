@@ -252,7 +252,7 @@ function ProjectWorkspace({ api, project, consoleApi, environments, coachConfigu
   api: LearningApi; project: Resource<Project>; consoleApi?: ConsoleApi; environments: EnvironmentRecord[]; coachConfigured: boolean; simulationLearning?: SimulationLearningCapability;
 }) {
   const load = useCallback(async (signal: AbortSignal) => {
-    const groups = await Promise.all((['teaching', 'dataset', 'training', 'evaluation', 'candidate', 'release'] as const)
+    const groups = await Promise.all((['teaching', 'dataset', 'training', 'evaluation', 'candidate', 'release', 'external_import'] as const)
       .map((kind) => api.records(project.item.id, kind, signal)));
     return groups.flatMap((group) => group.items);
   }, [api, project.item.id]);
@@ -322,6 +322,19 @@ function ProjectWorkspace({ api, project, consoleApi, environments, coachConfigu
         <ErrorNotice error={records.error} title="저장된 작업 기록 갱신 실패" retry={records.refresh} />
       </div>
     </section>
+      {data.some((entry) => entry.item.kind === 'external_import') && <section className="panel">
+        <div className="panel-heading"><h3>외부에서 학습됨 · 검증 후 가져옴</h3></div>
+        <div className="learning-panel-body">
+          <p>이미 실행된 운영자 Azure ML 작업의 원본을 사후 검증한 기록입니다. API가 미리 승인·제출한 학습 작업이나 물리 품질 통과로 바꾸지 않습니다.</p>
+          {data.map((entry) => entry.item.kind === 'external_import' && <dl className="learning-metadata" key={entry.item.id}>
+            <FieldValue label="사후 가져오기 ID"><code>{entry.item.id}</code></FieldValue>
+            <FieldValue label="실제 원본 Azure ML command"><code>{entry.item.azure_job_id}</code></FieldValue>
+            <FieldValue label="가져온 시각">{formatDate(entry.item.imported_at)}</FieldValue>
+            <FieldValue label="검증된 optimizer updates">{entry.item.optimizer_steps}</FieldValue>
+            <FieldValue label="원본 후보 모델"><code>{entry.item.candidate_id}</code><code>{entry.item.model_sha256}</code></FieldValue>
+          </dl>)}
+        </div>
+      </section>}
       <ReferenceCollections api={api} project={project} stages={simulationLearning} />
       <section className="panel learning-records"><div className="panel-heading"><h3>저장된 시뮬레이션 작업·평가 기록</h3></div>
         <div className="learning-panel-body">{data.filter((entry) => entry.item.kind === 'training' || entry.item.kind === 'evaluation').map((entry) => <RecordRow key={`${entry.item.kind}:${entry.item.id}`} entry={entry} select={(value) => {

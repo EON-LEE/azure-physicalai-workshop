@@ -139,6 +139,112 @@ python -m pytest tests/test_learning_worker_infra.py -q
 
 ## Durable claims and SDK adapter
 
+### Post-hoc external-native training imports
+
+An operator-native UUID-named Azure ML command is **not** an API `TrainingRun`.
+Do not rename the job, populate `jobs/<learning-name>/specification.json` after
+execution, or call trained weights a pretrained parent or policy release.
+The external import is a distinct, post-hoc verification/registration operation.
+It does not submit, resume, cancel, authorize, or extend a training job.
+
+Associate an existing private app project with the exact original task/profile/
+criteria and all twenty original TRAIN case descriptors. This association may
+be made after training and is not represented as pre-execution approval.
+The API/worker global, paused-training, model, bootstrap-operator, and artifact
+actor allowlists must already permit the operation; all deployment defaults
+remain off. No new cloud roles or public publication endpoint is introduced.
+
+All paths below are under the fixed private worker registry container and
+`tenants/<tenant>/owners/<owner>/learning/`. The native configuration's account/
+container must match that registry. Browser requests contain no Blob URLs.
+
+| Path | Original or post-hoc contents |
+| --- | --- |
+| `native-operator/<actual-job-UUID>/approval.json` | Original `physicalai.native-training-approval/v1`, including scope, actual job name, original UTC deadline, one-GPU/cost limits, native plan/archive/config/image qualification hashes and execution/source selectors |
+| `native-operator/<actual-job-UUID>/claim.json` | Original scope/job/type, approval/plan/config hashes, deadline and `claimed_at_utc`; no invented API claim |
+| `native-operator/<actual-job-UUID>/plan.tar.gz` | Original approved `plan/plan.json`, `plan/job.json`, and complete `plan/code/` snapshot |
+| `native-operator/<actual-job-UUID>/image-qualification.json` | Original qualification bytes identified by the approval, not a newly asserted ready flag |
+| `projects/<project>/external-native-training/<import>/files/run-config.json` | Exact original native config bytes |
+| `projects/<project>/external-native-training/<import>/files/specification.json` | Retained `physicalai.native-bootstrap-authorization/v1`; its canonical hash must equal the original config's specification hash |
+| `projects/<project>/external-native-training/<import>/completion.json` | New, create-only post-hoc request described below |
+
+The post-hoc request has this closed shape (descriptions are not valid values):
+
+```json
+{
+  "schema": "physicalai.external-native-training-request/v1",
+  "import_id": "new-import-UUID",
+  "project_sha256": "canonical-hash-of-protected-project-GET-item",
+  "created_at": "post-training-aware-UTC-time",
+  "native_job_name": "unchanged-actual-native-job-UUID",
+  "approval_sha256": "exact-original-approval-file-hash",
+  "claim_sha256": "exact-original-claim-file-hash",
+  "configuration_file_sha256": "exact-original-config-file-hash",
+  "specification_file_sha256": "exact-retained-specification-file-hash",
+  "result_sha256": "exact-native-model-result-file-hash",
+  "transfer_sha256": "exact-native-transfer-completion-file-hash",
+  "model_sha256": "exact-native-candidate-model-json-hash"
+}
+```
+
+File hashes cover original bytes including whitespace. Canonical specification/
+configuration hashes retain their native semantics. Uploading a retained
+specification after training does not make its upload time an old approval.
+The verifier reads server `Last-Modified` and ETag from the same Blob download:
+qualification/archive may share the approval's one-second timestamp, but the
+end of the approval's timestamp interval must precede the original claim, and
+the end of the claim's interval must precede actual Azure ML creation.
+The exact root must independently report `Completed` with the approved command,
+MI, compute, image, source/config/plan tags and original deadline.
+
+The archive is bounded to 32 MiB compressed, 16 MiB unpacked and 1,024 regular
+file/directory entries, with no links or escaping paths. Its source is **never
+executed**. Native `read_plan` checks the archived code inventory/static hash,
+config, job payload and original plan hash. The archived snapshot—not current
+worker source—is used to verify the historical root and model provenance.
+The running verifier is pinned separately in the import certificate.
+
+The existing one-process artifact worker checks total network/file/disk budgets
+before downloading the original configured inputs and published outputs.
+It invokes the actual native validators for live TRAIN20 raw frames/images,
+the prepared/trained parent, licensed backbone, conversion and v3 candidate
+weights/processors. It checks exact task/profile/criteria, original episode
+IDs/cases and ancestor lineage, optimizer/config/source provenance and any
+explicit checkpoint resume. Candidate paths retain the exact native six-digit
+form, for example `candidates/step-001000`; other spellings are rejected.
+Native `model/result.json` and `transfer/completion.json` must match the request,
+the actual root, the original result ETag/readback marker, and the original
+publication deadline. Missing evidence is not reconstructed.
+
+`POST /api/learning/projects/<project>/external-imports/<import>` takes only
+`{"request_id":"<same-import-UUID>"}` plus the loaded `If-Match`. HTTP 202 returns
+the existing artifact operation with `operation=external_training`; poll its
+existing status endpoint. No candidate/dataset record is created from this ACK.
+Only full verification yields `phase=import_committed` and
+`result.external_training` containing the immutable external import record,
+verified `DatasetVersion`, and `PolicyCandidate`. Actual raw files are copied
+unchanged to the private artifact registry; no per-episode capture receipt is
+fabricated. A matching existing dataset registration is reused.
+
+External candidates declare `training_origin=external_native_import`,
+`training_run_id=null`, an `external_import_id`, and no fabricated release or
+pretrained-parent ID. Their actual parent model hash remains recorded. Legacy
+API candidates omit the default `training_origin=api_training_run` and retain
+their original required training-run ID. Private project records expose
+`kind=external_import`, also readable at
+`GET /api/learning/external-imports/<import>`, with explicit `imported_at`.
+The source/published ETags, source verifier and original model metadata are
+rechecked before accepting the receipt or using the candidate in a managed
+pairing. Public learning explicitly rejects external-origin candidates;
+import completion is not model quality, a release, or public improvement.
+
+The original command deadline is never renewed. The separate import CPU wall
+budget still includes queue time and is at most 1,800 seconds; aggregate
+transfer stays at most 20 GiB/100,000 files and actual free disk may be smaller.
+Large real imports can therefore fail resource-budget checks and require
+explicit operator sizing. No successful production import is implied by CPU
+fixtures or source tests.
+
 ### Operator-bound managed paired evaluation imports
 
 Managed Batch results use a separate artifact import, not an Azure ML job

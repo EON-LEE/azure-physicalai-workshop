@@ -6,6 +6,8 @@ from pydantic import AwareDatetime, Field, JsonValue, model_validator
 
 from apps.api.learning_models import (
     CaptureReceipt,
+    ExternalImportReference,
+    ExternalTrainingResult,
     Frozen,
     LearningProject,
     OwnedRecord,
@@ -27,7 +29,7 @@ class ArtifactPolicy(Frozen):
 class ArtifactWork(Frozen):
     id: UUID
     actor: Principal
-    operation: Literal["capture", "dataset", "managed_evaluation"]
+    operation: Literal["capture", "dataset", "managed_evaluation", "external_training"]
     project: LearningProject
     target_id: UUID
     created_at: AwareDatetime
@@ -40,6 +42,9 @@ class ArtifactWork(Frozen):
     managed_import: ManagedImportReference | None = Field(
         default=None, exclude_if=lambda value: value is None
     )
+    external_import: ExternalImportReference | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
     @model_validator(mode="after")
     def exact_inputs(self):
@@ -50,7 +55,24 @@ class ArtifactWork(Frozen):
             or not timedelta() < self.deadline - self.created_at <= timedelta(seconds=1800)
         ):
             raise ValueError("Artifact operation owner and original wall authority must match.")
-        if self.operation == "managed_evaluation":
+        if self.operation == "external_training":
+            if (
+                self.external_import is None
+                or self.external_import.import_id != self.target_id
+                or self.id != self.target_id
+                or self.external_import.project_id != self.project.id
+                or self.external_import.owner_key != self.actor.owner_key
+                or self.project.policy_type != "smolvla"
+                or self.project.execution_timing != "paused_simulation"
+                or self.managed_import is not None
+                or self.session is not None
+                or self.receipt is not None
+                or self.captures
+            ):
+                raise ValueError("External training import needs its exact post-hoc request.")
+        elif self.external_import is not None:
+            raise ValueError("Only external import work can contain an external import reference.")
+        elif self.operation == "managed_evaluation":
             if (
                 self.managed_import is None
                 or self.project.execution_timing != "paused_simulation"
@@ -95,9 +117,19 @@ class ArtifactResult(Frozen):
     managed_evaluation: ManagedEvaluationReceipt | None = Field(
         default=None, exclude_if=lambda value: value is None
     )
+    external_training: ExternalTrainingResult | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
     @model_validator(mode="after")
     def matching_capture(self):
+        if self.external_training is not None and (
+            self.capture is not None
+            or self.managed_evaluation is not None
+            or self.external_training.candidate.artifact_id != self.artifact_id
+            or self.external_training.candidate.manifest_sha256 != self.manifest_sha256
+        ):
+            raise ValueError("External result must identify its verified model artifact.")
         if self.managed_evaluation is not None and (
             self.capture is not None
             or self.managed_evaluation.report.artifact_id != self.artifact_id
@@ -118,7 +150,7 @@ class ArtifactStatus(Frozen):
     owner_key: Revision
     project_id: UUID
     target_id: UUID
-    operation: Literal["capture", "dataset", "managed_evaluation"]
+    operation: Literal["capture", "dataset", "managed_evaluation", "external_training"]
     work_sha256: Revision
     created_at: AwareDatetime
     updated_at: AwareDatetime
@@ -126,9 +158,14 @@ class ArtifactStatus(Frozen):
     max_bytes: int
     max_files: int
     status: Literal["queued", "running", "ready", "failed", "timed_out", "uncertain"]
-    phase: Literal["queued", "processing", "manifest_committed", "report_committed", "stopped"] = (
-        "queued"
-    )
+    phase: Literal[
+        "queued",
+        "processing",
+        "manifest_committed",
+        "report_committed",
+        "import_committed",
+        "stopped",
+    ] = "queued"
     claim_id: UUID | None = None
     heartbeat_at: AwareDatetime | None = None
     result: ArtifactResult | None = None
@@ -143,6 +180,10 @@ class ArtifactStatus(Frozen):
             (self.operation == "managed_evaluation") != (self.result.managed_evaluation is not None)
         ):
             raise ValueError("Artifact result must match its declared operation.")
+        if self.result is not None and (
+            (self.operation == "external_training") != (self.result.external_training is not None)
+        ):
+            raise ValueError("External training result must match its declared operation.")
         return self
 
     def public(self):

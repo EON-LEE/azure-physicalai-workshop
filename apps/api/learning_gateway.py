@@ -10,7 +10,12 @@ from pydantic import ValidationError
 
 from apps.api.artifact_models import ArtifactPolicy, ArtifactStatus, ArtifactWork
 from apps.api.errors import Problem, unavailable
-from apps.api.learning_models import CaptureReceipt, PolicyRelease, TrainingParent
+from apps.api.learning_models import (
+    CaptureReceipt,
+    ExternalImportReference,
+    PolicyRelease,
+    TrainingParent,
+)
 from apps.api.learning_ports import BackendJob, JobSpecification
 from apps.api.models import Principal
 from apps.api.simulation_reports import ManagedImportReference
@@ -185,6 +190,26 @@ class ManagedLearningGateway:
                 f"/v1/learning/projects/{project_id}/managed-evaluations/{evaluation_id}",
             ),
         )
+
+    def external_import_reference(self, actor, project, import_id):
+        return self._parse(
+            ExternalImportReference,
+            self._request(
+                actor,
+                "POST",
+                "/v1/learning/external-import-reference",
+                {"project": project.model_dump(mode="json"), "import_id": str(import_id)},
+            ),
+        )
+
+    def verify_external_import(self, actor, project, result):
+        response = self._request(
+            actor,
+            "POST",
+            "/v1/learning/artifacts/external-training",
+            {"project": project.model_dump(mode="json"), "receipt": result.model_dump(mode="json")},
+        )
+        self._verified(actor, response, result.record.completion_sha256)
 
     def artifact_status(self, actor, operation_id):
         value = self._request(actor, "GET", f"/v1/learning/artifact-operations/{operation_id}")

@@ -367,6 +367,7 @@ class LearningService:
         receipt=None,
         captures=(),
         managed_import=None,
+        external_import=None,
     ):
         existing = self._existing(actor, "artifact_operation", operation_id, digest)
         if existing:
@@ -375,7 +376,9 @@ class LearningService:
         policy = client.artifact_policy(actor)
         now = utcnow()
         operation = (
-            "managed_evaluation"
+            "external_training"
+            if external_import is not None
+            else "managed_evaluation"
             if managed_import is not None
             else "capture"
             if session is not None
@@ -395,6 +398,7 @@ class LearningService:
             receipt=receipt,
             captures=captures,
             managed_import=managed_import,
+            external_import=external_import,
         )
         state = ArtifactStatus(
             id=work.id,
@@ -456,6 +460,8 @@ class LearningService:
             return stored
         if original.operation == "managed_evaluation":
             self._apply_managed_import(actor, original, response)
+        if original.operation == "external_training" and response.status == "ready":
+            self._apply_external_import(actor, original, response)
         if response.status == "ready" and original.operation == "dataset":
             work = ArtifactWork.model_validate(original.work_document)
             self._claim(
@@ -543,6 +549,63 @@ class LearningService:
         return self._begin_artifact(
             actor, project, body.request_id, run.id, digest, managed_import=reference
         )
+
+    def import_external_training(self, actor, project_id, import_id, body, etag):
+        if body.request_id != import_id:
+            raise Problem(
+                409, "external_import_identity", "Import URL and request identity differ."
+            )
+        digest = operation_hash(project_id, "external_training", body)
+        if self._existing(actor, "artifact_operation", import_id, digest):
+            return self.get_artifact_operation(actor, import_id)
+        stored = self.get(actor, "project", project_id)
+        require_etag(stored, etag)
+        self._bootstrap_actor(actor)
+        self._timing_admission(stored.value, "training")
+        self._policy(stored.value.policy_type)
+        client = self._dependency(self.artifacts, "Bounded external training verifier")
+        reference = client.external_import_reference(actor, stored.value, import_id)
+        if (
+            reference.import_id != import_id
+            or reference.project_id != project_id
+            or reference.owner_key != actor.owner_key
+        ):
+            raise Problem(
+                409, "external_import_identity", "Original post-hoc import reference differs."
+            )
+        return self._begin_artifact(
+            actor, stored.value, import_id, import_id, digest, external_import=reference
+        )
+
+    def _apply_external_import(self, actor, operation, response):
+        work = ArtifactWork.model_validate(operation.work_document)
+        result = response.result.external_training
+        if (
+            result is None
+            or result.record.id != work.target_id
+            or result.record.project_id != work.project.id
+            or result.record.owner_key != actor.owner_key
+            or result.record.completion_sha256 != work.external_import.completion_sha256
+        ):
+            raise Problem(
+                503, "external_import_receipt", "Original verified external receipt differs."
+            )
+        self._dependency(self.artifacts, "External training verifier").verify_external_import(
+            actor, work.project, result
+        )
+        existing = self.store.get_learning(actor.owner_key, "dataset", result.dataset.id)
+        if existing is not None:
+            excluded = {"created_at", "updated_at", "fingerprint"}
+            if existing.value.model_dump(exclude=excluded) != result.dataset.model_dump(
+                exclude=excluded
+            ):
+                raise Problem(
+                    409, "external_import_dataset", "An existing dataset registration differs."
+                )
+        else:
+            self._claim(actor, result.dataset)
+        self._claim(actor, result.record)
+        self._claim(actor, result.candidate)
 
     def _apply_managed_import(self, actor, operation, response):
         stored = self.get(actor, "evaluation", operation.target_id)
@@ -1397,6 +1460,10 @@ class LearningService:
             )
 
     def _check_candidate(self, actor, project, run, candidate) -> None:
+        if candidate is not None and candidate.training_origin != "api_training_run":
+            raise Problem(
+                503, "candidate_evidence_mismatch", "External imports are not API training results."
+            )
         parent = (
             self._training_parent(actor, run.pretrained_artifact_id)
             if project.project_kind == "bootstrap"

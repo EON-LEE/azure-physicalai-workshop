@@ -68,6 +68,7 @@ def install_learning_routes(app, actor):
             "candidate",
             "release",
             "reference_collection",
+            "external_import",
         ],
     ):
         return {
@@ -216,6 +217,24 @@ def install_learning_routes(app, actor):
     @app.get("/api/learning/jobs/{job_id}")
     def job(job_id: UUID, user: Actor, backend: Service, response: Response):
         return learning_response(backend.get_job(user, job_id), response)
+
+    @app.post("/api/learning/projects/{project_id}/external-imports/{import_id}", status_code=202)
+    def external_import(
+        project_id: UUID,
+        import_id: UUID,
+        body: Approval,
+        user: Actor,
+        backend: Service,
+        response: Response,
+        if_match: Match = None,
+    ):
+        return learning_response(
+            backend.import_external_training(user, project_id, import_id, body, if_match), response
+        )
+
+    @app.get("/api/learning/external-imports/{import_id}")
+    def external_import_record(import_id: UUID, user: Actor, backend: Service, response: Response):
+        return learning_response(backend.get(user, "external_import", import_id), response)
 
     @app.post("/api/learning/jobs/{job_id}/managed-import", status_code=202)
     def managed_import(

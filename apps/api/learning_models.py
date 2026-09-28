@@ -681,7 +681,11 @@ class PolicyCandidate(OwnedRecord, TimingMetadata):
     kind: Literal["candidate"] = "candidate"
     project_id: UUID
     dataset_id: UUID
-    training_run_id: UUID
+    training_run_id: UUID | None
+    training_origin: Literal["api_training_run", "external_native_import"] = Field(
+        default="api_training_run", exclude_if=lambda value: value == "api_training_run"
+    )
+    external_import_id: UUID | None = Field(default=None, exclude_if=lambda value: value is None)
     parent_release_id: UUID | None
     pretrained_artifact_id: UUID | None = None
     policy_type: PolicyType
@@ -700,6 +704,109 @@ class PolicyCandidate(OwnedRecord, TimingMetadata):
     def actual_new_weights(self):
         if self.model_sha256 == self.parent_model_sha256:
             raise ValueError("Training requires changed weights, not a relabeled checkpoint.")
+        if self.training_origin == "api_training_run":
+            if self.training_run_id is None or self.external_import_id is not None:
+                raise ValueError("API candidates require their original API training run.")
+        elif (
+            self.training_run_id is not None
+            or self.external_import_id is None
+            or self.parent_release_id is not None
+            or self.pretrained_artifact_id is not None
+            or self.policy_type != "smolvla"
+            or self.execution_timing != "paused_simulation"
+        ):
+            raise ValueError(
+                "External candidates require verified import provenance, not API authority."
+            )
+        return self
+
+
+class ExternalImportReference(Frozen):
+    import_id: UUID
+    project_id: UUID
+    owner_key: Revision
+    completion_sha256: Revision
+
+
+class ExternalTrainingImport(OwnedRecord, TimingMetadata):
+    model_config = ConfigDict(serialize_by_alias=True)
+    kind: Literal["external_import"] = "external_import"
+    schema_version: Literal["physicalai.external-training-import/v1"] = Field(
+        default="physicalai.external-training-import/v1", alias="schema"
+    )
+    project_id: UUID
+    imported_at: AwareDatetime
+    native_job_name: UUID
+    azure_job_id: str = Field(min_length=1, max_length=2048)
+    azure_job_type: Literal["command"] = "command"
+    native_created_at: AwareDatetime
+    job_deadline_utc: AwareDatetime
+    approval_sha256: Revision
+    plan_sha256: Revision
+    plan_archive_sha256: Revision
+    configuration_sha256: Revision
+    specification_sha256: Revision
+    image_qualification_sha256: Revision
+    environment_image: str = Field(
+        pattern=r"^[a-z0-9]+\.azurecr\.io/[a-z0-9_./-]+@sha256:[a-f0-9]{64}$"
+    )
+    managed_identity_client_id: UUID
+    code_snapshot_sha256: Revision
+    static_source_sha256: Revision
+    completion_sha256: Revision
+    result_sha256: Revision
+    transfer_sha256: Revision
+    model_sha256: Revision
+    parent_model_sha256: Revision
+    backbone_sha256: Revision
+    raw_manifest_sha256: Revision
+    candidate_id: UUID
+    dataset_id: UUID
+    optimizer_steps: PositiveInt
+    learning_quality_verified: Literal[False] = False
+
+    @model_validator(mode="after")
+    def posthoc_identity(self):
+        if (
+            self.execution_timing != "paused_simulation"
+            or self.real_time_admission is not False
+            or self.native_created_at >= self.imported_at
+            or self.native_created_at >= self.job_deadline_utc
+            or not self.azure_job_id.endswith(f"/jobs/{self.native_job_name}")
+            or self.created_at != self.imported_at
+            or self.updated_at != self.imported_at
+        ):
+            raise ValueError("An external import is post-hoc verification, not a prior API run.")
+        return self
+
+
+class ExternalTrainingResult(Frozen):
+    record: ExternalTrainingImport
+    candidate: PolicyCandidate
+    dataset: DatasetVersion
+
+    @model_validator(mode="after")
+    def bound_records(self):
+        if (
+            self.candidate.training_origin != "external_native_import"
+            or self.candidate.external_import_id != self.record.id
+            or self.record.candidate_id != self.candidate.id
+            or self.record.dataset_id != self.dataset.id
+            or self.candidate.dataset_id != self.dataset.id
+            or self.candidate.azure_job_id != self.record.azure_job_id
+            or self.candidate.model_sha256 != self.record.model_sha256
+            or self.candidate.parent_model_sha256 != self.record.parent_model_sha256
+            or self.candidate.optimizer_steps != self.record.optimizer_steps
+            or self.dataset.manifest_sha256 != self.record.raw_manifest_sha256
+            or any(
+                item.project_id != self.record.project_id
+                or item.owner_key != self.record.owner_key
+                or item.tenant_id != self.record.tenant_id
+                or not item.matches_timing(self.record)
+                for item in (self.candidate, self.dataset)
+            )
+        ):
+            raise ValueError("External candidate, dataset and import provenance must match.")
         return self
 
 
@@ -991,6 +1098,7 @@ LearningRecord = (
     | ControlGrant
     | TrainingParent
     | CoachRecord
+    | ExternalTrainingImport
 )
 
 _TRANSITIONS = {

@@ -306,6 +306,42 @@ serialization and lifecycle remain unchanged. The console explicitly labels
 managed imports and does not offer an Azure ML cancel action for them;
 physical Batch cancellation remains operator-owned.
 
+### Post-hoc external-native training imports
+
+External operator training uses a distinct import contract, never a renamed
+Azure job or retrospectively created API `TrainingRun`. The original native
+UUID/name, approved plan/config/specification/source/image/MI/deadline and
+actual command result remain unchanged. The private operator request and
+original evidence paths are defined in the
+[worker external import contract](../apps/learning_worker/README.md#post-hoc-external-native-training-imports).
+
+`POST /api/learning/projects/{project_id}/external-imports/{import_id}` requires
+authentication, the existing bootstrap-operator/model/paused-training admission,
+`If-Match`, and an `Approval` body whose `request_id` equals `import_id`. It
+returns HTTP 202 with `operation: external_training`, not a new training job.
+Only the existing bounded artifact worker can create the verified completion
+`phase: import_committed`. Its `result.external_training` has `record`,
+`candidate`, and `dataset`, all belonging to that exact owner/project/import.
+
+The `external_import` record is immutable post-hoc bookkeeping with its own
+`imported_at`; it retains the original native job identity and evidence hashes.
+Read it via authenticated project records (`kind=external_import`) or
+`GET /api/learning/external-imports/{import_id}`. No public discovery is added.
+
+`PolicyCandidate.training_origin` is either the omitted legacy default
+`api_training_run` with a required `training_run_id`, or explicit
+`external_native_import` with `training_run_id: null` and a required
+`external_import_id`. The branches are exclusive. External candidates have
+no invented `parent_release_id` or `pretrained_artifact_id`; their actual
+`parent_model_sha256` and verified source dataset still bind lineage.
+They can be consumed by separately predeclared managed comparisons, never by
+pretending the imported job was submitted through the API.
+
+Private UI labels external/imported provenance and the actual original job.
+Public learning remains unsupported and explicitly blocked for these
+candidates, including a before-candidate in a paired report. No automatic
+release, inference admission, checkpoint retry, or paid action follows import.
+
 Verification uses a durable content-bound claim and completed certificate.
 Owner/job/spec/config/report SHA, pinned verifier code and exact Blob ETag/size
 inventories are rechecked; changes invalidate the cache. Failed/incomplete
