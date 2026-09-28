@@ -302,6 +302,7 @@ class LearningService:
 
     def _timing_admission(self, project: LearningProject, stage="reference") -> None:
         admitted = {
+            "project": self.reference_collections_enabled or self.paused_training_enabled,
             "reference": self.reference_collections_enabled,
             "training": self.paused_training_enabled,
             "evaluation": self.paused_evaluation_enabled,
@@ -804,7 +805,7 @@ class LearningService:
         existing = self._existing(actor, "project", record.id, record.fingerprint)
         if existing:
             return existing
-        self._timing_admission(record)
+        self._timing_admission(record, "project")
         environment = self._saved_scene(actor, body.environment_id, body.revision)
         self._check_timing_scene(record, environment)
         if body.goal_station_id not in {item["id"] for item in environment.document["stations"]}:

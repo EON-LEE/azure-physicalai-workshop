@@ -153,6 +153,10 @@ be made after training and is not represented as pre-execution approval.
 The API/worker global, paused-training, model, bootstrap-operator, and artifact
 actor allowlists must already permit the operation; all deployment defaults
 remain off. No new cloud roles or public publication endpoint is introduced.
+Creating the prospective project is metadata-only and can be admitted by the
+paused-training stage without enabling reference motion. Saved scene revisions,
+train-only parent registration, ownership and all later per-operation gates
+remain mandatory.
 
 All paths below are under the fixed private worker registry container and
 `tenants/<tenant>/owners/<owner>/learning/`. The native configuration's account/

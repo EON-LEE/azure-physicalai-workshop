@@ -156,6 +156,47 @@ def test_paused_mutations_remain_blocked_without_integrated_producers_and_verifi
     assert store.get_learning(ACTOR.owner_key, "project", value["request_id"]) is None
 
 
+@pytest.mark.parametrize(
+    "reference,training,admitted",
+    [(False, True, True), (True, False, True), (True, True, True), (False, False, False)],
+)
+def test_project_metadata_admission_is_separate_from_motion_permissions(
+    monkeypatch, reference, training, admitted
+):
+    from apps.api.errors import Problem
+
+    service, store, jobs, _ = setup()
+    service.reference_collections_enabled = reference
+    service.paused_training_enabled = training
+    body = CreateProject.model_validate(paused_project_payload())
+    project = LearningProject.create(ACTOR, body)
+
+    class SceneValidationReached(Exception):
+        pass
+
+    def validate_scene(*args, **kwargs):
+        raise SceneValidationReached
+
+    monkeypatch.setattr(service, "_saved_scene", validate_scene)
+    if admitted:
+        with pytest.raises(SceneValidationReached):
+            service.create_project(ACTOR, body)
+    else:
+        with pytest.raises(Problem) as failure:
+            service.create_project(ACTOR, body)
+        assert failure.value.code == "paused_learning_unavailable"
+    if not reference:
+        with pytest.raises(Problem) as failure:
+            service._timing_admission(project, "reference")
+        assert failure.value.code == "paused_learning_unavailable"
+    if not training:
+        with pytest.raises(Problem) as failure:
+            service._timing_admission(project, "training")
+        assert failure.value.code == "paused_learning_unavailable"
+    assert jobs.submissions == []
+    assert store.get_learning(ACTOR.owner_key, "project", project.id) is None
+
+
 def test_capability_does_not_treat_native_type_support_as_model_or_runtime_admission():
     service, _, _, _ = setup()
     capability = service.capabilities(ACTOR)
