@@ -1107,6 +1107,131 @@ the current verifier source while retaining the original approved P0 plan/hash.
 No quality threshold, physical control fingerprint, held-out trial, runtime grant
 or old job deadline changes with this selector.
 
+#### Separate bounded pool preparation before ordinary warmup
+
+`learning.paused.pool_preparation` and its `pool_preparation_cli` are an explicit
+**non-motion operational path**, not a change to the default Batch scaler,
+training snapshot or model runtime. They are not in the 74-file training payload.
+No resource is allocated by importing them or by creating an offline plan.
+An actual run still needs a new parent-approved operation, price/quota check,
+overall deadline and pool window. Closed operations are never renewed.
+Install both helper modules alongside the exact reviewed native simulation
+modules on the private CPU observer; the plan binds their file hashes. This is
+not permission to label modified observer code with an old image/source proof.
+The qualified simulator image, model runtime and all physical control files
+remain unchanged.
+
+The existing task/current-node autoscale formula cannot provision a cold pool
+when both values are zero. The separate preparation formula targets zero before
+the declared start, at most **one LowPriority A10** before the preparation cutoff,
+and zero afterward, without a dummy job. Dedicated targets are always zero.
+The pool window is at most **55 minutes**, with **five minutes** reserved for
+cleanup, all within the original at-most-four-hour assignment. Preparation can
+finish earlier but cannot move any deadline. A failed or unavailable observer
+does not disable the service-side zero-target cutoff.
+
+The offline configuration has these required fields:
+
+| Fields | Binding |
+|---|---|
+| `operation_id`, `warmup_id` | New explicit UUIDs; the original ordinary warmup can be requested once |
+| `scope`, `platform` | Exact owner/tenant and existing `BatchPlatform`; only qualified Ubuntu 22.04/GRID bootstrap |
+| `pool` | Reviewed ARM pool body (`identity` and `properties`), retaining image, node UAMI, private subnet and exact bounded StartTask |
+| `allocation_start_utc`, `preparation_deadline_utc`, `pool_deadline_utc` | Canonical UTC; preparation ends no later than the original pool cutoff |
+| `overall_start_utc`, `overall_deadline_utc`, `budget_usd` | Original assignment, at most four hours and US$10; never default subscription or an inferred new clock |
+| `observer_client_id` | Explicit existing private-worker MI; no new identity or role |
+| `storage_account_url`, `artifact_container` | Approved existing MI-accessible Blob location for bounded evidence; no SAS or keys |
+
+The input pool body must already bind `physicalaiAllocationDeadline` and the
+ordinary canonical scaler to the chosen **new** cutoff. Planning emits the
+preparation body, adds the new operation ID to its metadata and binds both
+deadlines plus native/helper source hashes. New credentials, competing extensions,
+extra StartTask environment injection, public endpoints and enlarged OS disks
+are rejected. The exact original native `validate_pool` and `inspect_platform`
+functions remain unchanged and **reject the preparation formula**.
+
+```bash
+python -m learning.paused.pool_preparation_cli plan \
+  --config "$NEW_PREPARATION_CONFIG" --output "$NEW_OPERATION_PACKAGE"
+```
+
+This emits `plan.json` and `pool.json`, not an allocation or approval. After
+separate explicit authorization, the operator creates only the named pool from
+that reviewed body using the existing ARM deployment path. Do not run the
+ordinary warmup job during this preparation phase.
+
+Run the observer on an approved bounded private CPU job using the existing MI:
+
+```bash
+python -m learning.paused.pool_preparation_cli observe \
+  --plan "$PLAN" --client-id "$EXISTING_OBSERVER_MI" --output "$NEW_OBSERVATION_DIRECTORY"
+```
+
+Observation uses only ARM/Batch reads. It records the actual node,
+`StartTaskInfo`, node errors and bounded `startup/stdout.txt`,
+`startup/stderr.txt` and `startup/wd/preflight.json` while the node exists.
+Each log includes captured bytes/hash/range and an explicit truncation flag;
+404, DNS, TLS and timeout failures stay unavailable/unknown, never ready.
+The observer publishes create-only, ETag/readback-verified snapshots under
+`tenants/<tenant>/owners/<owner>/learning/pool-preparation/<operation_id>/`.
+Only after the last snapshot and ready result publish successfully is the local
+`result.json` marker written. No exception or `finally` path patches a pool,
+terminates work, creates a job or mints a grant.
+
+Once fresh complete evidence confirms one idle node, zero running tasks, a
+successful unchanged StartTask and the exact bootstrap/GPU proof, the separately
+authorized operator may request the transition:
+
+```bash
+python -m learning.paused.pool_preparation_cli transition \
+  --plan "$PLAN" --evidence "$VERIFIED_READY_RESULT" \
+  --journal "$ORIGINAL_TRANSITION_INTENT" --approved-plan-sha256 "$APPROVED_PLAN_SHA" \
+  --output "$TRANSITION_RESULT"
+```
+
+This uses an explicitly subscription/tenant-scoped operator Azure CLI identity,
+not an attempted MI privilege escalation. It writes its one-shot intent before
+sending one conditional ARM PATCH with the observed strong ETag. The PATCH
+changes **only** the scale formula to `simulation.batch.allocation_formula`
+with the **same original pool deadline**. The current node count keeps the
+already-prepared node without a keepalive task. Unknown/stale/unready evidence
+or a changed ETag prevents the PATCH.
+
+A lost PATCH acknowledgement is not permission to repeat it. Preserve the
+original intent and reconcile only the known pool/configuration/ETag:
+
+```bash
+python -m learning.paused.pool_preparation_cli reconcile \
+  --plan "$PLAN" --intent "$ORIGINAL_TRANSITION_INTENT" --output "$NEW_RECONCILIATION"
+```
+
+`canonical_observed` means ARM readback only, **not** admission to start a job.
+On the private worker, verify the actual SDK pool with the unchanged native
+guards, same node and exact original GPU proof, then submit ordinary warmup once:
+
+```bash
+python -m learning.paused.pool_preparation_cli verify \
+  --plan "$PLAN" --evidence "$VERIFIED_READY_RESULT" --intent "$ORIGINAL_TRANSITION_INTENT" \
+  --client-id "$EXISTING_OBSERVER_MI" --output "$NATIVE_VERIFICATION"
+python -m learning.paused.pool_preparation_cli warmup \
+  --plan "$PLAN" --evidence "$VERIFIED_READY_RESULT" --intent "$ORIGINAL_TRANSITION_INTENT" \
+  --client-id "$EXISTING_OBSERVER_MI" --journal "$ORIGINAL_WARMUP_INTENT" \
+  --approved-plan-sha256 "$APPROVED_PLAN_SHA" --output "$WARMUP_SUBMISSION"
+```
+
+Warmup rechecks native admission itself. Its existing job remains **30 minutes**,
+its ordinary non-admin task remains **60 seconds**, with zero retries. An
+ambiguous submission keeps its original UUID/intent and is not retried. These
+commands never mint physical authority: the existing collection controller must
+still observe successful ordinary preflight and at least **660 seconds** of the
+original window before issuing an unshortened **600-second** motion grant.
+Insufficient headroom stops work; it does not start another 55/60-minute clock.
+
+Offline tests exercise the real unchanged native guards and pinned Batch SDK with
+CPU/transport fixtures, including rejected preparation before transition, exact
+canonical admission afterward, unknown transport with zero pool/job mutations,
+and one-shot warmup. No test or preparation receipt is GPU/task-quality evidence.
+
 ### Paused evaluation evidence and release boundaries
 
 `learning.paused.evaluation` uses paired/bootstrap **plan v2, results v3 and
