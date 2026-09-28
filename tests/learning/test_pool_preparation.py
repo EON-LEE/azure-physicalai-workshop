@@ -20,6 +20,7 @@ from learning.paused import pool_preparation as prep
 @pytest.fixture
 def scenario(spec, platform_client, batch_sdk):
     from azure.batch import models
+
     from simulation.batch import (
         GRID_INSTALLER_SHA256,
         BatchPlatform,
@@ -673,12 +674,14 @@ def test_cli_plan_is_offline_and_cannot_allocate_or_acquire_credentials(
     assert scenario.arm.patches == []
 
 
-def test_operator_transport_uses_only_exact_pool_patch_and_original_etag(scenario, monkeypatch):
+@pytest.mark.parametrize("etag", ['"original"', 'W/"0x8DF1D4218B5A273"'])
+def test_operator_transport_uses_only_exact_pool_patch_and_original_etag(
+    scenario, monkeypatch, etag
+):
     from urllib import request
 
-    from simulation.batch import allocation_formula
-
     from learning.paused.pool_preparation_cli import PoolArm
+    from simulation.batch import allocation_formula
 
     scopes, calls = [], []
 
@@ -713,16 +716,55 @@ def test_operator_transport_uses_only_exact_pool_patch_and_original_etag(scenari
             }
         }
     }
-    transport.patch(body, etag='"original"')
+    transport.patch(body, etag=etag)
     assert len(calls) == 1 and calls[0].get_method() == "PATCH"
     assert calls[0].full_url == (
         "https://management.azure.com"
         + prep.pool_resource_id(scenario.plan)
         + "?api-version=2025-06-01"
     )
-    assert calls[0].get_header("If-match") == '"original"'
+    assert calls[0].get_header("If-match") == etag
     assert calls[0].data == canonical(body)
     assert scopes == ["https://management.azure.com/.default"]
+
+
+def test_actual_arm_weak_version_is_retained_verbatim_through_conditional_transition(
+    scenario, tmp_path
+):
+    version = 'W/"0x8DF1D4218B5A273"'
+    scenario.arm.value["etag"] = version
+    evidence = prep.observe(scenario.plan, arm=scenario.arm, batch=scenario.batch)
+    assert evidence["state"] == "ready"
+    result = prep.transition(
+        scenario.plan,
+        evidence,
+        arm=scenario.arm,
+        journal=tmp_path / "arm-version-intent.json",
+        approved_plan_sha256=scenario.plan["plan_sha256"],
+    )
+    assert result["state"] == "canonical_observed"
+    assert len(scenario.arm.patches) == 1
+    assert scenario.arm.patches[0][1] == version
+
+
+@pytest.mark.parametrize(
+    "value", [None, "", "*", '"*"', 'W/"*"', "unquoted", 'W/"', 'W/"a"\r\nX-Test: 1']
+)
+def test_missing_wildcard_or_malformed_arm_version_is_never_conditional_authority(value):
+    with pytest.raises(ContractError):
+        prep._etag(value)
+
+
+@pytest.mark.parametrize("etag", [None, "*", "not-quoted", 'W/"'])
+def test_operator_transport_rejects_invalid_versions_before_credentials(scenario, etag):
+    from learning.paused.pool_preparation_cli import PoolArm
+
+    credential = SimpleNamespace(
+        get_token=lambda *args: pytest.fail("Invalid conditional request acquired credentials")
+    )
+    transport = PoolArm(scenario.plan, credential, allow_transition=True)
+    with pytest.raises(ContractError, match="version ETag"):
+        transport.patch(transport.transition_body, etag=etag)
 
 
 def test_preparation_does_not_change_the_existing_training_or_model_payload():

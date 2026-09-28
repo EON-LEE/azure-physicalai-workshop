@@ -11,6 +11,7 @@ from uuid import UUID
 from learning.common import canonical, parse_json, read_json, require, write_json
 from learning.deadlines import JobDeadline
 from learning.paused.pool_preparation import (
+    _etag,
     make_plan,
     observe,
     pool_resource_id,
@@ -55,6 +56,9 @@ class PoolArm:
             method != "PATCH" or body == self.transition_body,
             "Operator transport may only restore the exact original canonical formula",
         )
+        if method == "PATCH":
+            self.preparation_deadline.check()
+            etag = _etag(etag)
         headers = {
             "Authorization": "Bearer "
             + self.credential.get_token("https://management.azure.com/.default").token,
@@ -62,8 +66,6 @@ class PoolArm:
         }
         if etag is not None:
             headers["If-Match"] = etag
-        if method == "PATCH":
-            self.preparation_deadline.check()
         request = urllib.request.Request(
             self.url,
             method=method,

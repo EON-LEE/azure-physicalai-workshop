@@ -101,13 +101,10 @@ def _metadata(pool: dict) -> dict:
 
 
 def _etag(value) -> str:
+    match = re.fullmatch(r'(?:W/)?"([!#-~]+)"', value) if isinstance(value, str) else None
     require(
-        isinstance(value, str)
-        and 1 <= len(value) <= 256
-        and not value.startswith("W/")
-        and "\r" not in value
-        and "\n" not in value,
-        "An actual strong pool ETag is required",
+        match is not None and len(value) <= 256 and match.group(1) != "*",
+        "An exact observed ARM pool version ETag is required",
     )
     return value
 

@@ -1193,11 +1193,18 @@ python -m learning.paused.pool_preparation_cli transition \
 
 This uses an explicitly subscription/tenant-scoped operator Azure CLI identity,
 not an attempted MI privilege escalation. It writes its one-shot intent before
-sending one conditional ARM PATCH with the observed strong ETag. The PATCH
+sending one conditional ARM PATCH with the exact observed resource ETag. The PATCH
 changes **only** the scale formula to `simulation.batch.allocation_formula`
 with the **same original pool deadline**. The current node count keeps the
 already-prepared node without a keepalive task. Unknown/stale/unready evidence
 or a changed ETag prevents the PATCH.
+
+Batch Management [Pool Update](https://learn.microsoft.com/rest/api/batchmanagement/pool/update?view=rest-batchmanagement-2025-06-01)
+returns resource versions such as `W/"0x8D4EDFEBFADF4AB"`. Preserve that entire
+service-issued token, including `W/`, in `If-Match`; never convert it to a Blob
+ETag, remove its prefix, omit the condition, or substitute `*`. Missing,
+malformed and wildcard tokens fail before credentials or a PATCH are requested.
+This ARM resource-version rule is separate from Blob payload strong-ETag checks.
 
 A lost PATCH acknowledgement is not permission to repeat it. Preserve the
 original intent and reconcile only the known pool/configuration/ETag:
