@@ -953,6 +953,14 @@ twenty TRAIN seeds 10001..10020, actual live provenance, complete frames and the
 unchanged physical profile/task/criteria. Conversion retains every original
 episode/frame identity; fixtures and held-out/G0 seeds cannot train.
 
+Keep registration receipts and other operator bookkeeping **outside** every
+registered input root, for example under
+`<owner-learning-prefix>/registrations/<dataset-id>/`. A registration receipt
+added beside a sealed dataset's manifest is an unsigned extra file and correctly
+fails the exact inventory check. Preserve such a misplaced receipt with verified
+bytes outside the input root before removing only that exact bookkeeping object;
+never rewrite the dataset manifest or ignore arbitrary extra files to make a run pass.
+
 Conversion and native training use task-local directories. Verified converted
 data is published at `<output_prefix>/<run_id>/dataset/dataset/`, model candidates
 and result at `<output_prefix>/<run_id>/model/`, and the existing full-state
