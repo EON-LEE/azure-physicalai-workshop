@@ -189,6 +189,7 @@ NVIDIA의 최신 ROS 문서는 Humble/Jazzy를 권장하지만, 이 저장소의
 | P0 TRAIN 및 학습 | 20개의 reference-controller TRAIN episode, 8,587 frame; 실제 A100 80 GB 한 장에서 1,000 optimizer update 완료, 가중치 변경 확인 | 실제 학습된 모델은 존재함. 사람 시연이나 물리 품질 통과로 재분류하지 않음 |
 | 체크포인트와 앱 반입 | 완전한 체크포인트 10회 발행, step-600 full-state 복원/해시 확인; 원래 native provenance를 검증한 private external import 완료 | 새 API `TrainingRun`이나 release가 생긴 것이 아님 |
 | P0 learned validation | finger joint 2의 제안 값이 guard에 거부되어 action 적용 전에 중단 | **불완전/unscorable**. clipping한 실행, 성공 episode 또는 최종 품질 점수로 계산하지 않음 |
+| P0 재학습 | 원본 TRAIN20에서 batch 64·2,700 update를 요청한 별도 AML 작업 `6cca7a7a-bd17-40f2-944c-6654f7c33d51`은 10월 3일 KST `Failed` 종료. step-100/200 full-state checkpoint는 각각 15개 파일의 원본·보존본 hash를 검증하고 output TTL 밖 reproducibility 경로에 보존. 최종 candidate는 불완전. Low-Priority 회수 경고와 이후 `ContractError` 증거가 있음 | 최소 200개의 새 update에 대한 체크포인트 증거이며 2,700 update 완료가 아님. 정확한 최종 update 수와 직접 실패 원인은 미확정. 새로운 물리 품질 통과나 release 없음. A100 노드 0 확인 |
 | P1 추가 TRAIN | 11001–11007의 7개 원본 시연 검증 완료. 11005의 원래 CUDA/EGL 실패는 보존하고, GPU 재검증 뒤 별도 승인한 1회 재시도만 성공. 11008–11020은 미시도 | 기준 제어기 시연이며 learned 성공이 아님. 추가 20개 완료 아님. P1 학습 모델 없음 |
 | P0/P1 비교 및 release | 완전한 40-trial held-out 품질 통과와 learned-policy release 없음 | 고객 learned 실행 단계 **차단** |
 | 운영 복구 | 10월 1일은 유료 할당 전 중단. 비용 상한 해제 후 10월 2일 복구에서 7개 시연(3,015 frame·6,044 file)과 모델·체크포인트·변환 데이터를 검증·보존하고 해당 작업/GPU 종료 확인 | 별도 A100 감사는 모델 호출 전 staging 검사에서 중단. 실제 예측·새 학습·품질 통과 증거로 해석하지 않음 |
@@ -203,6 +204,13 @@ NVIDIA의 최신 ROS 문서는 Humble/Jazzy를 권장하지만, 이 저장소의
 | 웹 콘솔 / private API | Entra 인증, 환경 초안·revision, 실제 record·plan·오류·증거 조회 | 가중치만 있으면 다른 소유자의 모델을 실행하는 범용 launcher |
 
 `LIVE`는 실제 현재 실행의 출처이지 “실시간 10 Hz 통과”를 뜻하지 않습니다. Paused 경로는 **NON_REALTIME_SIMULATION**으로 설명합니다. v1은 30 SIM초/1,800 tick/300 frame, 명시적 v2는 60 SIM초/3,600 tick/600 frame이며 episode의 최대 600 WALL초와 독립 안전 한도는 그대로입니다. 이전 실시간 100 ms/80 ms gate 실패도 삭제하거나 paused 성공으로 덮지 않습니다.
+
+실패 시 `learning/paused/command.py`는 private failure artifact에 최대 64 KiB의
+`traceback.txt`와 truncation 표시를 남깁니다. 이는 native training log가 생성되기
+전 계약 검증이 실패해도 오류 내용을 보존하기 위한 후속 소스 개선입니다.
+이 개선은 위 실패 작업의 고정 이미지에 들어 있지 않으므로 과거 traceback이
+복구되었다고 설명하지 않습니다. 새 실행에 적용하려면 새 source/image qualification이
+필요하며, 기존 작업·모델·certificate를 수정하지 않습니다.
 
 ## 2. 실행 주체와 참가자가 할 수 있는 일
 

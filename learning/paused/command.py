@@ -682,12 +682,17 @@ def _preserve_failure(
 ) -> None:
     import shutil
     import sys
+    import traceback
 
     from learning.common import file_digest, safe_path, write_json
 
     failure_root = directory / "failure"
     failure_root.mkdir()
     files = {}
+    traceback_text = "".join(traceback.format_exception(type(error), error, error.__traceback__))
+    traceback_bytes = traceback_text.encode("utf-8")
+    (failure_root / "traceback.txt").write_bytes(traceback_bytes[-65536:])
+    files["traceback.txt"] = file_digest(failure_root / "traceback.txt")
     for name in ("training.log", "training-context.json"):
         path = directory / "model" / name
         if path.exists():
@@ -705,6 +710,7 @@ def _preserve_failure(
             "schema": "physicalai.smolvla-command-failure/v1",
             **binding,
             "failure_type": type(error).__name__,
+            "traceback_truncated": len(traceback_bytes) > 65536,
             "candidate_complete": False,
             "learning_quality_verified": False,
         },
