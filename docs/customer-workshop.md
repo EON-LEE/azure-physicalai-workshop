@@ -12,9 +12,9 @@
 | P0 TRAIN 및 학습 | 20개의 reference-controller TRAIN episode, 8,587 frame; 실제 A100 80 GB 한 장에서 1,000 optimizer update 완료, 가중치 변경 확인 | 실제 학습된 모델은 존재함. 사람 시연이나 물리 품질 통과로 재분류하지 않음 |
 | 체크포인트와 앱 반입 | 완전한 체크포인트 10회 발행, step-600 full-state 복원/해시 확인; 원래 native provenance를 검증한 private external import 완료 | 새 API `TrainingRun`이나 release가 생긴 것이 아님 |
 | P0 learned validation | finger joint 2의 제안 값이 guard에 거부되어 action 적용 전에 중단 | **불완전/unscorable**. clipping한 실행, 성공 episode 또는 최종 품질 점수로 계산하지 않음 |
-| P1 추가 TRAIN | 11001–11004 수락; 11005는 CUDA error 46 / EGL crash; 나머지 15개 미시도 | 추가 20개 완료 아님. P1 학습 모델 없음 |
+| P1 추가 TRAIN | 11001–11007의 7개 원본 시연 검증 완료. 11005의 원래 CUDA/EGL 실패는 보존하고, GPU 재검증 뒤 별도 승인한 1회 재시도만 성공. 11008–11020은 미시도 | 기준 제어기 시연이며 learned 성공이 아님. 추가 20개 완료 아님. P1 학습 모델 없음 |
 | P0/P1 비교 및 release | 완전한 40-trial held-out 품질 통과와 learned-policy release 없음 | 고객 learned 실행 단계 **차단** |
-| 운영 복구 | 10월 1일 당시 비용 한도에서 중단하고 GPU 잔존 없음 확인; 10월 2일 사용자가 해당 비용 상한을 제거하고 복구 진행 | 이 변경 자체는 새 학습/평가 성공 증거가 아님 |
+| 운영 복구 | 10월 1일은 유료 할당 전 중단. 비용 상한 해제 후 10월 2일 복구에서 7개 시연(3,015 frame·6,044 file)과 모델·체크포인트·변환 데이터를 검증·보존하고 해당 작업/GPU 종료 확인 | 별도 A100 감사는 모델 호출 전 staging 검사에서 중단. 실제 예측·새 학습·품질 통과 증거로 해석하지 않음 |
 
 실습 대상은 검토된 Franka 기반 셀, 지정 task/profile/criteria, 지정 부품·카메라·관절 순서의 시뮬레이션입니다. 새 공장, 실제 산업용 로봇, 다른 그리퍼·물성·카메라에 대한 검증이나 안전 인증이 아닙니다. 100% 정확도, GPU 확보 시간, 추론 지연, 운영 가용성, 생산성 또는 ROI를 보증하지 않습니다.
 
@@ -124,6 +124,8 @@ python -m learning.smolvla.azure \
 `learning.paused.bootstrap binding` / `plan`으로 준비 metadata를 만드는 절차와 각 필수 인자는 [policy learning](policy-learning.md)에 있습니다. metadata 검사만으로 payload 검증이 끝난 것은 아닙니다. 단일 command는 `job_execution.schema="physicalai.smolvla-command-execution/v1"`, `kind="command"`, `data_transport="private_blob_mi"`를 사용하는 명시적 경로이며 config만 고쳤다고 제출 권한이 생기지 않습니다.
 
 위 `learning.smolvla.azure` CLI는 **계획만** 만듭니다. 실제 native 제출은 기존 `PolicyJobs.preflight` / `submit`과 독립 watchdog, create-only 원본 승인·claim·UTC deadline 절차를 갖춘 운영자 작업입니다. native P0용 브라우저 “한 번 클릭 학습”이나 `az ml job create` 우회 절차를 제공하지 않습니다. P1의 명시적 `training_cohort.kind="p1_additional20"`은 검증된 P0를 parent로 사용하고 추가 TRAIN20을 요구합니다. `weights_only`는 새 optimizer의 추가 학습이며 full-state 재개와 다릅니다.
+
+[TRAIN 전용 모델 감사](smolvla-train-audit.md)는 실제 원본 예측·정규화·관절 오차를 확인하는 별도 비동작 진단입니다. [학습 패딩 호환성 수정](smolvla-training-padding.md)은 명시적인 `checkpointing/v2` 선택과 **새로 검증된 학습 이미지·설정**을 요구합니다. 과거 v1 실행이나 원래 모델을 소급 수정하지 않으며, 이전 이미지에 새 선택자만 넣어 실행하지 않습니다. CPU 검사 통과, 낮아진 loss 또는 제안된 학습량을 실제 모델 품질로 표시하지 않습니다.
 
 ### C. 실제 모델 증거와 private 앱 반입
 

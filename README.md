@@ -152,18 +152,30 @@ run, pretrained initialization, or policy release.
 **Physical learning is still incomplete:** the first separate learned validation
 rejected a proposed value for finger joint 2 before applying the action. That
 attempt remains incomplete/unscorable, not a successful learned task and not a
-clipped replacement action. P1's additional TRAIN cohort currently has four
-accepted episodes (11001–11004); 11005 encountered CUDA error 46 / an EGL crash,
-and the remaining fifteen have not been attempted. There is no P1 model, complete
-forty-trial P0/P1 quality pass, or learned-policy release.
+clipped replacement action. P1's additional TRAIN cohort now has seven
+independently verified accepted episodes (11001–11007). The original 11005
+CUDA error 46 / EGL crash remains recorded; a separately authorized, once-only
+retry succeeded after GPU requalification. Seeds 11008–11020 remain unattempted.
+These are reference-controller demonstrations, not learned-policy successes.
+There is no complete additional TRAIN20, P1 model, forty-trial P0/P1 quality pass,
+or learned-policy release.
 
 The October 1 recovery phase stopped before paid allocation because its total
 cost ceiling could not be established; no new GPU job ran. The user removed that
-campaign cost ceiling on October 2 and recovery
-is in progress, but no new successful outcome is established by this documentation
-update. Removing a cost ceiling does not remove original job/grant deadlines,
-safety guards, scoped permissions or evidence requirements. Deployment admission
-and code-enforced operation limits remain explicit, not silently changed here.
+campaign cost ceiling on October 2. The subsequent bounded recovery closed with
+all seven payloads verified (3,015 frames, 6,044 files), preserved original
+models/checkpoints/conversion data, and all owned GPU/controller jobs stopped.
+Its separate A100 diagnostic failed staging admission before model inference;
+no prediction or quality result was produced. Further learning work remains open.
+Removing a cost ceiling does not remove original job/grant deadlines, safety
+guards, scoped permissions or evidence requirements.
+
+The [TRAIN-only model audit](docs/smolvla-train-audit.md) preserves original
+predictions and processor evidence without changing controls. The separately
+reviewed [training padding recipe](docs/smolvla-training-padding.md) corrects a
+pinned upstream mask-key mismatch only in the training path. Its new source
+requires a newly qualified training image; CPU checks are not a deployed-model
+or physical-quality claim.
 
 **Managed execution transition:** private, Entra-only Azure Batch accounts,
 service private endpoints, NAT-backed node subnets, dedicated node identity and
