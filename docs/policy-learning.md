@@ -1592,7 +1592,9 @@ recorder = PhysicalRolloutRecorder(
 recorder.start_case(binding, initial_measured_state, initial_camera_frames)
 recorder.append_control(actual_control_trace)  # One or more real counter/timing snapshots.
 recorder.finish_case(
-    actual_terminal_outcome, final_measured_state, final_camera_frames,
+    actual_terminal_outcome,
+    final_measured_state,
+    final_camera_frames,
     actual_uploaded_capture_manifest_bytes,
 )
 results_path = recorder.finalize()  # Only after every planned attempt is complete.
@@ -1792,21 +1794,28 @@ writer = EpisodeWriter(
 )
 
 targets = resolve_joint_targets(previous_issued_targets, action_positions, action_indices)
-writer.append(FrameSample(
-    captured_at_utc=utc_timestamp_ending_z,
-    monotonic_ns=observation_monotonic_ns,
-    physics_step=observation_physics_step,
-    joint_positions=tuple(float(value) for value in actual_joint_positions),
-    commanded_joint_targets=targets,
-    images={
-        "inspection": CameraSample(inspection_png, inspection_render_frame,
-                                   inspection_physics_step, inspection_monotonic_ns),
-        "overview": CameraSample(overview_png, overview_render_frame,
-                                 overview_physics_step, overview_monotonic_ns),
-    },
-    terminated=controller_ended,
-    truncated=controller_was_interrupted,
-))
+writer.append(
+    FrameSample(
+        captured_at_utc=utc_timestamp_ending_z,
+        monotonic_ns=observation_monotonic_ns,
+        physics_step=observation_physics_step,
+        joint_positions=tuple(float(value) for value in actual_joint_positions),
+        commanded_joint_targets=targets,
+        images={
+            "inspection": CameraSample(
+                inspection_png,
+                inspection_render_frame,
+                inspection_physics_step,
+                inspection_monotonic_ns,
+            ),
+            "overview": CameraSample(
+                overview_png, overview_render_frame, overview_physics_step, overview_monotonic_ns
+            ),
+        },
+        terminated=controller_ended,
+        truncated=controller_was_interrupted,
+    )
+)
 manifest_path = writer.finalize()  # Only after a real terminal sample.
 ```
 

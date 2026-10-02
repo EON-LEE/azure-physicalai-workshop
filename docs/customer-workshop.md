@@ -1,5 +1,8 @@
 # 고객 워크샵: 학습된 정책과 실제 Isaac Sim 증거 확인
 
+전체 문서는 [인덱스](README.md), 최신 실행 결과는 [현재 상태](status.md),
+실패 복구·증거·종료 절차는 [운영 런북](operator-runbook.md)을 먼저 확인합니다.
+
 **상태 기준: 2026-10-02. 현재는 워크샵 준비 자료이며, 학습 정책을 고객 실행용으로 승인했다는 뜻이 아닙니다.** 실제 P0 학습과 비공개 앱 반입은 완료했지만, 학습 정책의 물리 검증은 아직 불완전합니다. 아래 참가자 실습은 **그 고객의 실행 주체에 귀속되고, 사전에 물리 품질까지 검증된 버전 고정 체크포인트**가 있을 때만 진행합니다. 지금의 미완료 상태를 reference controller, 녹화 영상, replay 또는 브라우저 애니메이션으로 대체하여 “학습 성공”으로 설명하지 않습니다.
 
 이 문서는 기존 저장소의 운영 경로를 연결합니다. 모델 다운로드 상품, 자격 증명, 고객별 완성 배포 설정 또는 새 자동화 도구를 제공하지 않습니다. 새로운 학습/평가 결과가 나오면 원본 증거를 확인한 운영자가 아래 상태를 갱신해야 합니다.
@@ -62,6 +65,7 @@ def propose_evaluation(actor, candidate_id):
     evidence = api.read_evidence(actor, candidate.id)
     return foundry.propose(evidence, authority="proposal_only")
 
+
 def submit_sim_evaluation(actor, approved_request):
     authorization.require_scope_and_approval(actor, approved_request)
     contracts.require_pinned_model_task_profile(approved_request)
@@ -71,6 +75,7 @@ def submit_sim_evaluation(actor, approved_request):
         mode="NON_REALTIME_SIMULATION",
         request=approved_request,
     )
+
 
 def run_paused_sim_episode(request, simulator, policy, existing_guard):
     evidence = recorder.begin(request)

@@ -1,5 +1,11 @@
 # Automated test strategy
 
+See [current status](status.md) for actual live execution results; this document
+defines test obligations, not a statement that every live gate passed.
+`python -m scripts.check_docs` checks repository-local Markdown file targets
+(not remote URLs, heading anchors or executable code). It runs in the CPU CI and
+`scripts/check.sh`; `tests/test_docs.py` also guards the navigation structure.
+
 ## Implemented now
 
 `tests/cases.json` drives three pytest suites:
@@ -57,7 +63,9 @@ optimizer step and inference; it is not evidence of Azure GPU task quality.
 
 The catalog's planned acceptance cases remain the full release obligations.
 Local unit coverage of a clause does not automatically complete that case or
-its Azure/GPU gate. Actual G3-G7 cloud/GPU/model acceptance is still unperformed.
+its Azure/GPU gate. Actual cloud/GPU components have since been exercised, but the complete G3-G7
+release obligations have not passed. See [current status](status.md) for the
+partial successes, failures and remaining learned-quality blocker.
 
 ## Release must fail closed
 

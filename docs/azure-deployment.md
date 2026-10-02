@@ -1,5 +1,10 @@
 # Azure-only runtime and staged deployment
 
+For the latest execution/readiness results, use [current status](status.md).
+For approved operation, failure recovery and cleanup, use the
+[operator runbook](operator-runbook.md). Dated GPU/VM records below are historical
+qualification boundaries, not proof that the current learned model is ready.
+
 For code-only API/console updates with unchanged dependency manifests,
 `Dockerfile.api-code` accepts an explicitly digest-pinned `API_BASE_IMAGE` and
 the reviewed `apps/web/dist` build. It retains the existing interpreter,
@@ -68,8 +73,9 @@ SKU was subsequently found not to support LowPriority there. The West US 2
 account's quota was increased to 36 through the official account-only quota
 process, and an actual managed A10 was allocated. That host failed in Batch's
 reserved bootstrap before NVIDIA/Isaac startup; the matched Ubuntu 22.04
-alternative is being qualified separately. No managed Isaac execution or
-trained-policy success is claimed from allocation alone. Separate managed CPU
+alternative was subsequently qualified and completed the managed reference
+episode; see [current status](status.md). No trained-policy success is claimed
+from allocation alone. Separate managed CPU
 jobs did verify native complete-checkpoint publication to private Blob and
 fresh-compute restoration, including rejection of a torn newer checkpoint.
 Those durability records are explicitly tiny CPU fixtures, not robot training.
