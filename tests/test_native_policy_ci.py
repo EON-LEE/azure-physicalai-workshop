@@ -13,7 +13,12 @@ def native_job() -> str:
 def test_native_policy_ci_uses_isolated_frozen_cpu_dependencies():
     job = native_job()
     assert 'python-version: "3.11"' in job
-    assert "UV_PROJECT_ENVIRONMENT: ${{ runner.temp }}/physicalai-native-policy-venv" in job
+    setup = (
+        'echo "UV_PROJECT_ENVIRONMENT=$RUNNER_TEMP/physicalai-native-policy-venv" >> "$GITHUB_ENV"'
+    )
+    assert setup in job
+    assert job.index(setup) < job.index("uv sync --project learning/smolvla")
+    assert "UV_PROJECT_ENVIRONMENT: ${{ runner.temp }}" not in job
     assert "uv sync --project learning/smolvla --frozen --extra cpu --extra azure" in job
     assert "timeout-minutes: 20" in job
     assert "PYTHONPATH: ${{ github.workspace }}" in job
