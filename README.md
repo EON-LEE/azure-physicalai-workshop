@@ -5,6 +5,19 @@ FastAPI API, Foundry inspection adapter, Azure Cosmos/Blob persistence, a guarde
 Isaac Sim bridge, customer JSON/Python scene extension interfaces, and staged
 Azure deployment templates.
 
+**Customer workshop status — 2026-10-02:** a real SmolVLA P0 has been trained and
+privately imported, but learned-policy physical quality and customer execution
+are **not yet qualified**. The first learned validation was rejected by a finger
+joint guard before action; no completed P0/P1 held-out comparison or learned
+policy release exists. Source, training and artifact-import success are not a
+customer-readiness claim.
+
+Start with the [customer/facilitator workshop runbook](docs/customer-workshop.md).
+It separates advance Azure preparation/training from a conditional 60–90 minute
+session using an already qualified checkpoint. It also identifies the current
+blocked steps and owner-bound asset/console limitations; it is not a public
+checkpoint download or a one-click deployment/training package.
+
 **Actual Azure deployment verified:** the protected web/API, Entra delegated
 authentication, private Cosmos configuration writes/reads, and a real Foundry
 agent connectivity response from managed-identity bootstrap. Images are built
@@ -26,11 +39,11 @@ from the same scene epoch. Opening the public URL does not authorize motion or p
 inference. A stopped/unpublished simulator is shown as unavailable, not replaced
 by a schematic or replay. Availability depends on the active Azure presentation.
 
-**Remaining boundaries:** regular supported GPU quota is not established for the
-development subscription. Its Spot VM was actually evicted, so Spot cannot be sold
-as uninterrupted presentation capacity. The running reference controller is not a
-trained VLA. The separate teaching/policy-learning implementation described below
-has not passed its real physical learning gates. This is not an industrial safety
+**Remaining boundaries:** GPU quota, regional capacity and actual renderer/model
+readiness must be checked for each customer's subscription. Earlier Spot eviction
+and allocation failures rule out an uninterrupted-capacity promise. A reference
+controller success is not a learned-policy success; the trained P0 described below
+has not passed its physical learning gates. This is not an industrial safety
 certification or a blanket pass of every production-release gate.
 
 All production workloads run on Azure. WSL is for authoring and automated tests,
@@ -67,7 +80,7 @@ escape/false-reject rates, MES/PLC integration and physical safety require a
 separate customer PoC. No ROI, trained-policy performance, arbitrary robot task
 support or always-on availability is claimed.
 
-## Teaching and policy learning: implemented, not yet admitted
+## Teaching and policy learning: trained P0, physical admission still blocked
 
 The protected Teaching Studio, owner-scoped demonstrations, immutable datasets,
 private managed-identity learning worker, actual Azure ML job adapters, separate
@@ -92,13 +105,13 @@ time did not satisfy the proposed 80 ms inference gate.
 
 Actual Isaac capture attempts also failed the full 100-interval, 100 ms
 control-cycle gate; partial and truncated captures were retained as failures.
-Consequently, model/policy and bootstrap allowlists remain empty and learning
-admission remains off. A valid full-task dataset, changed weights from actual
-training, model-bound actuator execution, and all frozen held-out physical
-trials are still required. An Azure `Completed` status, passing component tests,
-or handwritten results JSON cannot supply those missing facts.
+Those failures remain failures: the later paused-simulation work does not qualify
+the real-time controller. Production admission defaults remain off; subsequent
+training and private imports used explicitly scoped operator permissions, not
+general customer motion authority. An Azure `Completed` status, passing component
+tests, or handwritten results JSON cannot establish physical task quality.
 
-A separate **non-real-time simulation** path is being implemented rather than
+A separate **non-real-time simulation** path was implemented rather than
 relaxing those failed real-time gates. Its saved environment must explicitly
 opt in through the closed `learning_execution` contract. Physics remains frozen
 while observations or policy predictions are pending; each accepted action then
@@ -109,9 +122,9 @@ exercised this path's camera, frozen-state, actuation and manifest-last storage.
 Early attempts lifted the part approximately 29 mm and failed the unchanged
 50 mm grasp criterion. Later, an explicitly verified single-finger servo
 calibration retained the authored force cap and achieved measured grasp,
-lift and transport into the destination volume. Release and full-task
-acceptance were still not established; failed and truncated captures remain
-integration/test evidence, not training data.
+lift and transport into the destination volume. At that intermediate stage,
+release and full-task acceptance were not established. Those failed and truncated
+captures remain integration/test evidence, not training data.
 
 The separate, explicitly selected paused v2 profile permits 60 simulation
 seconds; the original paused v1 remains limited to 30 seconds, and neither
@@ -124,9 +137,32 @@ The subsequent managed integration run completed the full reference task under
 the unchanged paused-v2 criteria: actual grasp, transport, release and settling,
 424 recorded control intervals and 2,544 physics ticks. Its raw manifest and
 native acceptance were independently revalidated from private Blob. The
-integration seed is excluded from training. Actual policy training and paired
-learned-policy physical acceptance remain unverified; learning admission stays
-disabled.
+integration seed is excluded from training.
+
+**Verified P0 training and private assets (2026-09-28):** a separate complete
+reference-controller TRAIN cohort contains 20 episodes and 8,587 frames. A genuine
+single Azure ML command on one NVIDIA A100 80 GB completed 1,000 optimizer updates,
+produced changed weights and trainable-parameter fingerprints, and published ten
+complete checkpoints. The full step-600 checkpoint was independently restored
+and its payload hashes verified. The trained v3 candidate, native provenance and
+dataset were subsequently verified and imported into the private application as
+**externally trained, post-hoc imported** records—not a fabricated API training
+run, pretrained initialization, or policy release.
+
+**Physical learning is still incomplete:** the first separate learned validation
+rejected a proposed value for finger joint 2 before applying the action. That
+attempt remains incomplete/unscorable, not a successful learned task and not a
+clipped replacement action. P1's additional TRAIN cohort currently has four
+accepted episodes (11001–11004); 11005 encountered CUDA error 46 / an EGL crash,
+and the remaining fifteen have not been attempted. There is no P1 model, complete
+forty-trial P0/P1 quality pass, or learned-policy release.
+
+The October 1 recovery phase stopped at its then-approved cost limit with no GPU
+remaining. The user removed that campaign cost ceiling on October 2 and recovery
+is in progress, but no new successful outcome is established by this documentation
+update. Removing a cost ceiling does not remove original job/grant deadlines,
+safety guards, scoped permissions or evidence requirements. Deployment admission
+and code-enforced operation limits remain explicit, not silently changed here.
 
 **Managed execution transition:** private, Entra-only Azure Batch accounts,
 service private endpoints, NAT-backed node subnets, dedicated node identity and
@@ -159,10 +195,12 @@ uninterrupted training, including the native resume CLI and next batch.
 Weights-only recovery remains explicitly distinct. An actual private Blob
 diagnostic also restored all 12 complete checkpoint files in a separate
 managed CPU job after the publisher ended, ignoring a torn newer checkpoint.
-That diagnostic used a tiny CPU fixture: it does not establish real SmolVLA
-training, cross-device GPU determinism or physical quality. Either mode requires
-a newly reviewed job with its own deadline and approval for the remaining
-updates; old plans are not silently relabeled as interruption-safe.
+That earlier diagnostic used a tiny CPU fixture and did not establish real
+SmolVLA training. The later real P0 checkpoint restoration above provides
+additional artifact/recovery evidence, not cross-device bitwise determinism,
+learned-task quality or a completed P1 continuation. Either mode requires a newly
+reviewed job with its own deadline and approval for the remaining updates; old
+plans are not silently relabeled as interruption-safe.
 
 See [policy learning](docs/policy-learning.md),
 [the learning API](docs/learning-api.md), and
@@ -249,9 +287,14 @@ Credentials and executable code are not configuration fields.
 ## Deploy all runtime components to Azure
 
 See [the Azure deployment guide](docs/azure-deployment.md) before deploying.
-The staged flow uses Azure Bicep, ACR cloud builds, an Azure bootstrap job, and a
-private GPU VM. It creates billable resources only with explicit `--apply` and
-valid non-placeholder deployment inputs. No default subscription is selected.
+The customer learning workflow uses Azure Container Apps for the web/private
+worker, managed [Azure Batch Isaac tasks](docs/managed-simulation.md), and
+[Azure ML training](docs/policy-learning.md). The staged deployment guide also
+contains historical private-VM reference-bridge instructions; those are not the
+managed workshop execution path. `scripts.deploy` previews its supported stages
+without `--apply`; a plan is not a provisioned Batch/ML workshop. No default
+subscription is selected, and billable changes require explicit operator
+authorization and valid non-placeholder configuration.
 
 The backend uses managed identities, the browser uses real MSAL/Entra, and the
 simulator independently verifies its allowlisted controller identity over TLS.
