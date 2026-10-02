@@ -4,13 +4,16 @@
 
 이 문서는 기존 저장소의 운영 경로를 연결합니다. 모델 다운로드 상품, 자격 증명, 고객별 완성 배포 설정 또는 새 자동화 도구를 제공하지 않습니다. 새로운 학습/평가 결과가 나오면 원본 증거를 확인한 운영자가 아래 상태를 갱신해야 합니다.
 
-## 고객이 이해할 시나리오: 시뮬레이션에서 배우고, 현장 장비로 확장
+## 고객이 이해할 시나리오: 장비 없이 시뮬레이션에서 배우기
 
 **고객 질문은 “부품을 보고 지정 트레이로 옮기는 작업을 Azure에서 학습하고,
-검증한 뒤 현장 장비에 연결할 수 있는가?”입니다.** 첫 단계는 장비 없이 Isaac Sim에서
-관찰·시연·학습·원본 물리 평가를 확인하는 과정입니다. 이후 현장 카메라와 장비 상태를
-읽기 전용으로 연결하고, 마지막에 해당 실물 로봇의 안전 검증을 별도로 통과한 경우에만
-실물 작업을 다룹니다. 시뮬레이션 성공을 실물 성공으로 자동 승격하지 않습니다.
+검증하고, 나중에 다른 시스템에 연결할 코드는 어떻게 작성하는가?”입니다.**
+**이번 에셋에는 실제 장비가 없습니다.** 현재 범위는 Isaac Sim의 가상 로봇·카메라·물리,
+실제 정책 학습, 원본 평가 증거, Foundry의 제안, 그리고 연결 코드를 작성할 가이드와
+의사코드입니다. 참가자가 실제 로봇이나 공장 센서를 준비할 필요는 없습니다.
+ROS 2·MQTT·OPC UA·MCP는 역할별 선택 인터페이스이며 모두 설치해야 하는 필수 묶음이
+아닙니다. 실제 장비 연결·구동·현장 안전 인증은 이번 에셋의 완료 조건에서 제외합니다.
+아래 2~4단계는 향후 확장 설명이며 현재 제공 기능으로 표시하지 않습니다.
 
 | 단계 | 고객이 보는 장면 | 준비 또는 통과 기준 |
 |---|---|---|
@@ -18,6 +21,115 @@
 | 2. ROS 2 연동 실습 | Isaac Sim의 카메라·joint state·clock을 ROS 2에서 구독해 같은 작업의 장비 인터페이스를 설명 | 버전 고정 ROS 2 bridge, 좌표계·관절 이름·단위·시각·QoS 검증. 현재 미구현 확장 |
 | 3. 현장 IoT 관찰 | 실제 카메라/센서/장비 상태가 대시보드에 표시되고 Foundry가 검사·원인 검토를 제안 | 읽기 전용 edge 어댑터, 장비 연결 승인, 인증·토픽 권한·데이터 출처. 로봇 구동 없음 |
 | 4. 실물 작업 | 같은 업무 목적을 실물 로봇으로 수행하고 성공·오류·안전 정지를 관찰 | 로봇별 driver·보정·정책 재검증·독립 안전 시스템·현장 승인. 현재 지원/인증 주장 없음 |
+
+### 코드를 작성할 때의 경계와 의사코드
+
+장비가 없다는 것은 Azure 의존성도 없다는 뜻이 아닙니다. 현재 구조의
+Batch 시뮬레이션, AML 학습, Container Apps 웹/API, Foundry, private Blob과
+Entra/managed identity는 유지합니다. 시뮬레이터와 정책 프로세스 사이의
+같은 Linux 호스트 내 검증 IPC만 ROS 2·MQTT·MCP 없이 동작합니다.
+이 경로를 Windows 참가자 PC에서 그대로 실행하거나 네트워크 없이 전체 시스템을
+실행할 수 있다고 설명하지 않습니다.
+
+| 의존성 경계 | 이번 에셋 | 연결 가이드에서 확인할 것 |
+|---|---|---|
+| 시뮬레이터 ↔ 정책 | 보호된 Linux Unix socket, peer UID와 request/response 검증 | 고정 이미지·모델·task·profile, 관찰 ID와 sequence, deadline |
+| 웹/API ↔ managed 작업 | 인증된 API 및 Azure 작업 관리 | tenant/owner, 승인, 작업 ID, 제출 중복 방지, 취소 후 실제 종료 상태 |
+| 작업 ↔ 데이터/증거 | private Blob 및 managed identity | 접근 권한, 원본 hash, staging, checkpoint 보존, 실패 증거 |
+| Foundry ↔ 증거/제안 | 기존 proposal-only 경로 | 명령 권한 없음, 이미지·증거 출처, typed proposal 검증 |
+| ROS 2·MQTT·MCP | 현재 실행 경로에 미연결인 선택 확장 | adapter와 호환 버전·인증·메시지 매핑을 별도로 구현/검증 |
+
+연결 검증은 ROS/MQTT/MCP 없이 현재 simulator↔policy 경로가 동작하는지,
+잘못된 fingerprint·중복 sequence가 거부되는지, paused 결과가 real-time으로
+표시되지 않는지를 확인합니다. 이 검증에서 Blob·identity·작업 staging 통신을
+막지 않습니다. 공유 호스트에 다른 목적의 MCP 도구가 있다는 이유로 실패시키지
+않고, 이 에셋의 실제 실행 경로에 선택 adapter가 연결되어 있는지를 확인합니다.
+이 목록은 검증 기준이며 해당 고객 환경에서 이미 통과했다는 증거가 아닙니다.
+
+현재 실습 경로는 **웹/API → 승인된 managed 작업 → Isaac Sim·정책 런타임 →
+원본 artifact → 웹/Foundry 조회**입니다. 에이전트의 자유 텍스트를 관절 명령으로
+변환하지 않습니다. MCP를 추가한다면 typed API 위의 도구 어댑터로 두고, 먼저
+증거 조회·계획 제안에만 사용합니다. 학습·평가 제출은 기존 인증·scope·승인 검사를
+그대로 통과해야 합니다. MCP를 사용하지 않아도 시뮬레이션 실습은 가능해야 합니다.
+
+다음은 **설계 설명용 Python 형태 의사코드이며 실행 가능한 SDK 예제가 아닙니다.**
+표시된 함수는 구현해야 할 계약을 나타냅니다. 기존 제어 guard를 새 구현으로
+대체하거나 우회하라는 뜻이 아니며, 실제 진입점은 아래 문서의 운영 경로를 따릅니다.
+
+```python
+def propose_evaluation(actor, candidate_id):
+    candidate = api.read_candidate(actor, candidate_id)
+    evidence = api.read_evidence(actor, candidate.id)
+    return foundry.propose(evidence, authority="proposal_only")
+
+def submit_sim_evaluation(actor, approved_request):
+    authorization.require_scope_and_approval(actor, approved_request)
+    contracts.require_pinned_model_task_profile(approved_request)
+    # The same operation key must resolve to the same job, not another run.
+    return jobs.submit_or_get(
+        operation_key=approved_request.operation_key,
+        mode="NON_REALTIME_SIMULATION",
+        request=approved_request,
+    )
+
+def run_paused_sim_episode(request, simulator, policy, existing_guard):
+    evidence = recorder.begin(request)
+    primary_error = None
+    try:
+        while not simulator.episode_finished():
+            deadlines.require_remaining_wall_budget(request)
+            observation = simulator.observe_while_paused()
+            contracts.require_observation(observation, request)
+            action = policy.predict(observation)
+            existing_guard.require_valid(action, observation)
+            simulator.apply_and_advance(action, physics_ticks=6)
+            evidence.append(observation, action, simulator.measured_state())
+        return evidence.finalize_measured_result()
+    except Exception as error:
+        primary_error = error
+        diagnostics.record_without_masking_primary_error(evidence, error)
+        raise
+    finally:
+        lifecycle.close_preserving_primary_error(simulator, primary_error)
+```
+
+진단·정리 helper는 원래 오류를 보존하면서 자신의 오류도 별도로 기록해야 합니다.
+원래 오류 없이 정리만 실패한 경우에도 성공으로 반환하지 않아야 합니다.
+관찰 계약은 schema version, episode ID, sequence, sim timestamp, wall timestamp,
+camera/frame ID, image encoding, joint names/order, 위치·각도 단위를 명시합니다.
+action 계약은 모델·task·profile fingerprint와 입력 관찰 ID를 바인딩하고,
+차원·유한값·관절 한도·속도·유효기간을 기존 guard로 검증합니다. 허용 범위를 벗어난
+예측은 clipping으로 고치지 않습니다. 시간 초과·잘못된 입력·모델 오류는 성공으로
+대체하지 않고 명시적인 실패 증거로 남깁니다. 중단 episode는 원본 증거가 완전하지
+않으면 성공/실패율의 완전한 scored trial로 취급하지 않습니다.
+
+향후 ROS 어댑터는 이 관찰 계약을 ROS 메시지로 매핑하고, 읽기 전용 MQTT 어댑터는
+허용된 결과·상태만 내보내도록 설계합니다. 실제 장비용 adapter는 별도 구현·검증
+대상입니다. 위 paused loop를 실물 driver로 바꾸기만 하면 된다는 가이드를 제공하지
+않습니다. 고객에게 줄 실행 가능한 예제는 simulator-only 경로부터 구현·검증하고,
+미구현 확장은 의사코드로 명확히 구분합니다.
+
+### 리뷰 결과와 고객 제공 전 남은 기준
+
+프로토콜과 cloud/edge 배치를 별도로 검토한 두 독립 리뷰는 **기존 managed Azure
+구조를 유지하고, 이번 에셋에 장비·edge 인프라를 추가하지 않는 방향**으로 수렴했습니다.
+서로 다른 모델 실행은 확인하지 않았으므로 다중 모델 검증 완료라고 표현하지 않습니다.
+리뷰는 설계 검토이지 배포·학습·물리 품질 테스트 통과의 증거가 아닙니다.
+
+| 항목 | 채택한 기준 |
+|---|---|
+| 최소 배포 | 기존 Container Apps/API·Foundry·Cosmos·Blob·Batch·AML·인증 경로. 새 Arc/Kubernetes/IoT broker는 요구하지 않음 |
+| 고객 실행 주체 | 기존 tenant/owner artifact를 이름만 바꿔 복사하지 않음. 고객 scope에서 데이터·모델·권한·provenance를 새로 준비하고 검증 |
+| GPU 실행 | quota·대기·Spot eviction·고정 deadline 실패를 명시적으로 표시. 작업 제출을 학습 완료나 시뮬레이션 성공으로 표시하지 않음 |
+| 정책 평가 | 현재 paused 계약과 고정 checkpoint/task/profile로 원본 물리 평가. 이전 real-time adapter의 수치를 현재 통과 기준으로 혼용하지 않음 |
+| 향후 장비 계약 | simulation tick·hold_steps·process-local monotonic deadline은 실물로 그대로 옮길 수 없음. 별도 hardware schema·시간 계약·안전 검증 필요 |
+| 제공 상태 | 현재 구현, 설명용 의사코드, 미구현 확장 표시. 실제 고객 cold deployment와 평가를 실행하기 전에는 portable/ready라고 주장하지 않음 |
+
+특히 `learning/paused/inference.py`의 `PausedGuardedPolicyAdapter`를 설명할 때
+기존 real-time 경로의 `learning/inference.py`와 구분합니다. 두 경로의 observation,
+command와 시간 계약을 같은 것으로 간주하거나, `physics_step`을 null로 바꾸어 실물
+driver에 넣는 예제를 제공하지 않습니다. 미래 어댑터의 공통화는 API 계약을 먼저
+설계하고 test double로 검증할 후속 작업이지 현재 drop-in 호환성 주장이 아닙니다.
 
 **ROS 2는 로봇 소프트웨어 연결 계층이고, IoT는 현장 데이터 연결 계층입니다.**
 둘은 대체 관계가 아닙니다. Isaac Sim의 ROS 2 bridge는 영상·상태·시뮬레이션 시각을
@@ -58,7 +170,13 @@ gripper, workspace, latency, payload, collision model, safety interface가 다�
 
 공식 참고 자료:
 [Isaac Sim ROS 2 bridge](https://docs.isaacsim.omniverse.nvidia.com/latest/ros2_tutorials/index.html),
+[ROS 2 QoS 호환성](https://docs.ros.org/en/jazzy/Concepts/Intermediate/About-Quality-of-Service-Settings.html),
+[ROS 좌표계·단위 REP-103](https://www.ros.org/reps/rep-0103.html),
+[MCP cancellation 계약](https://modelcontextprotocol.io/specification/2025-06-18/basic/utilities/cancellation),
 [Azure IoT Operations 개요](https://learn.microsoft.com/en-us/azure/iot-operations/overview-iot-operations).
+MCP cancellation은 작업 취소 요청이지 물리 안전 정지의 보장이 아닙니다.
+참고한 MCP 문서는 특정 revision이며 향후 adapter 구현 시 서버·클라이언트가
+지원하는 revision과 인증 계약을 확인하고 고정합니다.
 NVIDIA의 최신 ROS 문서는 Humble/Jazzy를 권장하지만, 이 저장소의 고정 Isaac
 이미지와 Python/ROS 호환성을 따로 확인하고 고정합니다. 최신 문서의 권고를 이유로
 기존 이미지·제어 fingerprint를 몰래 업그레이드하지 않습니다.
