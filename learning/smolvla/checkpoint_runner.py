@@ -9,6 +9,8 @@ import platform
 import re
 import subprocess
 import sys
+from contextlib import nullcontext
+from functools import wraps
 from importlib.metadata import distribution, version
 from pathlib import Path
 from unittest.mock import patch
@@ -36,6 +38,15 @@ from learning.smolvla.checkpoints import (
 
 POLICY_SCHEMA = "physicalai.smolvla-checkpointing/v1"
 CONTEXT_SCHEMA = "physicalai.smolvla-checkpoint-run/v2"
+RECIPE_POLICY_SCHEMA = "physicalai.smolvla-checkpointing/v2"
+RECIPE_CONTEXT_SCHEMA = "physicalai.smolvla-checkpoint-run/v3"
+PADDING_RECIPE = {
+    "schema": "physicalai.smolvla-training-recipe/v1",
+    "id": "native-temporal-padding-alias-v1",
+    "boundary": "post-preprocessor-update-policy",
+    "canonical_mask": "action_is_pad",
+    "native_mask": "actions_id_pad",
+}
 NATIVE_SOURCE_SHA256 = {
     "lerobot/utils/train_utils.py": (
         "ed0f839e6caf51ff6f79a1c8f750eb1a144f83c40a92366a5d32da0921e5b82b"
@@ -57,11 +68,105 @@ NATIVE_SOURCE_SHA256 = {
         "0202ce63101050dc8b28f00cf68b9c28bf66d9c5c2f9e05d1e7c9e24d4905d19"
     ),
 }
+PADDING_NATIVE_SOURCE_SHA256 = {
+    "lerobot/policies/smolvla/modeling_smolvla.py": (
+        "3bdbaeecbd0dd3908d08507c13ed3517e63d2a653555322e2428066efb77b5f4"
+    ),
+    "lerobot/policies/smolvla/processor_smolvla.py": (
+        "eeb3714ca4b926d7f4d72c63ce5877497705108736eaf53cdc7362d8dfef2644"
+    ),
+    "lerobot/processor/converters.py": (
+        "2b97131f34c4881e93e7b864091637fac8ce1642a6620ed9330e84372e113640"
+    ),
+    "lerobot/processor/device_processor.py": (
+        "be81c88d9e7ea304ec49a42ea80557feb08b252bec82eb3c9eb8faf148397d33"
+    ),
+    "lerobot/processor/normalize_processor.py": (
+        "5b610f5be7d3bcf371d52e3ccca433846c9ef49adca84ba5ef3c54ad8809338e"
+    ),
+    "lerobot/datasets/lerobot_dataset.py": (
+        "e0930de3c1dac7aedec3458cdabc6f5838e61c020927de2f7fe41308bd639809"
+    ),
+}
+
+
+def recipe_context_fields(recipe: dict | None) -> dict:
+    if recipe is None:
+        return {"schema": CONTEXT_SCHEMA}
+    require(recipe == PADDING_RECIPE, "Unknown TRAIN-only padding recipe")
+    return {"schema": RECIPE_CONTEXT_SCHEMA, "training_recipe": dict(recipe)}
+
+
+def checkpoint_recipe(value: dict) -> dict | None:
+    require(isinstance(value, dict), "Checkpoint policy must be an object")
+    selected = value.get("schema") == RECIPE_POLICY_SCHEMA
+    keys(
+        value,
+        {"schema", "limits", "resume"} | ({"training_recipe"} if selected else set()),
+        "checkpoint policy",
+    )
+    require(
+        value["schema"] in (POLICY_SCHEMA, RECIPE_POLICY_SCHEMA),
+        "Unknown checkpoint publication policy",
+    )
+    if not selected:
+        return None
+    recipe = value["training_recipe"]
+    require(recipe == PADDING_RECIPE, "Unknown TRAIN-only padding recipe")
+    return dict(recipe)
+
+
+def context_recipe(context: dict) -> dict | None:
+    require(isinstance(context, dict), "Checkpoint run context must be an object")
+    if context.get("schema") == RECIPE_CONTEXT_SCHEMA:
+        require(
+            context.get("training_recipe") == PADDING_RECIPE,
+            "Missing or unknown TRAIN-only padding recipe",
+        )
+        return dict(context["training_recipe"])
+    require(
+        context.get("schema") in (None, CONTEXT_SCHEMA) and "training_recipe" not in context,
+        "A TRAIN-only recipe requires its explicit checkpoint-run version",
+    )
+    return None
+
+
+def training_padding_batch(batch: dict) -> dict:
+    """Bridge only the pinned loss key; preserve native tensors, reduction and processors."""
+    import torch
+
+    require(isinstance(batch, dict), "Expected native preprocessed training batch")
+    action, mask = batch.get("action"), batch.get("action_is_pad")
+    require(
+        isinstance(action, torch.Tensor)
+        and action.is_floating_point()
+        and action.ndim == 3
+        and action.shape[0] > 0
+        and tuple(action.shape[1:]) == (50, 9),
+        "Padding recipe requires native Bx50x9 floating action targets",
+    )
+    require(
+        isinstance(mask, torch.Tensor)
+        and mask.dtype == torch.bool
+        and tuple(mask.shape) == tuple(action.shape[:2])
+        and mask.device == action.device,
+        "Canonical action_is_pad must be native Bx50 bool on the action device",
+    )
+    if "actions_id_pad" in batch:
+        alias = batch["actions_id_pad"]
+        require(
+            isinstance(alias, torch.Tensor)
+            and alias.dtype == torch.bool
+            and alias.shape == mask.shape
+            and alias.device == mask.device
+            and (alias is mask or torch.equal(alias, mask)),
+            "Conflicting native actions_id_pad alias",
+        )
+    return {**batch, "actions_id_pad": mask}
 
 
 def validate_policy(value: dict, *, parameters: dict) -> CheckpointLimits:
-    keys(value, {"schema", "limits", "resume"}, "checkpoint policy")
-    require(value["schema"] == POLICY_SCHEMA, "Unknown checkpoint publication policy")
+    checkpoint_recipe(value)
     limits = CheckpointLimits(
         **keys(value["limits"], set(CheckpointLimits.__dataclass_fields__), "checkpoint limits")
     )
@@ -97,10 +202,17 @@ def validate_policy(value: dict, *, parameters: dict) -> CheckpointLimits:
     return limits
 
 
-def native_runtime(*, environment_image: str | None = None) -> dict:
+def native_runtime(
+    *, environment_image: str | None = None, training_recipe: dict | None = None
+) -> dict:
+    recipe_context_fields(training_recipe)
     require(version("lerobot") == "0.4.4", "Checkpoint runner requires pinned LeRobot 0.4.4")
     package = distribution("lerobot")
-    for name, checksum in NATIVE_SOURCE_SHA256.items():
+    sources = {
+        **NATIVE_SOURCE_SHA256,
+        **(PADDING_NATIVE_SOURCE_SHA256 if training_recipe is not None else {}),
+    }
+    for name, checksum in sources.items():
         require(
             file_digest(Path(package.locate_file(name))) == checksum,
             f"Pinned native checkpoint/trainer source changed: {name}",
@@ -140,7 +252,8 @@ def native_runtime(*, environment_image: str | None = None) -> dict:
                 "accelerate",
             )
         },
-        "native_source_sha256": NATIVE_SOURCE_SHA256,
+        "native_source_sha256": sources,
+        **({"training_recipe": dict(training_recipe)} if training_recipe is not None else {}),
         "device": "cuda" if torch.cuda.is_available() else "cpu",
         "cuda": torch.version.cuda,
         "gpu_name": torch.cuda.get_device_name() if torch.cuda.is_available() else None,
@@ -169,6 +282,9 @@ def make_binding(
         for key, value in config["parameters"].items()
         if key not in ("resume_mode", "timeout_seconds", "compute_tier")
     }
+    recipe = checkpoint_recipe(config["checkpointing"])
+    if recipe is not None:
+        parameters["training_recipe"] = recipe
     return {
         "scope": parent["scope"],
         "raw_manifest_sha256": converted["raw_manifest_sha256"],
@@ -415,6 +531,7 @@ def run(context: dict) -> None:
     from learning.offline import enforce_offline
 
     enforce_offline()
+    recipe = context_recipe(context)
     keys(
         context,
         {
@@ -431,10 +548,14 @@ def run(context: dict) -> None:
             "training_parameters",
             "resume_checkpoint_root",
             "environment_image",
-        },
+        }
+        | ({"training_recipe"} if recipe is not None else set()),
         "checkpoint job context",
     )
-    require(context["schema"] == CONTEXT_SCHEMA, "Wrong checkpoint runner context")
+    require(
+        context["schema"] == (RECIPE_CONTEXT_SCHEMA if recipe is not None else CONTEXT_SCHEMA),
+        "Wrong checkpoint runner context",
+    )
     require(
         context["origin"]["test_only"] is False,
         "Production runner does not synthesize test/cloud identity",
@@ -445,7 +566,7 @@ def run(context: dict) -> None:
     )
     deadline = JobDeadline(context["origin"]["job_deadline_utc"])
     deadline.check()
-    runtime = native_runtime(environment_image=context["environment_image"])
+    runtime = native_runtime(environment_image=context["environment_image"], training_recipe=recipe)
     require(
         runtime["device"] == "cuda" and runtime["device_count"] == 1,
         "Expected one approved CUDA device",
@@ -478,6 +599,7 @@ def train_native(context: dict, container, check_deadline) -> None:
 
     from learning.smolvla.checkpoint_state import ContinuationState
 
+    recipe = context_recipe(context)
     parameters = context["training_parameters"]
     full_resume = parameters["resume_mode"] == "full_state"
     resume_root = Path(context["resume_checkpoint_root"]) if full_resume else None
@@ -524,12 +646,26 @@ def train_native(context: dict, container, check_deadline) -> None:
         check_deadline=check_deadline,
         state_provider=continuation,
     )
+    original_update = native.update_policy
+    update_signature = inspect.signature(original_update)
+
+    @wraps(original_update)
+    def update_policy(*args, **kwargs):
+        bound = update_signature.bind(*args, **kwargs)
+        bound.arguments["batch"] = training_padding_batch(bound.arguments["batch"])
+        return original_update(*bound.args, **bound.kwargs)
+
+    if recipe is not None:
+        print("PHYSICALAI_TRAINING_RECIPE " + canonical(recipe).decode(), flush=True)
     # Call the pinned native entry directly; do not load arbitrary third-party plugins.
     with (
         patch.object(native, "save_checkpoint", publisher),
         patch.object(native, "cycle", continuation.cycle),
         patch.object(native, "load_training_state", load_state),
         patch.object(native, "Accelerator", accelerator),
+        patch.object(native, "update_policy", update_policy)
+        if recipe is not None
+        else nullcontext(),
     ):
         native.train()
 

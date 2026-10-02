@@ -283,20 +283,22 @@ def _run_training(
     checkpoint_context, resumed = None, None
     if "checkpointing" in config:
         from learning.smolvla.checkpoint_runner import (
-            CONTEXT_SCHEMA,
+            checkpoint_recipe,
             make_binding,
             native_runtime,
+            recipe_context_fields,
             validate_policy,
             validate_resume_checkpoint,
         )
 
         limits = validate_policy(config["checkpointing"], parameters=asdict(options))
+        recipe = checkpoint_recipe(config["checkpointing"])
         checkpoint_binding = make_binding(
             config,
             parent,
             converted,
             conversion_sha256,
-            native_runtime(environment_image=config["environment_image"]),
+            native_runtime(environment_image=config["environment_image"], training_recipe=recipe),
         )
         if "job_execution" in config:
             from learning.paused.command import checkpoint_origin
@@ -319,7 +321,7 @@ def _run_training(
                 current_origin=origin,
             )
         checkpoint_context = {
-            "schema": CONTEXT_SCHEMA,
+            **recipe_context_fields(recipe),
             "binding": checkpoint_binding,
             "origin": origin,
             "limits": asdict(limits),
