@@ -7,6 +7,7 @@ from learning.paused.train_capacity import (
     ForbiddenOptimizer,
     StopBeforeOptimizer,
     batch_indices,
+    parameter_inventory,
     training_schedule,
 )
 
@@ -83,3 +84,43 @@ def test_backward_error_is_not_successful_measurement():
     with pytest.raises(RuntimeError, match="actual backward failed"):
         boundary.backward(1)
     assert boundary.reached is False
+
+
+def test_native_mixed_trainable_dtypes_are_measured_not_coerced():
+    class Parameter:
+        requires_grad = True
+
+        def __init__(self, dtype, elements, width):
+            self.dtype, self.elements, self.width = dtype, elements, width
+
+        def is_floating_point(self):
+            return True
+
+        def numel(self):
+            return self.elements
+
+        def element_size(self):
+            return self.width
+
+    fp32 = Parameter("torch.float32", 10, 4)
+    bf16 = Parameter("torch.bfloat16", 20, 2)
+
+    class Policy:
+        def named_parameters(self):
+            return iter((("projection", fp32), ("expert", bf16)))
+
+    result = parameter_inventory(Policy())
+    assert result["elements"] == 30
+    assert result["bytes"] == 80
+    assert result["by_dtype"]["torch.bfloat16"]["elements"] == 20
+    assert result["dtype_changed"] is False
+    assert fp32.dtype == "torch.float32" and bf16.dtype == "torch.bfloat16"
+
+
+def test_no_trainable_parameters_is_an_explicit_failure():
+    class FrozenPolicy:
+        def named_parameters(self):
+            return iter(())
+
+    with pytest.raises(ValueError, match="no trainable"):
+        parameter_inventory(FrozenPolicy())

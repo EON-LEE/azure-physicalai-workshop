@@ -170,6 +170,28 @@ def state_digest(policy) -> str:
     return checksum.hexdigest()
 
 
+def parameter_inventory(policy) -> dict:
+    values = {}
+    for _, parameter in policy.named_parameters():
+        if not parameter.requires_grad:
+            continue
+        require(
+            parameter.is_floating_point(), "Native trainable parameters must be floating tensors"
+        )
+        key = str(parameter.dtype)
+        entry = values.setdefault(key, {"parameters": 0, "elements": 0, "bytes": 0})
+        entry["parameters"] += 1
+        entry["elements"] += parameter.numel()
+        entry["bytes"] += parameter.numel() * parameter.element_size()
+    require(values, "Native policy has no trainable parameters")
+    return {
+        "by_dtype": values,
+        "elements": sum(value["elements"] for value in values.values()),
+        "bytes": sum(value["bytes"] for value in values.values()),
+        "dtype_changed": False,
+    }
+
+
 def write_report(path: Path, value: dict, maximum: int) -> None:
     payload = canonical(value) + b"\n"
     require(len(payload) <= maximum, "Capacity report exceeds its bound")
@@ -294,11 +316,8 @@ def run(
     )
     before = state_digest(loaded.policy)
     parameters = [p for p in loaded.policy.parameters() if p.requires_grad]
-    require(
-        parameters and all(p.dtype == torch.float32 for p in parameters),
-        "Expected original trainable FP32 parameters",
-    )
-    trainable_count = sum(p.numel() for p in parameters)
+    parameter_info = parameter_inventory(loaded.policy)
+    trainable_count = parameter_info["elements"]
     output.mkdir(parents=True, exist_ok=False)
     probes, failure = [], None
     for batch_size in BATCHES:
@@ -395,7 +414,9 @@ def run(
         "weights_after_sha256": after,
         "weights_unchanged": True,
         "trainable_parameter_count": trainable_count,
+        "trainable_parameters": parameter_info,
         "adamw_two_fp32_moments_estimated_bytes": trainable_count * 8,
+        "adamw_two_parameter_dtype_moments_estimated_bytes": parameter_info["bytes"] * 2,
         "optimizer_state_actually_allocated": False,
         "disk_free_bytes": shutil.disk_usage(output).free,
         "probes": probes,
