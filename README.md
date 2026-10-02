@@ -157,8 +157,9 @@ accepted episodes (11001–11004); 11005 encountered CUDA error 46 / an EGL cras
 and the remaining fifteen have not been attempted. There is no P1 model, complete
 forty-trial P0/P1 quality pass, or learned-policy release.
 
-The October 1 recovery phase stopped at its then-approved cost limit with no GPU
-remaining. The user removed that campaign cost ceiling on October 2 and recovery
+The October 1 recovery phase stopped before paid allocation because its total
+cost ceiling could not be established; no new GPU job ran. The user removed that
+campaign cost ceiling on October 2 and recovery
 is in progress, but no new successful outcome is established by this documentation
 update. Removing a cost ceiling does not remove original job/grant deadlines,
 safety guards, scoped permissions or evidence requirements. Deployment admission
