@@ -4,6 +4,65 @@
 
 이 문서는 기존 저장소의 운영 경로를 연결합니다. 모델 다운로드 상품, 자격 증명, 고객별 완성 배포 설정 또는 새 자동화 도구를 제공하지 않습니다. 새로운 학습/평가 결과가 나오면 원본 증거를 확인한 운영자가 아래 상태를 갱신해야 합니다.
 
+## 고객이 이해할 시나리오: 시뮬레이션에서 배우고, 현장 장비로 확장
+
+**고객 질문은 “부품을 보고 지정 트레이로 옮기는 작업을 Azure에서 학습하고,
+검증한 뒤 현장 장비에 연결할 수 있는가?”입니다.** 첫 단계는 장비 없이 Isaac Sim에서
+관찰·시연·학습·원본 물리 평가를 확인하는 과정입니다. 이후 현장 카메라와 장비 상태를
+읽기 전용으로 연결하고, 마지막에 해당 실물 로봇의 안전 검증을 별도로 통과한 경우에만
+실물 작업을 다룹니다. 시뮬레이션 성공을 실물 성공으로 자동 승격하지 않습니다.
+
+| 단계 | 고객이 보는 장면 | 준비 또는 통과 기준 |
+|---|---|---|
+| 1. 장비 없는 Physical AI | 가상 카메라 영상과 관절 상태를 보고 학습 정책이 부품을 옮김; 원본 성공·실패 증거 비교 | 실제 학습 체크포인트와 독립된 물리 품질 평가. 현재 고객 실행 승인 전 |
+| 2. ROS 2 연동 실습 | Isaac Sim의 카메라·joint state·clock을 ROS 2에서 구독해 같은 작업의 장비 인터페이스를 설명 | 버전 고정 ROS 2 bridge, 좌표계·관절 이름·단위·시각·QoS 검증. 현재 미구현 확장 |
+| 3. 현장 IoT 관찰 | 실제 카메라/센서/장비 상태가 대시보드에 표시되고 Foundry가 검사·원인 검토를 제안 | 읽기 전용 edge 어댑터, 장비 연결 승인, 인증·토픽 권한·데이터 출처. 로봇 구동 없음 |
+| 4. 실물 작업 | 같은 업무 목적을 실물 로봇으로 수행하고 성공·오류·안전 정지를 관찰 | 로봇별 driver·보정·정책 재검증·독립 안전 시스템·현장 승인. 현재 지원/인증 주장 없음 |
+
+**ROS 2는 로봇 소프트웨어 연결 계층이고, IoT는 현장 데이터 연결 계층입니다.**
+둘은 대체 관계가 아닙니다. Isaac Sim의 ROS 2 bridge는 영상·상태·시뮬레이션 시각을
+ROS 애플리케이션에 연결하는 공식 경로입니다. 현재 정책 실행은 자체 검증 IPC와
+paused physics 경로이므로, bridge가 이미 구현되어 있다고 안내하지 않습니다.
+특히 paused simulation은 실물 로봇의 시각과 동작을 멈추는 방법이 아닙니다.
+현재 모델의 실물 제어 주기 적합성은 별도로 검증해야 합니다.
+
+```mermaid
+flowchart LR
+    S[Isaac Sim 또는 실제 센서] --> R[로컬 ROS 2 어댑터]
+    R --> T[읽기 전용 telemetry 변환]
+    T --> M[Edge MQTT]
+    M --> A[Azure 데이터 수집 / 대시보드]
+    A --> F[Foundry 검사·분석 제안]
+    R --> G[로컬 정책·검증된 제어·안전 경계]
+    G --> D[시뮬레이터 또는 승인된 장비 driver]
+```
+
+그림은 **향후 통합 설계**이며 현재 배포 구조의 증명이 아닙니다. Foundry에서
+motor/joint 명령으로 직접 이어지는 경로를 제공하지 않습니다. 초기 ROS→MQTT
+어댑터는 카메라 메타데이터, episode ID, 성공/실패/unknown, 장비 상태 등 명시적으로
+허용한 telemetry만 내보내고 제어 토픽을 구독하지 않는 것이 기본입니다.
+실물의 비상 정지와 안전 한도는 ROS나 클라우드 연결만으로 대체하지 않습니다.
+
+간단한 단일 장비 데모에는 고객 장비가 지원하는 MQTT와 명시적인 수집 경로부터
+시작할 수 있습니다. **Azure IoT Operations는 클라우드 로봇 제어기가 아니라,
+Azure Arc-enabled Kubernetes에서 실행되는 edge 데이터 플랫폼**입니다.
+여러 산업 장비·OPC UA·edge MQTT·데이터 흐름 관리가 필요할 때 선택합니다.
+처음부터 Kubernetes를 필수로 추가해 참가자 준비를 어렵게 만들지 않습니다.
+ROS→MQTT 변환은 별도 어댑터가 필요하며, IoT Operations가 ROS 2를 자동 연결한다고
+설명하지 않습니다.
+
+하드웨어가 정해지기 전에는 driver나 실물 실행 명령을 선택하지 않습니다.
+같은 Franka 시뮬레이션이라도 실제 장비의 camera calibration, joint order,
+gripper, workspace, latency, payload, collision model, safety interface가 다르면
+현재 체크포인트를 그대로 실행할 근거가 없습니다.
+
+공식 참고 자료:
+[Isaac Sim ROS 2 bridge](https://docs.isaacsim.omniverse.nvidia.com/latest/ros2_tutorials/index.html),
+[Azure IoT Operations 개요](https://learn.microsoft.com/en-us/azure/iot-operations/overview-iot-operations).
+NVIDIA의 최신 ROS 문서는 Humble/Jazzy를 권장하지만, 이 저장소의 고정 Isaac
+이미지와 Python/ROS 호환성을 따로 확인하고 고정합니다. 최신 문서의 권고를 이유로
+기존 이미지·제어 fingerprint를 몰래 업그레이드하지 않습니다.
+
 ## 1. 현재 준비 상태와 시연 범위
 
 | 항목 | 확인된 사실 | 고객 실습에 대한 의미 |
