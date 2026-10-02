@@ -1,0 +1,102 @@
+name: API web and native policy contracts
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff # v6
+        with:
+          version: "0.12.1"
+          python-version: "3.13"
+          enable-cache: true
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - run: uv sync --locked --group dev
+      - run: npm ci --prefix apps/web --no-fund --no-audit
+      - name: Export actual API shapes with explicitly test-only adapters
+        run: uv run --locked python tests/export_api_contract.py
+      - name: Verify production web decoder compatibility
+        run: node --experimental-strip-types scripts/check-api-contract.mjs
+      - name: Build the production CPU image without Azure credentials
+        run: docker build --tag physicalai-api:ci .
+      - name: Verify runtime imports without starting cloud services
+        run: >-
+          docker run --rm --entrypoint /app/.venv/bin/python physicalai-api:ci
+          -c "import apps.api.main; import agents.inspection; import scripts.bootstrap"
+      - name: Retain test-only contract evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: api-web-contract-test-only
+          path: test-results/api-contract.json
+          if-no-files-found: error
+
+  native-policy-contracts:
+    name: Installed policy and AML interfaces (CPU test inputs only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PYTHONPATH: ${{ github.workspace }}
+      HF_HUB_OFFLINE: "1"
+      HF_DATASETS_OFFLINE: "1"
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      HF_HUB_DISABLE_IMPLICIT_TOKEN: "1"
+      WANDB_MODE: disabled
+      WANDB_DISABLED: "true"
+      DO_NOT_TRACK: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Select isolated native environment on the allocated runner
+        run: echo "UV_PROJECT_ENVIRONMENT=$RUNNER_TEMP/physicalai-native-policy-venv" >> "$GITHUB_ENV"
+      - uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff # v6
+        with:
+          version: "0.12.1"
+          python-version: "3.11"
+          enable-cache: true
+          cache-dependency-glob: learning/smolvla/uv.lock
+      - name: Restore isolated locked CPU and Azure SDK dependencies
+        run: uv sync --project learning/smolvla --frozen --extra cpu --extra azure
+      - name: Check installed model API without downloading weights
+        run: |
+          mkdir -p "$RUNNER_TEMP/native-policy-evidence"
+          "$UV_PROJECT_ENVIRONMENT/bin/python" -m learning.checks.smolvla_api_check \
+            > "$RUNNER_TEMP/native-policy-evidence/api.json"
+      - name: Verify real conversion using explicitly synthetic observations
+        run: |
+          "$UV_PROJECT_ENVIRONMENT/bin/python" -m learning.checks.smolvla_export_check \
+            --output "$RUNNER_TEMP/native-policy-evidence/export"
+      - name: Generate and load all real Azure ML job schemas offline
+        run: |
+          "$UV_PROJECT_ENVIRONMENT/bin/python" -m learning.checks.smolvla_aml_check \
+            --output "$RUNNER_TEMP/native-policy-evidence/aml"
+      - name: Preserve paused simulation and wall clocks through native conversion
+        run: |
+          "$UV_PROJECT_ENVIRONMENT/bin/python" -m learning.checks.paused_conversion_check \
+            --output "$RUNNER_TEMP/native-policy-evidence/paused"
+      - name: Retain CPU-only interface evidence, not a learning-quality gate
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: native-policy-test-only
+          path: |
+            ${{ runner.temp }}/native-policy-evidence/api.json
+            ${{ runner.temp }}/native-policy-evidence/export/report.json
+            ${{ runner.temp }}/native-policy-evidence/aml/report.json
+            ${{ runner.temp }}/native-policy-evidence/paused/report.json
+          if-no-files-found: error
+          retention-days: 7

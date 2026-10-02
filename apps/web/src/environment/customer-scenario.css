@@ -1,0 +1,37 @@
+.customer-scenario { margin: 24px 0; padding: 24px; background: #fff; border: 1px solid #d4e0ed; border-radius: 12px; color: #18314d; scroll-margin-top: 24px; min-width: 0; }
+.customer-scenario * { box-sizing: border-box; }
+.customer-scenario-heading { display: flex; align-items: flex-start; gap: 12px; }
+.customer-scenario-heading > svg { color: #1768ce; flex-shrink: 0; margin-top: 5px; }
+.customer-scenario-heading > div { min-width: 0; }
+.customer-scenario-heading p { font-size: 11px; color: #4b6482; margin: 0 0 7px; }
+.customer-scenario-heading h2 { font-size: 21px; margin: 0; line-height: 1.6; text-wrap: balance; }
+.customer-scenario-heading > span { margin-left: auto; white-space: nowrap; font-size: 11px; border: 1px solid #cbd8e8; background: #f3f6fb; border-radius: 5px; padding: 6px 9px; }
+.customer-scenario .customer-scenario-intro { color: #4d6480; font-size: 13px; line-height: 1.9; margin: 12px 0 20px; }
+.customer-scenario-options { display: grid; grid-template-columns: 1.3fr 1fr; gap: 18px; }
+.customer-scenario fieldset { min-width: 0; padding: 0; border: 0; margin: 0; }
+.customer-scenario legend { font-size: 13px; font-weight: 650; padding: 0; margin-bottom: 10px; }
+.customer-scenario label { display: flex; align-items: flex-start; gap: 10px; border: 1px solid #d7e2f0; border-radius: 7px; padding: 13px; margin-bottom: 10px; cursor: pointer; background: #fbfcff; line-height: 1.7; }
+.customer-scenario label:has(input:checked) { border-color: #3579ce; background: #edf4ff; }
+.customer-scenario label:hover { border-color: #6896ce; }
+.customer-scenario input { width: 17px; height: 17px; margin: 3px 0 0; accent-color: #1768ce; flex-shrink: 0; }
+.customer-scenario label strong { font-size: 13px; font-weight: 600; }
+.customer-scenario label small { display: block; font-size: 11px; color: #4f6683; margin-top: 4px; }
+.customer-scenario-expectation { padding: 15px; border-left: 3px solid #4e81bb; background: #f5f8fc; margin: 8px 0 18px; }
+.customer-scenario-expectation strong { font-size: 12px; }
+.customer-scenario .customer-scenario-expectation p { font-size: 12px; line-height: 1.9; margin: 7px 0 0; color: #425e7f; }
+.customer-scenario summary { cursor: pointer; font-size: 12px; padding: 10px 2px; color: #245eaa; }
+.customer-scenario summary:hover { color: #113f78; }
+.customer-scenario pre { font-size: 11px; line-height: 1.65; background: #f1f5fa; padding: 16px; border-radius: 6px; max-height: 320px; overflow: auto; tab-size: 2; white-space: pre-wrap; overflow-wrap: anywhere; }
+.customer-scenario-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+.customer-scenario .customer-action { font: inherit; font-size: 12px; font-weight: 600; text-decoration: none; min-height: 42px; display: inline-flex; gap: 8px; align-items: center; justify-content: center; background: #1768ce; color: #fff; border: 1px solid #1768ce; border-radius: 6px; padding: 10px 14px; cursor: pointer; touch-action: manipulation; }
+.customer-scenario .customer-action:hover { background: #104f9e; border-color: #104f9e; }
+.customer-scenario .customer-action.secondary { background: #fff; color: #175caa; border-color: #a7c2e3; }
+.customer-scenario .customer-action.secondary:hover { background: #edf4ff; border-color: #4d89cf; }
+.customer-scenario :is(a, button, input, summary):focus-visible { outline: 3px solid #247fe0; outline-offset: 3px; }
+.customer-scenario .customer-scenario-boundary { font-size: 11px; color: #526b89; line-height: 1.9; margin: 15px 0 0; }
+.customer-scenario .customer-scenario-error { color: #9c2c38; background: #fff0f1; padding: 12px; font-size: 12px; line-height: 1.7; }
+.customer-scenario .customer-scenario-notice { color: #196448; background: #eff9f4; padding: 12px; font-size: 12px; line-height: 1.8; margin-top: 12px; }
+.customer-scenario p { overflow-wrap: anywhere; }
+.customer-scenario button:disabled { cursor: not-allowed; background: #dde5f0; color: #566d89; border-color: #c7d4e4; }
+@media (max-width: 800px) { .customer-scenario-options { grid-template-columns: 1fr; gap: 10px; } .customer-scenario-heading > span { display: none; } }
+@media (max-width: 480px) { .customer-scenario { padding: 17px 14px; } .customer-scenario-heading h2 { font-size: 19px; } .customer-scenario .customer-action { width: 100%; } }

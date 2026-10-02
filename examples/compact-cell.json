@@ -1,0 +1,17 @@
+{
+  "schema_version": "1.0",
+  "environment_id": "compact-customer",
+  "display_name": "Custom compact inspection cell",
+  "length_unit": "m",
+  "scene": {"template_id": "inspection-cell-custom-v1", "robot_profile": "reference-arm", "seed": 73},
+  "workspace": {"lower_m": [-1, -1, 0], "upper_m": [1, 1, 1.5]},
+  "stations": [
+    {"id": "feed", "role": "source", "position_m": [0.35, 0.25, 0.2]},
+    {"id": "vision", "role": "inspection", "position_m": [0.45, 0, 0.2]},
+    {"id": "good", "role": "accepted", "position_m": [0.3, -0.3, 0.2]},
+    {"id": "hold", "role": "rejected", "position_m": [-0.3, -0.3, 0.2]}
+  ],
+  "workflow": {"source_station": "feed", "inspect_station": "vision", "accept_station": "good", "reject_station": "hold"},
+  "execution": {"mode": "live", "max_step_seconds": 60, "max_observation_age_ms": 2000},
+  "limits": {"max_cartesian_speed_m_s": 0.2, "max_payload_kg": 1}
+}

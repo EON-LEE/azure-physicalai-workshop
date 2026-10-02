@@ -1,0 +1,11 @@
+ARG API_BASE_IMAGE
+FROM ${API_BASE_IMAGE}
+ARG API_BASE_IMAGE
+USER root
+RUN case "$API_BASE_IMAGE" in *@sha256:*) ;; *) exit 1;; esac
+WORKDIR /app
+RUN /app/.venv/bin/python -c "import shutil; shutil.rmtree('/app/apps/web/dist')"
+COPY --chown=10001:10001 apps/__init__.py apps/__init__.py
+COPY --chown=10001:10001 apps/api/ apps/api/
+COPY --chown=10001:10001 apps/web/dist/ apps/web/dist/
+USER 10001:10001

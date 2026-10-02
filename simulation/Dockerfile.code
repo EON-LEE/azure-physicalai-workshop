@@ -1,0 +1,13 @@
+ARG SIMULATOR_BASE_IMAGE
+FROM ${SIMULATOR_BASE_IMAGE}
+USER root
+RUN chmod a+rx /isaac-sim
+WORKDIR /app
+COPY apps/__init__.py apps/__init__.py
+COPY apps/api/ apps/api/
+COPY contracts/ contracts/
+COPY simulation/ simulation/
+COPY learning/ learning/
+ENV PYTHONPATH=/app PYTHONUNBUFFERED=1
+USER 1234:1234
+ENTRYPOINT ["/isaac-sim/python.sh", "-m", "simulation.bootstrap_tls"]

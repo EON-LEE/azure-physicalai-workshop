@@ -1,0 +1,9 @@
+ARG SIMULATOR_BASE_IMAGE
+FROM ${SIMULATOR_BASE_IMAGE}
+USER root
+WORKDIR /app
+COPY app/ /app/
+ENV PYTHONPATH=/app PYTHONUNBUFFERED=1
+USER 1234:1234
+HEALTHCHECK --interval=15s --timeout=5s --start-period=240s --retries=2 CMD ["/isaac-sim/python.sh", "-m", "simulation.health"]
+ENTRYPOINT ["/isaac-sim/python.sh", "-m", "simulation.bootstrap_tls"]

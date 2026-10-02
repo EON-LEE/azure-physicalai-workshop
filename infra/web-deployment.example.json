@@ -1,0 +1,20 @@
+{
+  "subscription_id": "00000000-0000-0000-0000-000000000000",
+  "tenant_id": "00000000-0000-0000-0000-000000000000",
+  "operator_object_id": "00000000-0000-0000-0000-000000000000",
+  "spa_client_id": "00000000-0000-0000-0000-000000000000",
+  "api_client_id": "00000000-0000-0000-0000-000000000000",
+  "resource_group": "rg-physicalai-demo",
+  "prefix": "factory",
+  "runtime_profile": "web",
+  "bootstrap_runner": "container_instance",
+  "location": "REPLACE_WITH_APPROVED_REGION",
+  "foundry_location": "REPLACE_WITH_APPROVED_MODEL_REGION",
+  "model_name": "REPLACE_WITH_VERIFIED_MODEL",
+  "model_version": "REPLACE_WITH_VERIFIED_VERSION",
+  "model_deployment_name": "inspection-model",
+  "model_sku": "REPLACE_WITH_APPROVED_DEPLOYMENT_TYPE",
+  "model_capacity": 1,
+  "acknowledged_hourly_budget_usd": 1,
+  "shutdown_time_utc": "2300"
+}

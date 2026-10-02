@@ -1,0 +1,55 @@
+{
+  "schema": "physicalai.batch-simulation/v1",
+  "attempt_id": "11111111-1111-4111-8111-111111111111",
+  "previous_attempt_id": null,
+  "owner_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "platform": {
+    "account_url": "https://unit.eastus2.batch.azure.com",
+    "pool_id": "sim-unit",
+    "node_identity_resource_id": "/subscriptions/22222222-2222-4222-8222-222222222222/resourceGroups/unit/providers/Microsoft.ManagedIdentity/userAssignedIdentities/sim",
+    "node_identity_client_id": "33333333-3333-4333-8333-333333333333",
+    "tenant_id": "44444444-4444-4444-8444-444444444444",
+    "vm_size": "Standard_NV36ads_A10_v5",
+    "image_publisher": "microsoft-dsvm",
+    "image_offer": "ubuntu-hpc",
+    "image_sku": "2204",
+    "image_version": "22.04.2026082801",
+    "driver_handler_version": "1.14",
+    "container_image": "unit.azurecr.io/physicalai-simulator@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  },
+  "source_revision": "dddddddddddddddddddddddddddddddddddddddd",
+  "control_profile_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "profile_id": "franka-position-hold-10hz-paused-v2",
+  "storage_account_url": "https://unitstorage.blob.core.windows.net",
+  "input_container": "artifacts",
+  "output_container": "demonstrations",
+  "environment": {
+    "name": "approved/environment.json",
+    "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "size_bytes": 128
+  },
+  "grant": {
+    "name": "approved/grant.json",
+    "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "size_bytes": 128
+  },
+  "criteria": {
+    "name": "approved/criteria.json",
+    "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "size_bytes": 128
+  },
+  "conditions": {
+    "name": "approved/conditions.json",
+    "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "size_bytes": 128
+  },
+  "criteria_canonical_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "conditions_canonical_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "asset_bundle": {
+    "name": "approved/franka.tar",
+    "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "size_bytes": 100000
+  },
+  "asset_root": "Isaac/Robots/FrankaRobotics/FrankaPanda/franka.usd",
+  "isaac_license_preapproved": true
+}

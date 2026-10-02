@@ -1,0 +1,155 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:physicalai:customer-environment:1.0",
+  "title": "Single-cell inspection and sorting environment",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "environment_id", "display_name", "length_unit",
+    "scene", "workspace", "stations", "workflow", "execution", "limits"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "environment_id": {"$ref": "#/$defs/identifier"},
+    "display_name": {"type": "string", "minLength": 1, "maxLength": 120, "pattern": "\\S"},
+    "length_unit": {"const": "m"},
+    "scene": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["template_id", "robot_profile", "seed"],
+      "properties": {
+        "template_id": {"$ref": "#/$defs/identifier"},
+        "robot_profile": {"$ref": "#/$defs/identifier"},
+        "seed": {"type": "integer", "minimum": 0, "maximum": 2147483647}
+      }
+    },
+    "workspace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["lower_m", "upper_m"],
+      "properties": {
+        "lower_m": {"$ref": "#/$defs/point"},
+        "upper_m": {"$ref": "#/$defs/point"}
+      }
+    },
+    "stations": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 256,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "role", "position_m"],
+        "properties": {
+          "id": {"$ref": "#/$defs/identifier"},
+          "role": {"enum": ["source", "inspection", "accepted", "rejected"]},
+          "position_m": {"$ref": "#/$defs/point"}
+        }
+      }
+    },
+    "workflow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_station", "inspect_station", "accept_station", "reject_station"],
+      "properties": {
+        "source_station": {"$ref": "#/$defs/identifier"},
+        "inspect_station": {"$ref": "#/$defs/identifier"},
+        "accept_station": {"$ref": "#/$defs/identifier"},
+        "reject_station": {"$ref": "#/$defs/identifier"}
+      }
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "max_step_seconds", "max_observation_age_ms"],
+      "properties": {
+        "mode": {"enum": ["live", "replay"]},
+        "max_step_seconds": {"type": "integer", "minimum": 1, "maximum": 300},
+        "max_observation_age_ms": {"type": "integer", "minimum": 1, "maximum": 10000},
+        "record_demonstration": {"type": "boolean"},
+        "demonstration_split": {"enum": ["train", "validation", "test"]}
+      },
+      "allOf": [{
+        "if": {
+          "required": ["record_demonstration"],
+          "properties": {"record_demonstration": {"const": true}}
+        },
+        "then": {
+          "properties": {"demonstration_split": {"enum": ["train", "validation", "test"]}},
+          "required": ["demonstration_split"]
+        }
+      }]
+    },
+    "learning_execution": {
+      "description": "Explicit NON_REALTIME_SIMULATION opt-in: v1 retains 30 SIM seconds; v2 permits 60 only with the matching v2 profile. Legacy wall-time limits and runtime admission are unchanged.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "execution_timing", "profile_id", "max_simulation_seconds", "max_wall_seconds"],
+      "properties": {
+        "schema": {"enum": ["physicalai.paused-simulation/v1", "physicalai.paused-simulation/v2"]},
+        "execution_timing": {"const": "paused_simulation"},
+        "profile_id": {"enum": ["franka-position-hold-10hz-paused-v1", "franka-position-hold-10hz-paused-v2"]},
+        "max_simulation_seconds": {"type": "integer", "minimum": 1, "maximum": 60},
+        "max_wall_seconds": {"type": "integer", "minimum": 1, "maximum": 600}
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "schema": {"const": "physicalai.paused-simulation/v1"},
+            "profile_id": {"const": "franka-position-hold-10hz-paused-v1"},
+            "max_simulation_seconds": {"type": "integer", "maximum": 30}
+          }
+        },
+        {
+          "properties": {
+            "schema": {"const": "physicalai.paused-simulation/v2"},
+            "profile_id": {"const": "franka-position-hold-10hz-paused-v2"},
+            "max_simulation_seconds": {"type": "integer", "maximum": 60}
+          }
+        }
+      ]
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_cartesian_speed_m_s", "max_payload_kg"],
+      "properties": {
+        "max_cartesian_speed_m_s": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Requested limit, not authority to override a robot controller's limits."
+        },
+        "max_payload_kg": {"type": "number", "exclusiveMinimum": 0}
+      }
+    }
+  },
+  "allOf": [{
+    "if": {
+      "required": ["learning_execution"],
+      "properties": {"learning_execution": {}}
+    },
+    "then": {
+      "properties": {
+        "scene": {
+          "type": "object",
+          "required": ["template_id"],
+          "properties": {"template_id": {"const": "inspection-cell-learning-v1"}}
+        }
+      }
+    }
+  }],
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9-]*(?![\\s\\S])"
+    },
+    "point": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {"type": "number"}
+    }
+  }
+}

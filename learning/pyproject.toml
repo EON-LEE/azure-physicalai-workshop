@@ -1,0 +1,41 @@
+[project]
+name = "physicalai-policy-learning"
+version = "0.1.0"
+description = "Isolated Azure-only LeRobot ACT conversion, training and checkpoint inference."
+requires-python = ">=3.11,<3.12"
+dependencies = [
+  "lerobot==0.4.4",
+  "torchcodec==0.5.0",
+  "Pillow==11.3.0",
+  "numpy==2.2.6",
+]
+
+[project.optional-dependencies]
+cpu = ["torch==2.7.1", "torchvision==0.22.1"]
+cuda = ["torch==2.7.1", "torchvision==0.22.1"]
+azure = ["azure-ai-ml==1.35.0", "azure-identity==1.25.3"]
+
+[tool.uv]
+package = false
+environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
+conflicts = [[{ extra = "cpu" }, { extra = "cuda" }]]
+
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cpu", extra = "cpu" },
+  { index = "pytorch-cu126", extra = "cuda" },
+]
+torchvision = [
+  { index = "pytorch-cpu", extra = "cpu" },
+  { index = "pytorch-cu126", extra = "cuda" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true

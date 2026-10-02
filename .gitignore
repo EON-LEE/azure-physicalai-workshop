@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+test-results/
+
+# Environment / secrets
+.env
+.env.local
+*.pem
+*.key
+
+# azd
+.azure/
+
+# Isaac Sim caches
+simulation/cache/
+simulation/output/
+*.usdc.bak
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,8 @@
+FROM factory20n3ig3ttsxayp2.azurecr.io/physicalai-smolvla@sha256:441f2a33a8bb0c534a10ad7d56c4f7be611dccde39e8ee0b99610b4a7a75e8f9
+
+ARG STATIC_SOURCE_SHA256
+COPY source/ /opt/physicalai/source/
+COPY static-manifest.json /opt/physicalai/static-manifest.json
+RUN /opt/smolvla-venv/bin/python -I -B \
+    /opt/physicalai/source/learning/smolvla/image_bootstrap.py verify-static \
+    --static-sha256 "${STATIC_SOURCE_SHA256}"

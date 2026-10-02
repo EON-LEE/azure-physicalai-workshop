@@ -1,0 +1,300 @@
+from typing import Annotated, Literal
+from uuid import UUID
+
+from fastapi import Depends, Header, Request, Response
+
+from apps.api.learning_models import (
+    Approval,
+    ArmTeaching,
+    CoachRequest,
+    CreateDataset,
+    CreateProject,
+    JogIntent,
+    ReleasePolicy,
+    StartEvaluation,
+    StartTeaching,
+    StartTraining,
+    TeachingControl,
+)
+from apps.api.learning_service import LearningService
+from apps.api.models import Principal, Stored
+from apps.api.reference_models import StartReferenceCollection
+
+
+def learning_response(stored: Stored, response: Response) -> dict:
+    response.headers["ETag"] = stored.etag
+    return {"item": stored.value.public(), "etag": stored.etag}
+
+
+def install_learning_routes(app, actor):
+    def learning(request: Request) -> LearningService:
+        return request.app.state.learning
+
+    Actor = Annotated[Principal, Depends(actor)]
+    Service = Annotated[LearningService, Depends(learning)]
+    Match = Annotated[str | None, Header(alias="If-Match")]
+
+    @app.get("/api/learning/capabilities")
+    def capabilities(user: Actor, backend: Service):
+        return backend.capabilities(user)
+
+    @app.get("/api/learning/projects")
+    def list_projects(user: Actor, backend: Service):
+        return {
+            "items": [
+                {"item": entry.value.public(), "etag": entry.etag}
+                for entry in backend.list(user, "project")
+            ]
+        }
+
+    @app.post("/api/learning/projects", status_code=201)
+    def create_project(body: CreateProject, user: Actor, backend: Service, response: Response):
+        return learning_response(backend.create_project(user, body), response)
+
+    @app.get("/api/learning/projects/{project_id}")
+    def project(project_id: UUID, user: Actor, backend: Service, response: Response):
+        return learning_response(backend.get(user, "project", project_id), response)
+
+    @app.get("/api/learning/projects/{project_id}/records")
+    def project_records(
+        project_id: UUID,
+        user: Actor,
+        backend: Service,
+        kind: Literal[
+            "teaching",
+            "dataset",
+            "training",
+            "evaluation",
+            "candidate",
+            "release",
+            "reference_collection",
+            "external_import",
+        ],
+    ):
+        return {
+            "items": [
+                {"item": entry.value.public(), "etag": entry.etag}
+                for entry in backend.list(user, kind, project_id)
+            ]
+        }
+
+    @app.post("/api/learning/projects/{project_id}/coach")
+    def coach(project_id: UUID, body: CoachRequest, user: Actor, backend: Service):
+        return backend.coach_proposal(user, project_id, body)
+
+    @app.post("/api/learning/projects/{project_id}/teaching-sessions", status_code=202)
+    def teach(
+        project_id: UUID,
+        body: StartTeaching,
+        user: Actor,
+        backend: Service,
+        response: Response,
+        if_match: Match = None,
+    ):
+        return learning_response(backend.start_teaching(user, project_id, body, if_match), response)
+
+    @app.post("/api/learning/projects/{project_id}/reference-collections", status_code=202)
+    def reference_collection(
+        project_id: UUID,
+        body: StartReferenceCollection,
+        user: Actor,
+        backend: Service,
+        response: Response,
+        if_match: Match = None,
+    ):
+        return learning_response(
+            backend.start_reference_collection(user, project_id, body, if_match), response
+        )
+
+    @app.get("/api/reference-collections/{collection_id}")
+    def get_reference_collection(
+        collection_id: UUID, user: Actor, backend: Service, response: Response
+    ):
+        return learning_response(backend.get_reference_collection(user, collection_id), response)
+
+    @app.post("/api/reference-collections/{collection_id}/cancel")
+    def cancel_reference_collection(
+        collection_id: UUID, user: Actor, backend: Service, response: Response
+    ):
+        return learning_response(backend.cancel_reference_collection(user, collection_id), response)
+
+    @app.get("/api/teaching-sessions/{session_id}")
+    def teaching(session_id: UUID, user: Actor, backend: Service, response: Response):
+        return learning_response(backend.get_teaching(user, session_id), response)
+
+    @app.post("/api/teaching-sessions/{session_id}/jog")
+    def jog(
+        session_id: UUID,
+        body: JogIntent,
+        user: Actor,
+        backend: Service,
+        response: Response,
+        if_match: Match = None,
+    ):
+        return learning_response(backend.jog(user, session_id, body, if_match), response)
+
+    @app.post("/api/teaching-sessions/{session_id}/arm", status_code=201)
+    def arm(
+        session_id: UUID,
+        body: ArmTeaching,
+        user: Actor,
+        backend: Service,
+        response: Response,
+        if_match: Match = None,
+    ):
+        return learning_response(backend.arm(user, session_id, body, if_match), response)
+
+    @app.post("/api/teaching-sessions/{session_id}/finish", status_code=202)
+    def finish(
+        session_id: UUID,
+        body: TeachingControl,
+        user: Actor,
+        backend: Service,
+        response: Response,
+        if_match: Match = None,
+    ):
+        return learning_response(
+            backend.control_teaching(user, session_id, body, if_match, "finish"), response
+        )
+
+    @app.post("/api/teaching-sessions/{session_id}/cancel", status_code=202)
+    def cancel_teaching(
+        session_id: UUID,
+        body: TeachingControl,
+        user: Actor,
+        backend: Service,
+        response: Response,
+        if_match: Match = None,
+    ):
+        return learning_response(
+            backend.control_teaching(user, session_id, body, if_match, "cancel"), response
+        )
+
+    @app.post("/api/learning/projects/{project_id}/datasets", status_code=201)
+    def dataset(
+        project_id: UUID,
+        body: CreateDataset,
+        user: Actor,
+        backend: Service,
+        response: Response,
+        if_match: Match = None,
+    ):
+        stored = backend.dataset(user, project_id, body, if_match)
+        if stored.value.kind == "artifact_operation":
+            response.status_code = 202
+        return learning_response(stored, response)
+
+    @app.get("/api/learning/artifact-operations/{operation_id}")
+    def artifact_operation(operation_id: UUID, user: Actor, backend: Service, response: Response):
+        return learning_response(backend.get_artifact_operation(user, operation_id), response)
+
+    @app.get("/api/learning/datasets/{dataset_id}")
+    def get_dataset(dataset_id: UUID, user: Actor, backend: Service, response: Response):
+        return learning_response(backend.get(user, "dataset", dataset_id), response)
+
+    @app.post("/api/learning/projects/{project_id}/train", status_code=202)
+    def train(
+        project_id: UUID,
+        body: StartTraining,
+        user: Actor,
+        backend: Service,
+        response: Response,
+        if_match: Match = None,
+    ):
+        return learning_response(backend.train(user, project_id, body, if_match), response)
+
+    @app.post("/api/learning/projects/{project_id}/evaluate", status_code=202)
+    def evaluate(
+        project_id: UUID,
+        body: StartEvaluation,
+        user: Actor,
+        backend: Service,
+        response: Response,
+        if_match: Match = None,
+    ):
+        return learning_response(backend.evaluate(user, project_id, body, if_match), response)
+
+    @app.get("/api/learning/jobs/{job_id}")
+    def job(job_id: UUID, user: Actor, backend: Service, response: Response):
+        return learning_response(backend.get_job(user, job_id), response)
+
+    @app.post("/api/learning/projects/{project_id}/external-imports/{import_id}", status_code=202)
+    def external_import(
+        project_id: UUID,
+        import_id: UUID,
+        body: Approval,
+        user: Actor,
+        backend: Service,
+        response: Response,
+        if_match: Match = None,
+    ):
+        return learning_response(
+            backend.import_external_training(user, project_id, import_id, body, if_match), response
+        )
+
+    @app.get("/api/learning/external-imports/{import_id}")
+    def external_import_record(import_id: UUID, user: Actor, backend: Service, response: Response):
+        return learning_response(backend.get(user, "external_import", import_id), response)
+
+    @app.post("/api/learning/jobs/{job_id}/managed-import", status_code=202)
+    def managed_import(
+        job_id: UUID,
+        body: Approval,
+        user: Actor,
+        backend: Service,
+        response: Response,
+        if_match: Match = None,
+    ):
+        return learning_response(
+            backend.import_managed_evaluation(user, job_id, body, if_match), response
+        )
+
+    @app.get("/api/learning/jobs/{job_id}/report")
+    def report_document(job_id: UUID, user: Actor, backend: Service):
+        report, content = backend.report_document(user, job_id)
+        return Response(
+            content,
+            media_type="application/json",
+            headers={
+                "Cache-Control": "no-store",
+                "Content-Disposition": f'attachment; filename="simulation-report-{job_id}.json"',
+                "X-Report-SHA256": report.report_sha256,
+            },
+        )
+
+    @app.post("/api/learning/jobs/{job_id}/cancel", status_code=202)
+    def cancel(
+        job_id: UUID,
+        body: Approval,
+        user: Actor,
+        backend: Service,
+        response: Response,
+        if_match: Match = None,
+    ):
+        return learning_response(
+            backend.cancel_job(user, job_id, body.request_id, if_match), response
+        )
+
+    @app.get("/api/learning/candidates/{candidate_id}")
+    def candidate(candidate_id: UUID, user: Actor, backend: Service, response: Response):
+        return learning_response(backend.get(user, "candidate", candidate_id), response)
+
+    @app.post("/api/policy-releases", status_code=201)
+    def release(
+        body: ReleasePolicy,
+        user: Actor,
+        backend: Service,
+        response: Response,
+        if_match: Match = None,
+    ):
+        return learning_response(backend.release(user, body, if_match), response)
+
+    @app.get("/api/policy-releases/{release_id}")
+    def get_release(release_id: UUID, user: Actor, backend: Service, response: Response):
+        return learning_response(backend.get(user, "release", release_id), response)
+
+    @app.get("/api/demo/learning")
+    def public_learning(request: Request):
+        from apps.api.public_learning import learning_publication
+
+        return learning_publication(request.app.state.configuration, request.app.state.learning)

@@ -1,0 +1,42 @@
+[project]
+name = "azure-physicalai-workshop"
+version = "0.0.1"
+description = "Azure-hosted customer-customizable Physical AI reference runtime."
+requires-python = ">=3.11,<3.15"
+dependencies = [
+  "jsonschema>=4.23,<5",
+  "fastapi>=0.115,<1",
+  "uvicorn[standard]>=0.34,<1",
+  "pydantic>=2.10,<3",
+  "pydantic-settings>=2.8,<3",
+  "httpx>=0.28,<1",
+  "Pillow>=11,<13",
+  "PyJWT[crypto]>=2.10,<3",
+  "azure-identity>=1.23,<2",
+  "azure-ai-projects>=2.3,<3",
+  "azure-cosmos>=4.9,<5",
+  "azure-storage-blob>=12.25,<13",
+  "azure-keyvault-secrets>=4.10,<5",
+  "azure-monitor-opentelemetry>=1.8,<2"
+]
+
+[project.optional-dependencies]
+batch = ["azure-batch==15.1.0"]
+
+[dependency-groups]
+dev = ["pytest>=8.3,<10", "ruff>=0.11,<1"]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "--strict-config --strict-markers"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]

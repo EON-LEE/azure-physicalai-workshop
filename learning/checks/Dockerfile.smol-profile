@@ -1,0 +1,12 @@
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+WORKDIR /work
+COPY learning/deadlines.py learning/deadlines.py
+COPY learning/checks/__init__.py learning/checks/__init__.py
+COPY learning/checks/smolvla_vendor_diagnostic.py learning/checks/smolvla_vendor_diagnostic.py
+COPY learning/checks/smolvla_vendor_profile.py learning/checks/smolvla_vendor_profile.py
+COPY learning/checks/smolvla_profile_entry.py learning/checks/smolvla_profile_entry.py
+COPY profile-configuration.json /work/profile-configuration.json
+RUN python -m learning.checks.smolvla_profile_entry --self-test-spawn \
+    && python -m learning.checks.smolvla_profile_entry --self-test-timeout

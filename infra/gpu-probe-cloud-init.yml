@@ -1,0 +1,34 @@
+#cloud-config
+package_update: false
+package_upgrade: false
+write_files:
+  - path: /opt/physicalai-gpu-probe.py
+    permissions: '0500'
+    content: |
+      import json
+      from pathlib import Path
+
+      devices = []
+      for directory in sorted(Path("/sys/bus/pci/devices").iterdir()):
+          vendor = (directory / "vendor").read_text().strip()
+          device_class = (directory / "class").read_text().strip()
+          if vendor == "0x10de" and device_class.startswith("0x03"):
+              devices.append({
+                  "pci": directory.name,
+                  "vendor": vendor,
+                  "device": (directory / "device").read_text().strip(),
+                  "class": device_class,
+              })
+      result = {
+          "kind": "physicalai_gpu_pci_probe",
+          "nvidia_display_devices": devices,
+          "nvidia_application_executed": False,
+          "isaac_verified": False,
+      }
+      line = "PHYSICALAI_GPU_PROBE " + json.dumps(result)
+      Path("/var/log/physicalai-gpu-probe.json").write_text(json.dumps(result))
+      print(line, flush=True)
+      with open("/dev/ttyS0", "w") as console:
+          console.write(line + "\n")
+runcmd:
+  - [python3, /opt/physicalai-gpu-probe.py]
