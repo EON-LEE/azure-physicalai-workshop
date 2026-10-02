@@ -127,3 +127,30 @@ That is only a numerically compatible proposal: actual batch-64 memory,
 zero-worker image decoding, 27 full-state transfers, disk space and the original
 finite deadline must be qualified before approval. Neither a successful CPU mask
 test nor this route approves training or proves physical learning quality.
+
+## Zero-optimizer capacity qualification
+
+`learning/paused/train_capacity.py` is an external diagnostic, not part of the
+immutable 74-file training source. Run it only with a separately hash-bound plan,
+the qualified padding image, the original P0 weights and the complete original
+TRAIN raw/conversion/backbone inventories. The same path arguments as the
+[TRAIN-only audit](smolvla-train-audit.md) are required. Use Python `-B -P` and
+`PYTHONPATH=/opt/physicalai/source`; never insert the current checkout ahead of
+that verified source or modify the source inventory in the image.
+
+The closed schedule checks batch sizes 1, 8, 16, 32 and 64. Each batch uses three
+native forward/backward passes over fixed original TRAIN records. A diagnostic
+boundary delegates the real accelerator backward, then stops before the native
+optimizer step. The native model, preprocessing and temporal-padding recipe
+are unchanged; a forbidden optimizer makes crossing that boundary an error.
+Complete parameter and buffer digests must agree before and after the probe.
+An OOM, nonfinite loss/gradient or other native failure is retained and stops
+larger batch sizes. It does not select a smaller training batch automatically.
+
+The report records actual device allocation, forward/backward and decode timing,
+and free disk space. Optimizer-state memory, optimizer update time, sustained
+dataset I/O and checkpoint publication are **not** measured by this diagnostic.
+The two FP32 AdamW moments are a labeled estimate, not an allocation result.
+These limits must be included when choosing the subsequent real training job.
+No optimizer updates, new candidate, physical actions or held-out measurements
+are produced; successful qualification alone is not customer model readiness.
