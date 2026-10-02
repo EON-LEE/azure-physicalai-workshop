@@ -254,6 +254,7 @@ def test_main_runtime_dispatches_real_paused_reference_and_finishes_capture_off_
 ):
     import time
     from struct import pack, unpack
+    from threading import Semaphore
 
     from test_demonstration_wiring import active_capture
 
@@ -375,8 +376,15 @@ def test_main_runtime_dispatches_real_paused_reference_and_finishes_capture_off_
     from simulation import run_isaac
     from simulation.paused_capture import PausedDemonstration
 
+    persisted = Semaphore(0)
+
+    class SynchronizedCapture(PausedDemonstration):
+        def append(self, sample):
+            super().append(sample)
+            persisted.release()
+
     monkeypatch.setattr(
-        run_isaac, "PausedDemonstration", lambda capture: PausedDemonstration(capture, tmp_path)
+        run_isaac, "PausedDemonstration", lambda capture: SynchronizedCapture(capture, tmp_path)
     )
     uploaded = []
 
@@ -404,6 +412,14 @@ def test_main_runtime_dispatches_real_paused_reference_and_finishes_capture_off_
         core.dispatch_simulation_episode(ACTOR.owner_key, request)
         runtime.tick()
         assert runtime.capture_worker.prepared.wait(2)
+        original_append = runtime.capture_worker.append
+
+        def append_and_wait(sample):
+            original_append(sample)
+            # A CPU-only producer has no real render delay; synchronize disk persistence.
+            assert persisted.acquire(timeout=5), "Capture backend did not persist the test frame"
+
+        runtime.capture_worker.append = append_and_wait
         for _ in range(terminal_steps // 6 * 8 + 5):
             runtime.tick()
             if core.active_command is None:

@@ -32,6 +32,13 @@ The CPU workflow runs automatically on pushes and pull requests. It uses
 read-only repository permissions and no Azure credentials. Failed checks
 produce a nonzero job status; no `continue-on-error` is used.
 
+The long paused-runtime CPU boundary test synchronizes its synthetic producer
+with the real off-thread capture writer. Unlike Isaac rendering, a CPU double can
+enqueue hundreds of intervals without yielding to filesystem persistence.
+The test synchronization does not raise production queue budgets, suppress
+backlog errors or change control deadlines. Separate backlog/cancellation tests
+continue exercising those fail-closed boundaries.
+
 ## Required future gates
 
 | Gate | What it must prove | Runner and evidence |
