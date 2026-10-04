@@ -138,3 +138,85 @@ wildcard resource deletion·subscription 전체 역할 변경·unrelated host �
 | 문서 | `status.md`와 customer readiness 갱신; 과거 실패 보존 |
 
 [현재 상태](status.md)의 GPU 0은 마지막 관측 결과이지 영구적인 idle 보장이나 비용 청구서가 아닙니다.
+
+## 9. 서버 이전: Git 밖의 증거 백업과 복원
+
+Git clone은 코드만 복원합니다. 기존 실행의 승인·specification·image/source proof,
+원본 모델 manifest, 실패 진단·checkpoint custody receipt, 고정 TRAIN/평가 설정과
+실행 영상은 별도 private 백업이 필요합니다. `.venv`·`node_modules`·패키지 캐시는 제외합니다.
+로그에 민감 정보가 있을 수 있으므로 Git, public Blob, SAS 공유 링크에 올리지 않습니다.
+
+**2026-10-04 이전 작업 상태:** 로컬 ZIP 백업은 11,344개 일반 파일,
+127,537,095 bytes로 생성했고 archive 재조회로 모든 파일의 byte 수·SHA-256을 검증했습니다.
+Blob 업로드 완료는 아직 확인하지 않았습니다. Azure CLI의 계정 선택만으로 업로드를 증명하지 않습니다.
+현재 PC의 기존 private Blob 접근은 차단됐고, 이후 로그인 서버 연결도 시간 초과됐습니다.
+아래 명령은 네트워크·로그인이 준비된 운영 환경에서 수행할 절차입니다.
+원본 파일·프로젝트는 원격 검증과 새 서버 접근 확인 전 삭제하지 않습니다.
+
+### 백업 내용과 private 인수인계
+
+| 항목 | 내용 |
+|---|---|
+| `physicalai-evidence.zip` | 세션 `files`, checkpoint 요약, 저장소 `test-results`의 일반 파일 |
+| `inventory.json` | 파일별 상대 경로·byte 수·SHA-256, source Git commit, 제외한 symlink 경로·target |
+| `receipt.json` | ZIP/외부 inventory hash, 파일 수, 로컬 검증 결과 |
+| 별도 private 인수인계 | subscription·tenant·storage account·container·정확한 Blob prefix와 ZIP hash |
+
+symlink는 외부 경로를 따라 읽지 않고 inventory에 기록합니다. 복원된 일반 파일을
+우선 사용하며 native test fixture의 `last` symlink는 필요한 환경에서만 다시 만듭니다.
+이 ZIP은 실제 cloud weights·전체 dataset의 백업이 아닙니다. 해당 private artifact의
+현재 존재·hash·보존 기간은 custody 경로에서 따로 확인해야 합니다.
+과거 plan/controller는 기록 자료이며 새 서버에서 그대로 재실행할 승인이 아닙니다.
+
+### 업로드
+
+같은 계정이라도 private endpoint에 도달하는 DNS·VPN 또는 기존 VNet 실행 경로와
+Blob data-plane 권한이 필요합니다. `az account show` 성공은 이 조건을 증명하지 않습니다.
+403을 public network 활성화·account key·역할 우회로 해결하지 않습니다.
+
+다음 Bash 명령의 변수는 **private 인수인계의 실제 값**으로 설정합니다.
+`BACKUP_DIR`에는 위 세 파일만 두고, `PREFIX`에는 기존 artifact와 겹치지 않는 새
+owner-scoped migration prefix를 사용합니다.
+
+```bash
+az login --tenant "$TENANT"
+az account set --subscription "$SUBSCRIPTION"
+az storage blob upload-batch \
+  --account-name "$STORAGE_ACCOUNT" --auth-mode login \
+  --destination "$CONTAINER" --destination-path "$PREFIX" \
+  --source "$BACKUP_DIR" --overwrite false
+```
+
+private MI runner를 사용하면 이미 승인된 identity로 업로드합니다. 로컬 `az login`
+캐시를 runner로 복사하지 않습니다. 원본 프로젝트 전체를 image나 ARM 로그로
+전송하는 대신 승인된 private 파일 전송 경로를 사용합니다.
+재시도 전에 동일 prefix의 파일을 조회하고 hash를 확인합니다.
+단순 list/HEAD/metadata hash 확인은 전체 byte 검증을 대신하지 않습니다.
+
+### 새 서버 다운로드·검증
+
+먼저 Git 저장소의 `main`을 clone하고 private 인수인계의 계정·경로를 확인합니다.
+새 서버에서 아래 명령을 실행합니다. `RESTORE_DIR`는 새 빈 디렉터리여야 합니다.
+
+```bash
+az login --tenant "$TENANT"
+az account set --subscription "$SUBSCRIPTION"
+mkdir "$RESTORE_DIR"
+az storage blob download-batch \
+  --account-name "$STORAGE_ACCOUNT" --auth-mode login \
+  --source "$CONTAINER" --destination "$RESTORE_DIR" \
+  --pattern "$PREFIX/*"
+```
+
+download-batch는 Blob prefix의 디렉터리 구조를 유지합니다. 다운로드한 ZIP의
+SHA-256을 **별도 전달받은 검증된 원본 hash**와 비교합니다.
+ZIP과 같이 다운로드한 receipt만 신뢰 기준으로 사용하지 않습니다.
+PowerShell에서는 `Get-FileHash -Algorithm SHA256 -LiteralPath $ArchivePath`,
+Linux에서는 `sha256sum "$ARCHIVE_PATH"`를 사용합니다.
+
+hash 일치 후 ZIP을 빈 디렉터리에 풀고 `inventory.json`의 모든 일반 파일에 대해
+경로·byte 수·SHA-256을 확인합니다. 기존 checkout이나 native runtime을 덮어쓰지 않습니다.
+로컬 upload 결과와 별개로 Blob에서 다시 다운로드한 ZIP 전체 hash를 확인하고,
+인수 서버에서도 접근·복원을 확인해야 migration 완료입니다.
+업로드·검증 시각과 정확한 prefix는 private 인수인계에 기록하며, 완료 전에는
+`cloud_upload_verified=false`를 유지합니다.
