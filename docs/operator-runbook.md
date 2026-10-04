@@ -148,10 +148,32 @@ Git clone은 코드만 복원합니다. 기존 실행의 승인·specification·
 
 **2026-10-04 이전 작업 상태:** 로컬 ZIP 백업은 11,344개 일반 파일,
 127,537,095 bytes로 생성했고 archive 재조회로 모든 파일의 byte 수·SHA-256을 검증했습니다.
-Blob 업로드 완료는 아직 확인하지 않았습니다. Azure CLI의 계정 선택만으로 업로드를 증명하지 않습니다.
-현재 PC의 기존 private Blob 접근은 차단됐고, 이후 로그인 서버 연결도 시간 초과됐습니다.
+**ZIP·inventory·로컬 receipt의 private Blob 업로드와 원격 전체 byte readback hash 검증을 완료했습니다.**
+현재 PC의 직접 Blob 접근은 차단된 상태로 유지했습니다. 기존 실행 중인 API 컨테이너의
+인증된 Container Apps exec 연결과 기존 MI를 통해 전달했습니다. 네트워크·권한·배포 설정
+변경, account key/SAS 사용, 새 GPU/VM 시작은 없습니다.
 아래 명령은 네트워크·로그인이 준비된 운영 환경에서 수행할 절차입니다.
-원본 파일·프로젝트는 원격 검증과 새 서버 접근 확인 전 삭제하지 않습니다.
+새 서버의 접근·복원은 아직 확인하지 않았습니다. 그 확인 전에는 원본 파일을 삭제하지 않습니다.
+
+### 이번 백업의 실제 위치
+
+아래는 secret이 아닌 저장소 locator입니다. 권한이나 network 접근을 제공하지는 않습니다.
+
+```bash
+SUBSCRIPTION=b0af194e-77a5-4471-bb43-67e78295b5c8
+TENANT=2573db8c-dfe5-4805-9e28-a0859692e705
+STORAGE_ACCOUNT=factory20n3ig3ttsxayp2
+CONTAINER=artifacts
+PREFIX=tenants/2573db8c-dfe5-4805-9e28-a0859692e705/owners/2ec908df6936652c12469d5a2f274a3012fbe41a4896a5ab7ef59ecbc2a3f803/learning/reproducibility/migrations/handoff-20261004
+EXPECTED_ARCHIVE_SHA256=0da8ea5e4e6251e561ef3140310c1384ff0297abe8e1bc09b0fa35900887b2ec
+EXPECTED_INVENTORY_SHA256=b3ffbc3d6b8f92f44585db80d79f58729fcfa05616ffe66de41625ec885f309d
+```
+
+ZIP, inventory, receipt 각각을 Blob에서 ETag 조건으로 다시 읽어 원본과 hash·크기를
+비교했습니다. `receipt.json`의 `cloud_upload_verified=false`는 **업로드 전 로컬 검증 당시**
+기록이며 덮어쓰지 않았습니다. 후속 원격 검증은 위 hash와 별도 remote receipt에 기록했습니다.
+이 prefix의 TTL 밖 reproducibility 보존은 archive의 실행 증거에 대한 것이며,
+기존 training output 전체의 무기한 보존을 의미하지 않습니다.
 
 ### 백업 내용과 private 인수인계
 
@@ -197,6 +219,7 @@ private MI runner를 사용하면 이미 승인된 identity로 업로드합니�
 
 먼저 Git 저장소의 `main`을 clone하고 private 인수인계의 계정·경로를 확인합니다.
 새 서버에서 아래 명령을 실행합니다. `RESTORE_DIR`는 새 빈 디렉터리여야 합니다.
+위 locator 값을 설정한 뒤 다음과 같이 다운로드합니다.
 
 ```bash
 az login --tenant "$TENANT"
@@ -206,7 +229,15 @@ az storage blob download-batch \
   --account-name "$STORAGE_ACCOUNT" --auth-mode login \
   --source "$CONTAINER" --destination "$RESTORE_DIR" \
   --pattern "$PREFIX/*"
+ARCHIVE_PATH="$RESTORE_DIR/$PREFIX/physicalai-evidence.zip"
+printf '%s  %s\n' "$EXPECTED_ARCHIVE_SHA256" "$ARCHIVE_PATH" | sha256sum --check
+printf '%s  %s\n' "$EXPECTED_INVENTORY_SHA256" \
+  "$RESTORE_DIR/$PREFIX/inventory.json" | sha256sum --check
 ```
+
+새 서버가 private 네트워크 밖에 있으면 이 다운로드도 차단됩니다. 먼저 기존
+승인된 VNet/VPN 실행 경로를 사용해야 합니다. 이번 업로드는 `az login`만으로
+방화벽을 우회한 것이 아니라 **이미 내부 네트워크에 있던 컨테이너로 전달한 것**입니다.
 
 download-batch는 Blob prefix의 디렉터리 구조를 유지합니다. 다운로드한 ZIP의
 SHA-256을 **별도 전달받은 검증된 원본 hash**와 비교합니다.
