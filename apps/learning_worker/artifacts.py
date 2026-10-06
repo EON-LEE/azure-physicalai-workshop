@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib
 import json
+import logging
 import re
 from pathlib import Path, PurePosixPath
 from tempfile import TemporaryDirectory
@@ -32,6 +33,8 @@ from apps.learning_worker.candidate_provenance import (
     verify_pipeline_result,
 )
 from apps.learning_worker.policies import implementation
+
+log = logging.getLogger(__name__)
 
 
 class VerifiedArtifacts:
@@ -530,6 +533,37 @@ class VerifiedArtifacts:
             destination,
         )
         return config
+
+    def training_progress(self, actor, specification) -> tuple[dict, ...]:
+        """Best-effort, manifest-only checkpoint progress for display, never for resume or a
+        candidate/report decision. A transient read failure or absent checkpoint prefix yields
+        no history; it never fails the surrounding job-status reconciliation."""
+        if specification.run.kind != "training":
+            return ()
+        from learning.smolvla.checkpoints import list_checkpoint_manifests
+
+        try:
+            config, account, container, prefix = self._output_location(
+                actor, specification, "checkpoints"
+            )
+            with BlobServiceClient(
+                account,
+                credential=self.credential,
+                connection_timeout=5,
+                read_timeout=10,
+                retry_total=0,
+            ) as client:
+                bucket = client.get_container_client(container)
+                items = list_checkpoint_manifests(
+                    bucket,
+                    prefix=prefix.rstrip("/"),
+                    expected_specification_sha256=specification.run.specification_sha256,
+                    check_deadline=lambda: 20.0,
+                )
+        except (Problem, AzureError, ValueError) as exc:
+            log.warning("Training progress checkpoint listing unavailable: %s", exc)
+            return ()
+        return tuple(items)
 
     def completed_candidate(self, actor, specification, azure_job_id):
         from learning.common import canonical, digest, file_digest

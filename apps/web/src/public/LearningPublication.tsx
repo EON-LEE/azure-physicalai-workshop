@@ -4,6 +4,49 @@ import { usePolling } from '../hooks/usePolling';
 import { getPublicLearning } from './api';
 import { formatCount, formatTime } from './presentation';
 
+interface CheckpointSample {
+  optimizer_steps: number;
+  loss: number | null;
+  measured_at: string;
+  checkpoint_sha256: string;
+}
+
+/**
+ * Renders the verified checkpoint-time progress timeline recorded during the actual
+ * training job (step count + Blob-authoritative timestamp + verified checkpoint hash).
+ * There is no live loss signal yet (deferred to feat-p0-retrain-resume), so this never
+ * fabricates a loss curve; it shows the genuine step/time evidence or an honest "none".
+ */
+function CheckpointProgress({ checkpoints, finalSteps }: { checkpoints: readonly CheckpointSample[]; finalSteps: number }) {
+  if (checkpoints.length === 0) {
+    return <p role="status">학습 진행 곡선 공개 기록 없음 · 체크포인트가 검증·게시되기 전까지 가짜 진행률을 표시하지 않습니다.</p>;
+  }
+  const width = 320;
+  const height = 48;
+  const maxStep = Math.max(finalSteps, ...checkpoints.map((item) => item.optimizer_steps));
+  const points = checkpoints
+    .map((item, index) => {
+      const x = checkpoints.length > 1 ? (index / (checkpoints.length - 1)) * width : width;
+      const y = height - (item.optimizer_steps / maxStep) * height;
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(' ');
+  return <div className="checkpoint-progress">
+    <p>검증된 체크포인트 진행 ({formatCount(checkpoints.length)}개) · loss 값은 아직 학습 루프에 기록되지 않아 게시하지 않습니다.</p>
+    <svg viewBox={`0 0 ${width} ${height}`} width={width} height={height} role="img"
+      aria-label={`optimizer step ${checkpoints[0]!.optimizer_steps}에서 ${checkpoints[checkpoints.length - 1]!.optimizer_steps}까지의 검증된 체크포인트 진행`}>
+      <polyline points={points} fill="none" stroke="currentColor" strokeWidth={2} />
+    </svg>
+    <div className="table-scroll"><table><caption>검증된 체크포인트 (해시·측정 시각 포함)</caption>
+      <thead><tr><th>optimizer steps</th><th>loss</th><th>측정 시각</th><th>체크포인트 해시</th></tr></thead>
+      <tbody>{checkpoints.map((item) => <tr key={item.checkpoint_sha256}>
+        <td>{formatCount(item.optimizer_steps)}</td><td>{item.loss === null ? '미게시' : item.loss}</td>
+        <td>{formatTime(item.measured_at)}</td><td><code>{item.checkpoint_sha256.slice(0, 12)}…</code></td>
+      </tr>)}</tbody>
+    </table></div>
+  </div>;
+}
+
 export function LearningPublication() {
   const [open, setOpen] = useState(false);
   const load = useCallback((signal: AbortSignal) => getPublicLearning(signal), []);
@@ -27,6 +70,7 @@ export function LearningPublication() {
         <p>직접 시연 {formatCount(item.data_provenance.human_teleop)} · 기준 제어기 {formatCount(item.data_provenance.reference_controller)} · 정책 생성 {formatCount(item.data_provenance.learned)}</p>
         <p>{item.comparison.comparison_kind === 'reference_bootstrap' ? '첫 정책의 기준 제어기 대비 품질·안전 평가입니다. 학습된 P0/P1 개선 비교가 아닙니다.' : item.comparison.conclusion === 'improved' ? '같은 held-out 조건에서 개선이 보고되었습니다.' : item.comparison.conclusion === 'not_improved' ? '학습 작업은 완료되었지만 개선은 확인되지 않았습니다.' : '학습 효과의 결론이 불충분합니다.'}</p>
         <p>모델 생성 기록: {formatTime(item.training.created_at)} · 이전 모델을 오늘의 학습 결과로 바꿔 표시하지 않습니다.</p>
+        <CheckpointProgress checkpoints={item.training.checkpoints} finalSteps={item.training.optimizer_steps} />
         <div className="table-scroll"><table><caption>실패와 재시도를 포함한 전체 공개 평가 ({formatCount(item.comparison.trials.length)})</caption>
           <thead><tr><th>정책</th><th>seed / 시도</th><th>상태</th><th>물리 성공</th><th>시간</th></tr></thead><tbody>{item.comparison.trials.map((trial) => <tr key={`${trial.seed}:${trial.policy}:${trial.attempt}`}><td>{trial.policy}</td><td>{trial.seed} / {trial.attempt}</td>
             <td>{'wall_duration_ms' in trial ? trial.physical_success ? 'succeeded' : 'failed' : trial.status}</td><td>{trial.physical_success ? '확인' : '실패 / 미확인'}</td>

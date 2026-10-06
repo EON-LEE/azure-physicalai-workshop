@@ -710,3 +710,88 @@ def latest_remote_checkpoint(
         "readback_verified": True,
         "jobs_submitted": 0,
     }
+
+
+def list_checkpoint_manifests(
+    container,
+    *,
+    prefix: str,
+    expected_specification_sha256: str,
+    check_deadline: Callable[[], float],
+    limits: CheckpointLimits = DEFAULT_LIMITS,
+) -> list[dict]:
+    """Read-only, manifest-only progress listing for display. Never downloads tensor bytes
+    and never participates in resume; `restore_checkpoint`/`latest_remote_checkpoint` remain
+    the sole resume path. Each entry is the checkpoint's own verified step/manifest/blob-time,
+    never a loss value (no checkpoint manifest records loss)."""
+    limits.validate()
+    sha256(expected_specification_sha256)
+    remaining = _budget(check_deadline, limits)
+    names = []
+    for item in container.list_blobs(
+        name_starts_with=prefix + "/",
+        results_per_page=64,
+        retry_total=0,
+        timeout=max(1, math.ceil(remaining())),
+        connection_timeout=min(10, remaining()),
+        read_timeout=min(30, remaining()),
+    ):
+        remaining()
+        require(
+            item.name.startswith(prefix + "/"),
+            "Checkpoint listing escaped its exact owner/job prefix",
+        )
+        relative = item.name[len(prefix) + 1 :]
+        relative_path(relative)
+        if relative.endswith("/checkpoint.json"):
+            require(
+                re.fullmatch(r"step-\d{6}/checkpoint\.json", relative),
+                "Malformed checkpoint completion marker path",
+            )
+            names.append(item.name)
+        require(len(names) <= limits.max_checkpoints, "Checkpoint marker count exceeded budget")
+    results = []
+    for name in sorted(names):
+        seconds = remaining()
+        blob = container.get_blob_client(name)
+        props = blob.get_blob_properties(
+            timeout=max(1, math.ceil(seconds)),
+            retry_total=0,
+            connection_timeout=min(10, seconds),
+            read_timeout=min(30, seconds),
+        )
+        require(0 < props.size <= limits.max_json_bytes, "Checkpoint manifest exceeds budget")
+        require(props.last_modified is not None, "Checkpoint manifest has no verified Blob time")
+        seconds = remaining()
+        body = blob.download_blob(
+            retry_total=0,
+            timeout=max(1, math.ceil(seconds)),
+            connection_timeout=min(10, seconds),
+            read_timeout=min(30, seconds),
+            max_concurrency=1,
+        ).readall()
+        require(len(body) == props.size, "Incomplete checkpoint manifest")
+        value = parse_json(body)
+        _manifest(value, limits)
+        require(
+            value["origin"]["specification_sha256"] == expected_specification_sha256,
+            "Checkpoint belongs to a different approved job specification",
+        )
+        require(
+            name.rsplit("/", 1)[0].endswith(f"/step-{value['step']:06d}"),
+            "Checkpoint manifest step/path mismatch",
+        )
+        results.append(
+            {
+                "step": value["step"],
+                "checkpoint_sha256": digest(body),
+                "state_kind": value["state_kind"],
+                "measured_at": props.last_modified,
+            }
+        )
+    results.sort(key=lambda item: item["step"])
+    require(
+        len({item["step"] for item in results}) == len(results),
+        "Duplicate checkpoint step markers",
+    )
+    return results

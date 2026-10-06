@@ -138,6 +138,9 @@
 .verification-content { padding: 4px 5px 25px; }.verification-content > p { font-size: 12px; color: #506887; line-height: 2; }
 .verification-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 22px; margin: 22px 0; }.verification-grid > div { min-width: 0; padding: 18px; border: 1px solid #dbe5f2; background: #fff; border-radius: 7px; }
 .verification-grid svg { color: #557faf; }.verification-grid h3 { font-size: 13px; margin: 12px 0 8px; }.verification-grid p { font-size: 11px; color: #576f8f; line-height: 1.95; }.verification-grid small { display: block; margin-top: 8px; color: #5c7492; font-size: 10px; line-height: 1.8; }
+.checkpoint-progress { margin: 16px 0; }
+.checkpoint-progress > p { font-size: 12px; color: #506887; line-height: 2; }
+.checkpoint-progress > svg { color: #3e618d; display: block; margin: 8px 0 14px; }
 .demo-footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; padding: 0 0 27px; font-size: 10px; color: #59728f; line-height: 1.8; }
 .demo-load { padding: 60px 25px; text-align: center; font-family: "Segoe UI", "Malgun Gothic", sans-serif; }
 .customer-value { margin: 4px 0 28px; }

@@ -129,6 +129,77 @@ missing or inconsistent durable evidence fails closed as 503. All responses are
 `Cache-Control: no-store`; POSTs remain unsupported. This read path never contacts
 the live simulator or initiates Foundry/motion.
 
+## Learning publication training progress (checkpoint timeline, not a live loss curve)
+
+`GET /api/demo/learning`'s `publication.training` object (see
+[learning-api.md](learning-api.md)) carries an additive `checkpoints` array:
+
+```json
+"training": {
+  "optimizer_steps": 200,
+  "model_sha256": "...",
+  "parent_model_sha256": "...",
+  "dataset_sha256": "...",
+  "created_at": "2026-09-21T00:00:00+00:00",
+  "loss": null,
+  "checkpoints": [
+    {
+      "optimizer_steps": 100,
+      "loss": null,
+      "measured_at": "2026-09-20T18:04:11+00:00",
+      "checkpoint_sha256": "..."
+    },
+    {
+      "optimizer_steps": 200,
+      "loss": null,
+      "measured_at": "2026-09-20T18:41:52+00:00",
+      "checkpoint_sha256": "..."
+    }
+  ]
+}
+```
+
+Each entry is a verified, hash-checked training checkpoint manifest read from the
+job's own output, not a resampled/animated or interpolated point: `optimizer_steps`
+is the checkpoint's own cumulative step count, `measured_at` is the storage
+`last_modified` time of the checkpoint manifest (its only authoritative timestamp),
+and `checkpoint_sha256` is the manifest's verified content hash
+(`learning/smolvla/checkpoints.py::list_checkpoint_manifests`). Entries are
+strictly ordered by step and never exceed the final reconciled
+`training.optimizer_steps`; the backend (`apps/api/learning_models.py`'s
+`TrainingMetrics.history`) and the public contract
+(`apps/web/src/public/learning-contract.ts`) both reject out-of-order or
+over-the-final-count data rather than publish it.
+
+`loss` is always `null` today: the current training loop
+(`learning/smolvla/train.py`) and checkpoint manifest schema
+(`learning/smolvla/checkpoints.py::_manifest`) do not persist a per-step loss
+value, only step/state/origin/file metadata. The public viewer
+(`apps/web/src/public/LearningPublication.tsx`) shows this truthfully as "loss
+미게시" per point and never invents or interpolates a loss curve. An empty
+`checkpoints` array (for example while `feat-p0-retrain-resume` has no surviving
+run) renders as an explicit "학습 진행 곡선 공개 기록 없음" message, not a flat
+or placeholder line.
+
+**Connection point for `feat-p0-retrain-resume` / `feat-learned-policy-eval`:**
+this feature requires no training-loop code changes to start showing real data.
+It already reads whatever checkpoint manifests a training job publishes at
+`<output_prefix>/<run_id>/checkpoints/step-<N>/checkpoint.json` (the existing
+full-state checkpoint publisher's own layout; see
+[policy-learning.md](policy-learning.md)). A manifest is only surfaced here if
+its `origin.specification_sha256` matches the exact approved job specification
+being reconciled (`apps/learning_worker/artifacts.py::VerifiedArtifacts.training_progress`),
+so resuming/retrying the P0 job under its real specification is sufficient: once
+checkpoints exist again, the next successful job status poll
+(`apps/learning_worker/backend.py::_receipt`) picks them up automatically, and
+`/api/demo/learning` starts returning a non-empty `checkpoints` array once that
+training run is published. If a future training-loop change adds a genuine
+per-step loss value to the checkpoint manifest, only `_manifest()`'s schema and
+`list_checkpoint_manifests`'s return mapping need to start forwarding it — the
+rest of this pipeline (`TrainingSample.loss`, the public schema, and the UI's
+"loss 미게시" fallback) already supports a non-null value without further
+changes.
+
 ## Actual live frames, only after deliberate publication
 
 `GET /api/demo/frame?camera=overview|inspection&epoch=<UUID>` is anonymous but works only when
