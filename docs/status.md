@@ -59,6 +59,43 @@ checkpoint marker 존재만으로 모든 파일을 검증했다고 말하지 않
 `CODE_FILES` snapshot sha256은 그대로입니다. 테스트 전용 변경은 qualification 재실행의 필요
 조건이 아닙니다.
 
+## `command.py` tier 허용 범위 확장 + 새 immutable 학습 이미지 (코드 변경 + 실제 ACR build)
+
+`learning/paused/command.py:66-69 validate_execution`은 `compute_size` 고정(A100)과
+`compute_tier=="LowPriority"`만 허용했습니다. `learning/azure.py`/`learning/gr00t/azure.py`는
+이미 `Dedicated`/`LowPriority` 둘 다 허용하므로, direct-command 변형만 더 좁았습니다. 이번에
+`compute_tier in ("LowPriority", "Dedicated")`로 확장했습니다 (size는 A100 그대로 고정).
+`Dedicated`는 preemption/회수 대상이 아니므로, `LowPriority`에서 반복되는 회수 경고/ContractError가
+다시 재현될 때의 승인된 대안이며 기본값이 아닙니다. 회귀: `uv run --locked pytest tests/learning -q`
+(1,000 passed / 45 skipped, 이전 994/45 대비 신규 6개 테스트: Dedicated 허용 2건 tier
+parametrize, 다른 tier/size 거부 4건 parametrize). Azure 호출 없음.
+
+전체 full-state resume 계약(`docs/policy-learning.md` "`full_state`, 모든 original binding이
+일치해야" 조항)은 이미지 digest 변경 시 과거 `6cca7a7a-...` 의 step-100/200 full-state
+checkpoint로부터의 `full_state` resume을 자동으로 막습니다 (digest가 바뀌므로). 새 이미지로의
+재시작은 `weights_only` resume 또는 완전히 새로운 P0 학습만 가능하며, 이 세션은 어느 쪽도
+선택하지 않았습니다 — 그 선택은 제출 승인자의 몫입니다.
+
+같은 소스 변경이 image/source hash에 영향을 주므로, 이 세션에서 `docs/policy-learning.md`
+"Explicit image-embedded AML source delivery" 절차로 새 direct-command 이미지를 실제로 빌드·검증
+했습니다 (ACR build, 로컬 docker 없음):
+
+| 항목 | 값 |
+|---|---|
+| export 명령 | `python -m learning.smolvla.embedded_source --direct-command --output <dir>` |
+| static 파일 수 | 74 |
+| `static_sha256` | `0e0b7e5b58b661c5ff1c96a2515ccf50229fb3a49bec0c5d397309679bd75c73` |
+| base image | `factory20n3ig3ttsxayp2.azurecr.io/physicalai-smolvla@sha256:441f2a33a8bb0c534a10ad7d56c4f7be611dccde39e8ee0b99610b4a7a75e8f9` (불변, 재사용) |
+| ACR build run | `ch52` (rg-physicalai-demo, registry factory20n3ig3ttsxayp2), 신규 태그 `physicalai-smolvla:p0-command-20261006052910` |
+| 새 이미지 digest | `sha256:4638a024aca68d767424c31d3adacf29d10d98813032791cfaa669c745e63b3a` |
+| 빌드 내 static 검증 | build RUN 단계의 `verify-static`이 동일 `static_sha256`/74 files를 출력 (push 전) |
+| 독립 readback | `az acr run` (run `ch53`)로 push된 digest를 새로 pull해 `verify-static`을 재실행; 동일 `static_sha256`/74 files 재확인. 캐시 재사용 아님 |
+| offline SDK 검사 | `uv run --python 3.11 --with azure-ai-ml==1.35.0 python -m learning.checks.command_job_check` 및 `...embedded_source_check` 통과 (`cloud_calls:0`, `jobs_submitted:0`, `image_builds:0`); `command_job_check`의 `snapshot_sha256=04958c49986a96e7b987fab53a2ca79eb10125f10618996e554953df9ce0acea` |
+| 기존 receipt | 과거 `6cca7a7a-...` plan/job/이미지 태그는 변경·덮어쓰기 없음. 새 이미지는 신규 태그로만 push됨 |
+
+실제 유료 제출(새 plan/job-name 생성, GPU job 시작)은 수행하지 않았습니다. 이 결과(새 digest,
+static_sha256)는 재제출을 담당하는 `feat-p0-retrain-resume` 작업으로 전달되었습니다.
+
 ## 다음 제출을 위한 qualification 계획 (미실행, 승인 전 제출 금지)
 
 과거 job `6cca7a7a-...`의 plan/job.json/snapshot은 해당 job 전용이며, 코드나 config가 바뀌면
