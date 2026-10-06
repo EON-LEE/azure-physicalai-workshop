@@ -3,8 +3,59 @@ import { ShieldCheck } from 'lucide-react';
 import { Badge, ErrorNotice, FieldValue } from '../ui/common';
 import type { Evaluation, LearningApi, PolicyRelease, Resource } from './contracts';
 import { SimulationComparison } from './SimulationComparison';
+import type { SimulationReport } from './simulationReports';
 
 const conclusion = { improved: '개선 확인', not_improved: '개선 미확인', inconclusive: '평가 결론 불충분' };
+const policyLabel = { before: 'P0', after: 'P1', reference: '기준 제어기', candidate: '최초 후보' };
+type ReportTrial = Exclude<NonNullable<Evaluation['report']>, SimulationReport>['trials'][number];
+
+/**
+ * Pairs trials that share the same held-out seed so the "before" (P0/reference) and
+ * "after" (P1/candidate) runs on the identical scene condition sit next to each other.
+ * Seeds without both sides (e.g. an incomplete retry) are dropped rather than guessed.
+ */
+function pairBySeed(trials: readonly ReportTrial[]) {
+  const bySeed = new Map<number, ReportTrial[]>();
+  for (const trial of trials) bySeed.set(trial.seed, [...(bySeed.get(trial.seed) ?? []), trial]);
+  return [...bySeed.entries()]
+    .map(([seed, list]) => ({
+      seed,
+      before: list.find((trial) => trial.policy === 'before' || trial.policy === 'reference'),
+      after: list.find((trial) => trial.policy === 'after' || trial.policy === 'candidate'),
+    }))
+    .filter((pair): pair is { seed: number; before: ReportTrial; after: ReportTrial } => Boolean(pair.before && pair.after))
+    .sort((a, b) => a.seed - b.seed);
+}
+
+function TrialOutcome({ trial }: { trial: ReportTrial }) {
+  const label: Record<ReportTrial['policy'], string> = policyLabel;
+  return <div className={`side-by-side-outcome ${trial.physical_success ? 'passed' : 'failed'}`}>
+    <span className="side-by-side-policy">{label[trial.policy]}</span>
+    <strong>{trial.physical_success ? '물리 성공' : '물리 미확인'}</strong>
+    <span>위치 오차 {trial.axis_error_m?.join(', ') ?? '측정값 없음'} m · {trial.duration_seconds}s</span>
+  </div>;
+}
+
+/**
+ * Customer-pitch "before vs after" view: real paired-seed outcomes placed side by side.
+ * This never substitutes browser animation or replay for a recorded video — when a
+ * trial's actual recording_id is absent, that is shown honestly as unavailable.
+ */
+function SideBySideComparison({ trials }: { trials: readonly ReportTrial[] }) {
+  const pairs = pairBySeed(trials);
+  if (pairs.length === 0) return null;
+  return <div className="side-by-side-comparison">
+    <h4>같은 seed의 학습 전 vs 후 나란히 비교 ({pairs.length}개)</h4>
+    <div className="side-by-side-grid">{pairs.map((pair) => {
+      const recordingId = pair.before.recording_id ?? pair.after.recording_id;
+      return <article key={pair.seed} className="side-by-side-pair">
+        <span className="side-by-side-seed">seed {pair.seed}</span>
+        <div className="side-by-side-columns"><TrialOutcome trial={pair.before} /><TrialOutcome trial={pair.after} /></div>
+        <p className="side-by-side-recording">{recordingId ? `원본 녹화 연결됨 · 재생 UI 준비 중 (${recordingId.slice(0, 8)}…)` : '이 seed의 원본 영상 없음 · 애니메이션으로 대체하지 않음'}</p>
+      </article>;
+    })}</div>
+  </div>;
+}
 export function PolicyComparison({ api, evaluation, onReleased, releaseAllowed = false }: {
   api: LearningApi; evaluation: Resource<Evaluation>; onReleased?(release: Resource<PolicyRelease>): void; releaseAllowed?: boolean;
 }) {
@@ -43,6 +94,7 @@ export function PolicyComparison({ api, evaluation, onReleased, releaseAllowed =
           <FieldValue label={bootstrap ? '기준 제어기 코드 SHA (모델 아님)' : 'P0 모델 SHA'}><code>{report.comparison_kind === 'reference_bootstrap' ? report.reference_controller_sha256 : report.before_model_sha256}</code></FieldValue>
           <FieldValue label={bootstrap ? '최초 후보 모델 SHA' : 'P1 모델 SHA'}><code>{report.comparison_kind === 'reference_bootstrap' ? report.candidate_model_sha256 : report.after_model_sha256}</code></FieldValue>
         </dl>
+        <SideBySideComparison trials={report.trials} />
         <div className="table-scroll"><table><caption>모든 시험과 재시도 · 실패 포함 ({report.trials.length}개)</caption>
           <thead><tr><th>정책</th><th>seed / 시도</th><th>상태</th><th>물리 성공</th><th>위치 오차 (m)</th><th>시간 (s)</th><th>안전 위반</th></tr></thead>
           <tbody>{report.trials.map((trial) => <tr key={`${trial.seed}-${trial.policy}-${trial.attempt}`}>

@@ -21,6 +21,15 @@
 .teaching-controls > .small-text { display: block; margin-top: 10px; }.teaching-list > div { padding: 12px 0; border-bottom: 1px solid #e1e8f3; }.teaching-list code { font-size: 10px; }.teaching-list .text-button { margin-left: 8px; }
 .teaching-cameras { margin-top: 15px; }.teaching-cameras .camera-container { min-width: 0; }.teaching-cameras .camera-viewport { aspect-ratio: 4/3; }.teaching-cameras .camera-caption { display: none; }
 .policy-comparison caption { padding: 13px 0; text-align: left; color: #3b5b84; font-size: 12px; }.policy-comparison td { font-variant-numeric: tabular-nums; }.policy-comparison tr { content-visibility: auto; contain-intrinsic-size: auto 50px; }
+.side-by-side-comparison { margin: 18px 0; }.side-by-side-comparison h4 { font-size: 12px; color: #3b5b84; margin-bottom: 10px; }
+.side-by-side-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; max-height: 420px; overflow-y: auto; }
+.side-by-side-pair { border: 1px solid #d7e2f1; border-radius: 6px; padding: 10px; min-width: 0; }
+.side-by-side-seed { display: block; font-size: 10px; color: #6a7f9c; margin-bottom: 6px; }
+.side-by-side-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.side-by-side-outcome { display: flex; flex-direction: column; gap: 3px; font-size: 11px; line-height: 1.6; min-width: 0; }
+.side-by-side-outcome .side-by-side-policy { font-weight: 600; color: #244166; }
+.side-by-side-outcome.passed strong { color: #1d7a4c; }.side-by-side-outcome.failed strong { color: #a3372f; }
+.side-by-side-recording { font-size: 10px; color: #6a7f9c; margin-top: 8px; }
 .learning-job h3 { font-size: 14px; }.learning-record-row { display: flex; gap: 15px; align-items: center; padding: 12px 0; border-bottom: 1px solid #e5ebf4; font-size: 11px; }.learning-record-row > span:first-child { min-width: 0; flex: 1; }.learning-record-row code, .learning-record-row small { display: block; margin-top: 5px; color: #536d8f; }
 .learning-coach textarea { margin-bottom: 13px; }.learning-studio h2, .learning-studio h3 { scroll-margin-top: 25px; text-wrap: balance; }
 #run-policy-release { width: 100%; min-height: 38px; padding: 8px 10px; border: 1px solid #c8d5e6; border-radius: 5px; color: #29496f; background: #fff; font-size: 12px; }

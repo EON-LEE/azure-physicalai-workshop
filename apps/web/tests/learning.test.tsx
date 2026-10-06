@@ -108,6 +108,16 @@ describe('truthful Korean learning experience', () => {
     expect(api.release).not.toHaveBeenCalled();
   });
 
+  it('pairs P0/P1 trials by seed for a side-by-side view and never invents a missing recording', () => {
+    const fixture = learningFixture();
+    const api = learningApi();
+    render(<PolicyComparison api={api} evaluation={fixture.evaluation} />);
+    expect(screen.getByText('같은 seed의 학습 전 vs 후 나란히 비교 (20개)')).toBeInTheDocument();
+    expect(screen.getAllByText('이 seed의 원본 영상 없음 · 애니메이션으로 대체하지 않음').length).toBe(20);
+    expect(screen.getAllByText('P0').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('P1').length).toBeGreaterThan(0);
+  });
+
   it('does not jog after the operator releases while a server control grant is arriving', async () => {
     const fixture = learningFixture();
     const api = learningApi();
