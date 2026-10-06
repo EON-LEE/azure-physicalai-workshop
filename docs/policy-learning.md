@@ -878,7 +878,10 @@ policy:
 ```
 
 This variant is limited to paused training, `Standard_NC24ads_A100_v4`,
-`LowPriority`, one instance and one actual CUDA device. `run_id` must exactly equal
+`LowPriority` or `Dedicated`, one instance and one actual CUDA device. `Dedicated`
+is not subject to preemption/eviction; it is a separately approved, more
+expensive alternative when a `LowPriority` ContractError/preemption keeps
+interrupting training, not a default. `run_id` must exactly equal
 the newly authorized AML job name. Existing registered `demonstrations`,
 `parent_model` and `backbone` names/versions/URIs/manifest SHAs remain in the
 reviewed config as provenance; **the AML job itself has no `code`, `inputs`,

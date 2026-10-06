@@ -56,8 +56,35 @@ def test_actual_command_shape_has_no_code_or_custom_service_data_preparation():
     assert result["tags"]["runtime_config_sha256"]
 
 
+@pytest.mark.parametrize("tier", ["LowPriority", "Dedicated"])
+def test_command_accepts_approved_one_a100_tiers(tier):
+    value = command_config()
+    value["compute_tier"] = tier
+    value["parameters"]["compute_tier"] = tier
+    result = azure.build_job(value, "b" * 64, value["run_id"])
+    assert result["tags"]["job_execution"] == "command"
+
+
 @pytest.mark.parametrize(
-    "change", ["unknown", "extra", "no-image", "no-checkpoints", "legacy-mode", "other-name"]
+    "compute_size,compute_tier",
+    [
+        ("Standard_NC24ads_A100_v4", "Standard"),
+        ("Standard_NC24ads_A100_v4", "Spot"),
+        ("Standard_NC6s_v3", "LowPriority"),
+        ("Standard_NC24ads_A100_v4", "dedicated"),
+    ],
+)
+def test_command_rejects_unapproved_tier_or_size(compute_size, compute_tier):
+    value = command_config()
+    value["compute_size"] = compute_size
+    value["compute_tier"] = compute_tier
+    with pytest.raises(ContractError):
+        azure.build_job(value, "b" * 64, value["run_id"])
+
+
+@pytest.mark.parametrize(
+    "change",
+    ["unknown", "extra", "no-image", "no-checkpoints", "legacy-mode", "other-name"],
 )
 def test_command_is_only_an_explicit_closed_new_authority(change):
     value = command_config()

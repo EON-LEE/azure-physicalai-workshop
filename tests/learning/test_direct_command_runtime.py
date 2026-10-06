@@ -247,7 +247,28 @@ def test_failed_training_preserves_error_log_without_success_shaped_model(tmp_pa
     assert "optimizer failed" in capsys.readouterr().err
     assert any(name.endswith("/failure.json") for name in store.data)
     assert any(name.endswith("/training.log") for name in store.data)
+    assert any(name.endswith("/training-context.json") for name in store.data)
     assert not any(name.endswith(("/result.json", "/model.json")) for name in store.data)
+
+
+def test_failed_training_rejects_oversized_log_instead_of_silent_truncation(tmp_path):
+    from learning.paused.command import _preserve_failure
+
+    config = command_config()
+    root = tmp_path / "task"
+    (root / "model").mkdir(parents=True)
+    with (root / "model" / "training.log").open("wb") as stream:
+        stream.seek(16 * 1024**2)
+        stream.write(b"0")
+    store = MemoryContainer()
+    with pytest.raises(ContractError, match="byte budget"):
+        _preserve_failure(
+            PrivateBlobTransfer(store, config, remaining=lambda: 60),
+            config,
+            root,
+            {"azure_job_id": live_job(config).id, "azure_job_type": "command"},
+            RuntimeError("fixture"),
+        )
 
 
 @pytest.mark.parametrize("wrong_conversion", [False, True])

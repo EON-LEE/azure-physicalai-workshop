@@ -65,8 +65,8 @@ def validate_execution(config: dict) -> None:
     )
     require(
         config["compute_size"] == "Standard_NC24ads_A100_v4"
-        and config["compute_tier"] == "LowPriority",
-        "Standalone training is limited to the approved one-A100 LowPriority compute",
+        and config["compute_tier"] in ("LowPriority", "Dedicated"),
+        "Standalone training is limited to the approved one-A100 LowPriority/Dedicated compute",
     )
     retained = f"tenants/{config['tenant_id']}/owners/{config['owner_id']}/learning/outputs"
     require(
