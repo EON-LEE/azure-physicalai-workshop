@@ -18,6 +18,7 @@ from apps.api.learning_models import (
     BootstrapReport,
     PairedReport,
     TrainingMetrics,
+    TrainingSample,
     fingerprint,
 )
 from apps.api.learning_ports import BackendJob, JobSpecification
@@ -420,6 +421,21 @@ class PolicyLearningWorker:
                     ),
                 }
             )
+        if specification.run.kind == "training" and self.artifacts is not None:
+            progress = self.artifacts.training_progress(actor, specification)
+            if progress:
+                history = tuple(
+                    TrainingSample(
+                        optimizer_steps=item["step"],
+                        loss=None,
+                        measured_at=item["measured_at"],
+                        checkpoint_sha256=item["checkpoint_sha256"],
+                    )
+                    for item in progress
+                )
+                result = result.model_copy(
+                    update={"metrics": result.metrics.model_copy(update={"history": history})}
+                )
         if specification.run.kind == "evaluation" and result.status in (
             "succeeded",
             "failed",

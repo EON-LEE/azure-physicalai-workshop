@@ -76,6 +76,7 @@ describe('verified non-realtime report summaries', () => {
         training: {
           optimizer_steps: 1, model_sha256: 'a'.repeat(64), parent_model_sha256: 'b'.repeat(64),
           dataset_sha256: 'c'.repeat(64), created_at: '2026-09-25T00:00:00Z', loss: null,
+          checkpoints: [],
         },
         comparison, execution: 'recorded_evaluation_not_live',
       },

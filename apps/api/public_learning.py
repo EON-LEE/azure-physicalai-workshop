@@ -121,6 +121,15 @@ def learning_publication(configuration, learning):
                 "dataset_sha256": dataset.manifest_sha256,
                 "created_at": candidate.created_at.isoformat(),
                 "loss": training.metrics.loss,
+                "checkpoints": [
+                    {
+                        "optimizer_steps": item.optimizer_steps,
+                        "loss": item.loss,
+                        "measured_at": item.measured_at.isoformat(),
+                        "checkpoint_sha256": item.checkpoint_sha256,
+                    }
+                    for item in training.metrics.history
+                ],
             },
             "comparison": report.model_dump(mode="json", exclude={"artifact_id"}),
             "execution": "recorded_evaluation_not_live",

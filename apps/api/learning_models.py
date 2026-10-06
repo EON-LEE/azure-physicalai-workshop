@@ -671,10 +671,34 @@ class StartEvaluation(Approval):
     maximum_cost_usd: Decimal = Field(gt=0, le=10000, max_digits=9, decimal_places=2)
 
 
+class TrainingSample(Frozen):
+    """One hash-verified checkpoint-time sample. Never interpolated or fabricated."""
+
+    optimizer_steps: PositiveInt
+    loss: float | None = Field(default=None, ge=0)
+    measured_at: AwareDatetime
+    checkpoint_sha256: Revision
+
+
 class TrainingMetrics(Frozen):
     optimizer_steps: NonnegativeInt | None = None
     loss: float | None = Field(default=None, ge=0)
     measured_at: AwareDatetime | None = None
+    # Bounded, append-only checkpoint-time progress samples. Empty means no verified
+    # progress artifact exists yet; this is never backfilled, interpolated or estimated.
+    history: tuple[TrainingSample, ...] = Field(default=(), max_length=200)
+
+    @model_validator(mode="after")
+    def monotonic_history(self):
+        steps = [item.optimizer_steps for item in self.history]
+        times = [item.measured_at for item in self.history]
+        if steps != sorted(steps) or len(set(steps)) != len(steps):
+            raise ValueError("Training progress history must be strictly ordered by step.")
+        if times != sorted(times):
+            raise ValueError("Training progress history must be strictly ordered by time.")
+        if self.optimizer_steps is not None and steps and steps[-1] > self.optimizer_steps:
+            raise ValueError("History cannot claim more progress than the reconciled step count.")
+        return self
 
 
 class PolicyCandidate(OwnedRecord, TimingMetadata):

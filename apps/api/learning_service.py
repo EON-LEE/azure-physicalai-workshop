@@ -1105,6 +1105,21 @@ class LearningService:
         if receipt.metrics.optimizer_steps is not None and run.metrics.optimizer_steps is not None:
             if receipt.metrics.optimizer_steps < run.metrics.optimizer_steps:
                 raise Problem(503, "regressing_job_metrics", "Worker step count regressed.")
+        # A transient worker-side progress read failure reports no history this poll; that must
+        # never erase or be treated as regressing previously verified checkpoint samples.
+        if receipt.metrics.history:
+            if len(receipt.metrics.history) < len(run.metrics.history) or receipt.metrics.history[
+                : len(run.metrics.history)
+            ] != run.metrics.history:
+                raise Problem(
+                    503,
+                    "regressing_job_metrics",
+                    "A verified training progress sample cannot be dropped or relabeled.",
+                )
+        elif run.metrics.history:
+            changes["metrics"] = receipt.metrics.model_copy(
+                update={"history": run.metrics.history}
+            )
         if target == "succeeded" and isinstance(run, TrainingRun):
             project = self.get(actor, "project", run.project_id).value
             artifacts = self._dependency(self.artifacts, "Verified learning artifacts")
