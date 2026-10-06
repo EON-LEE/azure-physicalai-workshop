@@ -45,6 +45,36 @@ checkpoint marker 존재만으로 모든 파일을 검증했다고 말하지 않
 실제 모든 파일을 별도로 읽고 복사·재조회한 경우입니다. 보존은 복원 테스트나 품질 평가와 다릅니다.
 원본 실패 job/UUID/승인/deadline을 수정하거나 동일 제출을 재시도하지 않았습니다.
 
+## 실패 진단 테스트 보강 (코드 변경, 미실행)
+
+`learning/paused/command.py`의 `_preserve_failure`는 이미 traceback/로그 보존을 구현하고
+있었으나, 기존 테스트는 두 가지 경로를 확인하지 않았습니다. 이번에 `tests/learning/`에
+다음을 추가로 확인했습니다 (실행: `uv run --locked pytest tests/learning`, 994 passed /
+45 skipped, Azure 호출 없음):
+
+- `training.log`뿐 아니라 `training-context.json`도 실제 failure prefix로 발행되는지 명시적으로 확인.
+- `training.log`가 고정 16 MiB budget을 넘으면 조용히 잘리지 않고 `ContractError`로 거부되는지 확인.
+
+이 변경은 `learning/paused/command.py` 자체를 수정하지 않았으므로 AML command에 embedding되는
+`CODE_FILES` snapshot sha256은 그대로입니다. 테스트 전용 변경은 qualification 재실행의 필요
+조건이 아닙니다.
+
+## 다음 제출을 위한 qualification 계획 (미실행, 승인 전 제출 금지)
+
+과거 job `6cca7a7a-...`의 plan/job.json/snapshot은 해당 job 전용이며, 코드나 config가 바뀌면
+`learning.smolvla.azure`가 새 `snapshot_sha256`/`job_sha256`/`plan_sha256`을 계산합니다. 이름만
+바꿔 과거 qualification을 재사용하지 않습니다. 실제 코드를 바꾸는 경우 제출 전 아래 순서를 따릅니다.
+
+1. `uv run --locked pytest tests/learning`로 변경된 source 전체 회귀를 확인합니다 (Azure 미접촉).
+2. `uv run --locked python -m learning.checks.command_job_check --report <path>`와
+   `uv run --locked python -m learning.checks.embedded_source_check --report <path>`를 실행해
+   SDK root 정규화·zero code/data-asset resolution·cold expiry 거부를 offline으로 재확인합니다.
+3. 새 plan을 생성해 `plan.json`의 `snapshot_sha256`이 실제 변경된 `CODE_FILES` 내용과 일치하는지
+   확인하고, 과거 `6cca7a7a-...` plan/job 디렉터리를 덮어쓰지 않습니다 (새 output 경로 필수).
+4. 새 plan/snapshot hash, 변경된 파일 목록, 위 1–2 실행 결과를 인수인계에 기록한 뒤에만
+   승인자가 명시적으로 실제 제출(=유료 GPU 시작)을 승인합니다. 이 세션은 그 승인을 수행하지 않았고
+   Azure에 어떤 쓰기도 하지 않았습니다.
+
 ## 남은 작업 순서
 
 | 우선순위 | 작업 | 완료 기준 |
