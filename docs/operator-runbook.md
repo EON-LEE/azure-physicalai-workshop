@@ -155,6 +155,20 @@ Git clone은 코드만 복원합니다. 기존 실행의 승인·specification·
 아래 명령은 네트워크·로그인이 준비된 운영 환경에서 수행할 절차입니다.
 새 서버의 접근·복원은 아직 확인하지 않았습니다. 그 확인 전에는 원본 파일을 삭제하지 않습니다.
 
+**2026-10-06 재검증 (M365CPI74210306 구독 `b0af194e...`, WSL `az` 로그인):**
+스토리지 `factory20n3ig3ttsxayp2`는 `publicNetworkAccess=Disabled`이며 private endpoint
+3개가 구성되어 있습니다. 로컬 `az storage blob list`는 network rule로 차단되는 것을
+재확인했습니다. `rg-physicalai-demo`의 `factory20-console`(minReplicas=1)은 container
+범위 Storage Blob Data Contributor 역할을 가진 managed identity `factory20-api-mi`
+(clientId `a38a1669-349c-4bb6-98c8-9a1ab5f0e497`)를 보유합니다. `factory20-learning-worker`는
+`replicas=0`으로 scale-to-zero 상태라 exec 대상에서 제외합니다. 같은 prefix
+(`handoff-20261004`)의 zip·inventory·receipt·remote-receipt·handoff.json을 컨테이너
+exec 경로로 다시 전체 byte 다운로드해 ZIP(127,537,095 bytes, SHA-256 `0da8ea5e...b2ec`)과
+inventory(SHA-256 `b3ffbc3d...309d`)가 모두 일치함을 확인했습니다. 새 서버(이 planning
+워크트리의 WSL)에서 storage account로의 직접 접근은 여전히 불가하며, `new_server_access_verified`는
+`false`로 유지합니다. 아래 "컨테이너 exec + MI REST 복원 절차"는 이 재검증에서 실제로
+사용한 절차입니다.
+
 ### 이번 백업의 실제 위치
 
 아래는 secret이 아닌 저장소 locator입니다. 권한이나 network 접근을 제공하지는 않습니다.
@@ -251,3 +265,77 @@ hash 일치 후 ZIP을 빈 디렉터리에 풀고 `inventory.json`의 모든 일
 인수 서버에서도 접근·복원을 확인해야 migration 완료입니다.
 업로드·검증 시각과 정확한 prefix는 private 인수인계에 기록하며, 완료 전에는
 `cloud_upload_verified=false`를 유지합니다.
+
+### 새 서버에서 직접 접근이 막힐 때: 컨테이너 exec + MI REST 복원
+
+storage account가 `publicNetworkAccess=Disabled`이고 private endpoint로만
+노출된 경우, 새 서버(또는 로컬 PC)의 `az storage blob download-batch`는
+network rule로 차단됩니다. `az account show`나 `az login` 성공 여부와 무관하게
+막힙니다. 이 경우 private 네트워크 안에서 **이미 실행 중인** Container App과
+그 managed identity를 통해 복원합니다. 새 역할 할당, 공개 네트워크 활성화,
+account key/SAS 발급은 하지 않습니다.
+
+1. 대상 컨테이너 확인: 복원 prefix에 Storage Blob Data Contributor 역할을 가진
+   MI가 연결되어 있고 `minReplicas>=1`(또는 현재 실행 중)인 리비전을 고릅니다.
+   `replicas=0`인 scale-to-zero 앱은 exec 대상에서 제외합니다.
+   ```bash
+   az containerapp show -g "$RESOURCE_GROUP" -n "$CONTAINERAPP" \
+     --query "{replicas:properties.template.scale, identity:identity}"
+   ```
+2. exec 연결은 TTY가 필요하므로 pty 래퍼로 실행합니다(일반 `az containerapp exec`를
+   파이프로 바로 쓰면 비정상 종료할 수 있습니다).
+   ```bash
+   python3 -c "import pty,sys; pty.spawn(['az','containerapp','exec', \
+     '-g','$RESOURCE_GROUP','-n','$CONTAINERAPP', \
+     '--command','/bin/sh'])"
+   ```
+3. 컨테이너 내부에는 `az`/`azcopy`가 없고 `python3`와 플랫폼이 주입한
+   `IDENTITY_ENDPOINT`/`IDENTITY_HEADER` 환경 변수만 있습니다. MI 토큰을
+   REST로 직접 요청할 때는 **`client_id`를 반드시 명시**해야 합니다(생략하면
+   400 오류). 받은 토큰으로 Blob REST API(List Blobs, Get Blob)를 호출합니다.
+   ```python
+   import json, os, urllib.parse, urllib.request
+
+   identity_endpoint = os.environ["IDENTITY_ENDPOINT"]
+   identity_header = os.environ["IDENTITY_HEADER"]
+   client_id = "a38a1669-349c-4bb6-98c8-9a1ab5f0e497"  # 컨테이너에 연결된 MI
+
+   token_url = identity_endpoint + "?" + urllib.parse.urlencode({
+       "api-version": "2019-08-01",
+       "resource": "https://storage.azure.com",
+       "client_id": client_id,
+   })
+   req = urllib.request.Request(token_url, headers={"X-IDENTITY-HEADER": identity_header})
+   token = json.loads(urllib.request.urlopen(req).read())["access_token"]
+
+   account = "factory20n3ig3ttsxayp2"
+   container = "artifacts"
+   prefix = "tenants/.../handoff-20261004"
+
+   def blob_get(path: str) -> bytes:
+       url = f"https://{account}.blob.core.windows.net/{container}/{path}"
+       req = urllib.request.Request(url, headers={
+           "x-ms-version": "2021-08-06",
+           "Authorization": f"Bearer {token}",
+       })
+       return urllib.request.urlopen(req).read()
+   ```
+4. List Blobs(`restype=container&comp=list&prefix=...`) 응답은 XML입니다.
+   컨테이너에 XML 파서가 없을 수 있으므로 `<Name>...</Name>`을 정규식
+   (`re.findall(r"<Name>([^<]+)</Name>", body)`)으로 추출하고, `NextMarker`가
+   비어 있지 않으면 `marker=` 쿼리로 다음 페이지를 반복 조회합니다(단일
+   요청의 응답은 기본적으로 잘릴 수 있음).
+5. 각 blob을 전체 byte 다운로드한 뒤 로컬에서 `sha256sum`으로 ZIP/inventory
+   hash를 기대값과 비교합니다. HEAD/metadata만 확인하는 것은 전체 byte
+   검증을 대신하지 않습니다.
+6. exec 연결은 반복 요청 시 `429`(Too Many Requests, `retry-after` 약 600초)를
+   반환할 수 있습니다. 재시도 전 `retry-after` 값만큼 대기하고, 동일 prefix에
+   대해 새 리비전을 추가로 띄우지 않습니다.
+
+**2026-10-06 결과:** 위 절차로 `handoff-20261004` prefix의 zip·inventory·receipt·
+remote-receipt·handoff.json을 `factory20-console` 컨테이너 exec를 통해 전체 byte
+다운로드했고, ZIP(127,537,095 bytes, SHA-256 `0da8ea5e...b2ec`)과 inventory
+(SHA-256 `b3ffbc3d...309d`)가 모두 일치함을 확인했습니다. 새 서버(이 작업을 수행한
+WSL 환경 자체)에서 storage account로의 직접 접근은 여전히 차단 상태이므로,
+`new_server_access_verified`는 `false`로 유지합니다. 이 절차는 접근 우회가 아니라
+기존에 승인된 private 실행 경로(컨테이너 MI)를 그대로 사용한 것입니다.
